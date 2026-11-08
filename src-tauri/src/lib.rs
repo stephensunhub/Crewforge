@@ -9,6 +9,8 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 pub fn run() {
+    // 从 Finder 启动时 PATH 极简，先还原成用户登录 shell 的 PATH，员工进程才找得到 claude/cargo/git/npm
+    crewforge_core::shell_env::fix_path();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {

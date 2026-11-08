@@ -14,4 +14,5 @@ pub mod policy;
 pub mod provider;
 pub mod runner;
 pub mod scheduler;
+pub mod shell_env;
 pub mod workspace;
