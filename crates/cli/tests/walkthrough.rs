@@ -6,7 +6,7 @@
 
 use crewforge_core::board::Actor;
 use crewforge_core::db::Db;
-use crewforge_core::memory::{MemoryFilter, NewMemory};
+use crewforge_core::memory::{MemoryFilter, NewMemory, is_none_marker};
 use crewforge_core::onboarding::baseline::Origin;
 use crewforge_core::orchestrator::Orchestrator;
 use crewforge_core::provider::claude::{ApprovalRequest, Decision};
@@ -249,6 +249,10 @@ async fn full_walkthrough_with_real_claude() {
         rv.first().map(|x| format!("{} 条行动项", x.action_items.len())).unwrap_or_default());
     let saved = db.save_meeting_lessons(&m.id);
     r.note(format!("纪要里的待验证经验 → 记忆：{}", match &saved { Ok(n) => format!("存入 {n} 条"), Err(e) => format!("未存入（{e}）") }));
+    // 只看“有没有存进去”不够：存进去的必须是真正的经验，而不是“无。本次没有新增”这类空话
+    let from_meeting = db.list_memories(&MemoryFilter { project_id: Some(pid.clone()), ..Default::default() }).unwrap().into_iter().filter(|x| x.source_kind == "meeting").collect::<Vec<_>>();
+    r.check(from_meeting.iter().all(|x| !is_none_marker(&x.content)), "纪要里“无”的小节没有被当成经验存进记忆",
+        format!("{:?}", from_meeting.iter().map(|x| clip(&x.content, 40)).collect::<Vec<_>>()));
     let pending: Vec<_> = db.list_memories(&MemoryFilter { project_id: Some(pid.clone()), status: Some("unverified".into()), ..Default::default() }).unwrap();
     r.check(pending.iter().all(|x| x.task_id.as_deref() == Some(task1.id.as_str()) || x.source_kind == "agent"), "待验证的经验都有来源，且没有直接生效", format!("{} 条待验证", pending.len()));
 
@@ -265,9 +269,11 @@ async fn full_walkthrough_with_real_claude() {
     db.set_issue_status(&issue.id, "pending_decision").unwrap();
     r.check(db.pending_decisions().unwrap().iter().any(|p| p.issue.id == issue.id), "待决策的议题出现在人类待办里", "");
     let opts = db.issue_options(&issue.id).unwrap();
-    db.decide_issue(&issue.id, &Actor::Human, Some(&opts[0].id), "保持 i64（分）", "目前没有小数需求，避免多余依赖", &Default::default()).unwrap();
+    let chosen = opts.iter().find(|o| o.title.starts_with("保持")).expect("找到“保持 i64”这个选项");
+    db.decide_issue(&issue.id, &Actor::Human, Some(&chosen.id), "保持 i64（分）", "目前没有小数需求，避免多余依赖", &Default::default()).unwrap();
     let dm = db.list_memories(&MemoryFilter { project_id: Some(pid.clone()), ..Default::default() }).unwrap();
     r.check(dm.iter().any(|x| x.kind == "decision" && x.source_ref.as_deref() == Some(issue.id.as_str()) && x.status == "verified"), "决议自动沉淀为已验证的项目决策记忆", "");
+    r.check(dm.iter().filter(|x| x.kind == "decision").all(|x| !x.content.contains("未采纳「保持 i64（分）」")), "决策记忆没有自相矛盾（选中的方案不会同时出现在“未采纳”里）", "");
 
     // ---------- 6. 合并 ----------
     println!("\n【6】合并 alice 的任务");

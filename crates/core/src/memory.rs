@@ -205,6 +205,32 @@ fn fts_query(terms: &[(String, u32)]) -> Option<String> {
     Some(terms.iter().map(|(t, _)| format!("\"{}\"", t.replace('"', "\"\""))).collect::<Vec<_>>().join(" OR "))
 }
 
+/// “这一节没有内容”的各种写法：模型常写成“无。会上没有新增……”这样带一句解释，不能把它当成一条经验。
+/// 以“无/暂无/没有”开头，且后面紧跟标点（或就此结束）才算；“无法……”“没有索引时……”这类正常的句子不受影响。
+pub fn is_none_marker(item: &str) -> bool {
+    // 去掉 Markdown 的加粗、斜体、行内代码标记再判断（只用于判断，不改动条目本身）
+    let plain: String = item.chars().filter(|c| !matches!(c, '*' | '_' | '`')).collect();
+    let t = plain.trim();
+    let lower = t.to_lowercase();
+    if matches!(lower.as_str(), "n/a" | "none" | "nil" | "（无）" | "(无)" | "-" | "—") || lower.starts_with("none.") || lower.starts_with("n/a") {
+        return true;
+    }
+    // 固定的“这里没有内容”的说法（后面不一定紧跟标点）
+    const NONE_PHRASES: &[&str] = &["没有新增", "没有新的", "没有需要", "没有可", "没有任何", "无新增", "无新的", "无需", "不涉及", "本次没有", "本次无", "会上没有", "会上无"];
+    if NONE_PHRASES.iter().any(|p| t.starts_with(p)) {
+        return true;
+    }
+    for p in ["暂无", "没有", "无"] {
+        if let Some(rest) = t.strip_prefix(p) {
+            return match rest.chars().next() {
+                None => true,
+                Some(c) => "。，,.、；;：:！!）)".contains(c) || c.is_whitespace(),
+            };
+        }
+    }
+    false
+}
+
 /// 从会议纪要里取出某一节（标题以 `heading_prefix` 开头）的条目。没有这一节、或写着“无”时返回空。
 pub fn extract_section_items(minutes: &str, heading_prefix: &str) -> Vec<String> {
     let mut in_section = false;
@@ -223,7 +249,7 @@ pub fn extract_section_items(minutes: &str, heading_prefix: &str) -> Vec<String>
             .trim_start_matches(|c: char| c.is_ascii_digit())
             .trim_start_matches(['.', '、', ')', '）'])
             .trim();
-        if !item.is_empty() && !matches!(item, "无" | "暂无" | "（无）" | "(无)" | "无。") {
+        if !item.is_empty() && !is_none_marker(item) {
             out.push(item.to_string());
         }
     }
@@ -661,6 +687,12 @@ mod tests {
         let m = "## 决议\n用 SSE\n## 待验证的经验\n- 测试前要先启动 Redis\n2. 迁移脚本要幂等\n\n## 其他\n- 不相关";
         assert_eq!(extract_lessons(m), vec!["测试前要先启动 Redis", "迁移脚本要幂等"]);
         assert!(extract_lessons("## 待验证的经验\n无").is_empty());
+        // 演练中遇到的真实写法：无，后面跟一句解释
+        assert!(extract_lessons("## 待验证的经验\n\n无。会上没有新增或被引用的经验需要验证。").is_empty());
+        assert!(extract_lessons("## 待验证的经验\n- 没有新增，无需验证").is_empty());
+        assert!(extract_lessons("## 待验证的经验\n- **无**：这次没有").is_empty());
+        // 正常的句子即使以“无/没有”开头也要保留
+        assert_eq!(extract_lessons("## 待验证的经验\n- 无法连接 Redis 时测试会超时\n- 没有索引时迁移会很慢"), vec!["无法连接 Redis 时测试会超时", "没有索引时迁移会很慢"]);
         assert!(extract_lessons("## 待验证的经验\n- 无").is_empty());
         assert!(extract_lessons("没有标题").is_empty());
     }
@@ -816,5 +848,21 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert!(list.iter().all(|x| x.source_kind == "meeting" && x.scope.contains("复盘")));
         assert_eq!(db.unverified_counts().unwrap(), vec![(p1.clone(), "Shop".to_string(), 2)]);
+    }
+}
+
+#[cfg(test)]
+mod none_marker_tests {
+    use super::is_none_marker;
+
+    #[test]
+    fn recognizes_empty_section_phrasings_but_not_real_sentences() {
+        for yes in ["无", "无。", "暂无", "暂无。", "没有", "没有，本次不需要", "无，本次没有新增", "无。会上没有新增或被引用的经验需要验证。",
+                    "**无**", "（无）", "(无)", "N/A", "none", "无 ", "没有。", "没有新增，无需验证", "无需验证", "本次没有新的经验", "不涉及"] {
+            assert!(is_none_marker(yes), "{yes:?} 应当被视为“空”");
+        }
+        for no in ["无法连接 Redis 时测试会超时", "没有索引时迁移会很慢", "无锁队列在这里更快", "暂停服务前要先排空队列", "测试前必须先启动 Redis", "none-blocking IO 更合适"] {
+            assert!(!is_none_marker(no), "{no:?} 是正常的经验，不能被丢掉");
+        }
     }
 }
