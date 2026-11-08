@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 迁移列表：下标 + 1 即版本号。只能追加，不能修改已发布的迁移。
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3];
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4];
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE employees (
@@ -200,7 +200,7 @@ pub struct EventRow {
 type EventHook = Arc<dyn Fn(&EventRow) + Send + Sync>;
 
 pub struct Db {
-    conn: Mutex<Connection>,
+    pub(crate) conn: Mutex<Connection>,
     jsonl: Mutex<Option<File>>,
     hook: Mutex<Option<EventHook>>,
 }

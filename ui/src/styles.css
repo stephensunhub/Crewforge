@@ -209,3 +209,26 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .tasks-page .tasks-body h4 { grid-column: 1 / -1; }
 .tasks-page .tasks-head { padding: 16px 28px; background: transparent; }
 .col > .banner.info { flex: none; }
+
+/* 议题与会议 */
+.group-title { margin: 0 0 10px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+.badge.st-pending_decision { color: var(--warn); border-color: var(--warn); }
+.badge.st-decided, .badge.st-implementing { color: var(--ok); border-color: var(--ok); }
+.badge.st-discussing { color: var(--accent); border-color: var(--accent); }
+.option { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; display: grid; gap: 2px; }
+.option.chosen { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 8%, transparent); }
+.option.rejected { opacity: .7; }
+.option-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 8px; }
+.split { flex: 1; min-height: 0; display: flex; }
+.split-side { width: 270px; flex: none; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+.split-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.split-list { overflow: auto; padding: 8px; display: grid; gap: 4px; align-content: start; }
+.split-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.mitem { text-align: left; background: none; border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; }
+.mitem:hover { background: var(--panel-2); }
+.mitem.on { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.mitem-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.minutes { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 18px; display: grid; gap: 6px; }
+.minutes-head { display: flex; align-items: center; gap: 10px; }
+.minutes textarea { font-size: 13px; min-height: 40px; }

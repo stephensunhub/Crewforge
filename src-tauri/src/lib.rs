@@ -23,6 +23,21 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::list_issues,
+            commands::pending_decisions,
+            commands::create_issue,
+            commands::update_issue,
+            commands::add_issue_option,
+            commands::set_issue_status,
+            commands::decide_issue,
+            commands::list_meetings,
+            commands::meeting_detail,
+            commands::create_meeting,
+            commands::link_meeting_issue,
+            commands::save_minutes,
+            commands::close_meeting,
+            commands::post_meeting_message,
+            commands::draft_minutes,
             commands::get_company,
             commands::update_company,
             commands::employee_cards,

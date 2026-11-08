@@ -30,6 +30,12 @@ pub struct TurnConfig {
     pub task_id: Option<String>,
     /// 事件归属的项目（群聊按它过滤）
     pub project_id: Option<String>,
+    /// 只读模式（会议）：写入类操作直接拒绝，不询问人类
+    pub read_only: bool,
+    /// 会议回复时关联的会议，写入事件，便于统计成本
+    pub meeting_id: Option<String>,
+    /// 写入事件的任务内容；会议中完整提示很长，只记录简短标签
+    pub log_prompt: Option<String>,
     /// 测试时可替换为假的 CLI
     pub program: String,
 }
@@ -60,10 +66,13 @@ pub async fn run_turn<A: Approver, O: Observer>(
 
     let mut spec = ClaudeSpec::new(session.id.clone(), session.started, employee.persona.clone(), cfg.project_path.clone());
     spec.program = cfg.program.clone();
-    let policy = Policy::new(&cfg.project_path);
+    let policy = if cfg.read_only { Policy::read_only(&cfg.project_path) } else { Policy::new(&cfg.project_path) };
 
     db.set_session_status(&session.id, "running")?;
-    db.append_event_for(pid, "task_started", eid, sid, &json!({"prompt": prompt, "resume": session.started, "task_id": cfg.task_id}))?;
+    db.append_event_for(pid, "task_started", eid, sid, &json!({
+        "prompt": cfg.log_prompt.as_deref().unwrap_or(prompt), "resume": session.started,
+        "task_id": cfg.task_id, "meeting_id": cfg.meeting_id,
+    }))?;
 
     let mut proc = match ClaudeProcess::spawn(&spec, &effective_prompt).await {
         Ok(p) => p,
@@ -95,6 +104,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
                 AgentEvent::Approval(req) => {
                     let (decision, by, reason) = match policy.decide(&req.tool_name, &req.input) {
                         PolicyDecision::Allow(why) => (Decision::Allow, "policy", why.to_string()),
+                        PolicyDecision::Deny(why) => (Decision::Deny(why.clone()), "policy", why),
                         PolicyDecision::Ask(why) => {
                             db.append_event_for(pid, "approval_requested", eid, sid,
                                 &json!({"tool": req.tool_name, "input": req.input, "reason": why}))?;
@@ -109,7 +119,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
                 }
                 AgentEvent::Result(r) => {
                     db.append_event_for(pid, "turn_result", eid, sid, &json!({
-                        "task_id": cfg.task_id, "is_error": r.is_error, "subtype": r.subtype, "cost_usd": r.cost_usd,
+                        "task_id": cfg.task_id, "meeting_id": cfg.meeting_id, "is_error": r.is_error, "subtype": r.subtype, "cost_usd": r.cost_usd,
                         "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
                         "cache_read_tokens": r.cache_read_tokens, "cache_creation_tokens": r.cache_creation_tokens,
                     }))?;

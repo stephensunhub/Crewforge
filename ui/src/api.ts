@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Meeting, MeetingDetail, MeetingKind,
 } from "./types";
 
 export const api = {
@@ -28,6 +28,25 @@ export const api = {
   addMember: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("add_member", { projectId, employeeId, role }),
   setMemberRole: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("set_member_role", { projectId, employeeId, role }),
   removeMember: (projectId: string, employeeId: string) => invoke<void>("remove_member", { projectId, employeeId }),
+  // 议题
+  issues: (projectId: string) => invoke<IssueView[]>("list_issues", { projectId }),
+  pendingDecisions: () => invoke<PendingDecision[]>("pending_decisions"),
+  createIssue: (a: { projectId: string; title: string; summary: string; kind: string; highRisk: boolean; ownerId: string | null; supersedes: string | null }) =>
+    invoke<void>("create_issue", a),
+  addOption: (issueId: string, title: string, description: string) => invoke<void>("add_issue_option", { issueId, title, description }),
+  setIssueStatus: (id: string, status: string) => invoke<void>("set_issue_status", { id, status }),
+  decideIssue: (id: string, chosenOption: string | null, decision: string, reason: string, rejectedReasons: Record<string, string>) =>
+    invoke<void>("decide_issue", { id, chosenOption, decision, reason, rejectedReasons }),
+  // 会议
+  meetings: (projectId: string) => invoke<Meeting[]>("list_meetings", { projectId }),
+  meetingDetail: (id: string) => invoke<MeetingDetail>("meeting_detail", { id }),
+  createMeeting: (a: { projectId: string; kind: MeetingKind; title: string; hostId: string | null; taskId: string | null; issueIds: string[]; maxAgentReplies: number }) =>
+    invoke<Meeting>("create_meeting", a),
+  linkMeetingIssue: (meetingId: string, issueId: string) => invoke<void>("link_meeting_issue", { meetingId, issueId }),
+  postMeetingMessage: (meetingId: string, content: string) => invoke<string[]>("post_meeting_message", { meetingId, content }),
+  draftMinutes: (meetingId: string) => invoke<void>("draft_minutes", { meetingId }),
+  saveMinutes: (id: string, minutes: string) => invoke<void>("save_minutes", { id, minutes }),
+  closeMeeting: (id: string) => invoke<void>("close_meeting", { id }),
   // 事件与执行
   recentEvents: (projectId: string | null, limit: number) => invoke<EventRow[]>("recent_events", { projectId, limit }),
   running: () => invoke<string[]>("running_employees"),

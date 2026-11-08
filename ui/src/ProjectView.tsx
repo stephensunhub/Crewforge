@@ -3,16 +3,18 @@ import { api } from "./api";
 import { Avatar, Field, Modal, Placeholder, ROLE_LABEL, ROLE_ORDER } from "./common";
 import { Chat } from "./Chat";
 import { TasksPanel } from "./TasksPanel";
-import type { ApprovalReq, Employee, EventRow, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
+import { IssuesView } from "./IssuesView";
+import { MeetingsView } from "./MeetingsView";
+import type { ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
 
-export type ProjectTab = "chat" | "tasks" | "issues" | "members" | "memory" | "docs";
+export type ProjectTab = "chat" | "tasks" | "issues" | "meetings" | "members" | "memory" | "docs";
 export const PROJECT_TABS: [ProjectTab, string][] = [
-  ["chat", "群聊"], ["tasks", "任务"], ["issues", "议题"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
+  ["chat", "群聊"], ["tasks", "任务"], ["issues", "议题"], ["meetings", "会议"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
 ];
 const TASK_EVENTS = ["task_created", "checkpoint_committed", "checkpoint_failed", "task_merged", "task_merge_blocked", "task_abandoned", "turn_result", "task_failed", "task_error"];
 
 export function ProjectView({
-  tab, summary, employees, events, nameById, running, approvals, concurrency, onDecide, onChanged, onError, onLeave,
+  tab, summary, employees, events, nameById, running, approvals, concurrency, meetingFocus, onFocusHandled, onOpenMeeting, onDecide, onChanged, onError, onLeave,
 }: {
   tab: ProjectTab;
   summary: ProjectSummary;
@@ -22,6 +24,9 @@ export function ProjectView({
   running: string[];
   approvals: ApprovalReq[];
   concurrency: number;
+  meetingFocus: string | null;
+  onFocusHandled: () => void;
+  onOpenMeeting: (id: string) => void;
   onDecide: (a: ApprovalReq, allow: boolean) => void;
   onChanged: () => void;
   onError: (m: string) => void;
@@ -31,6 +36,8 @@ export function ProjectView({
   const [members, setMembers] = useState<Member[]>([]);
   const [repo, setRepo] = useState<RepoStatus | null>(null);
   const [taskViews, setTaskViews] = useState<TaskView[]>([]);
+  const [issues, setIssues] = useState<IssueView[]>([]);
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
 
   const refreshMembers = useCallback(async () => {
     try { setMembers(await api.members(project.id)); } catch (e) { onError(String(e)); }
@@ -41,6 +48,18 @@ export function ProjectView({
       setRepo(r); setTaskViews(t);
     } catch (e) { onError(String(e)); }
   }, [project.path, onError]);
+
+  const refreshBoard = useCallback(async () => {
+    try {
+      const [i, m] = await Promise.all([api.issues(project.id), api.meetings(project.id)]);
+      setIssues(i); setMeetings(m);
+    } catch (e) { onError(String(e)); }
+  }, [project.id, onError]);
+  const lastBoardEvent = useMemo(
+    () => events.reduce((m, e) => (e.project_id === project.id && /^(issue_|meeting_)/.test(e.kind) ? Math.max(m, e.id) : m), 0),
+    [events, project.id],
+  );
+  useEffect(() => { void refreshBoard(); }, [refreshBoard, lastBoardEvent]);
 
   useEffect(() => { setMembers([]); setRepo(null); setTaskViews([]); void refreshMembers(); void refreshRepo(); }, [refreshMembers, refreshRepo]);
 
@@ -79,7 +98,22 @@ export function ProjectView({
       <MembersTab project={summary} members={members} employees={employees} running={running}
         onChanged={() => { void refreshMembers(); onChanged(); }} onError={onError} onArchived={onLeave} />
     );
-  if (tab === "issues") return <Placeholder title="议题板">需要讨论并决定的事项：摘要、候选方案、谁有权拍板、解决状态。解决后沉淀为决策记录，并可汇总进项目文档。</Placeholder>;
+  if (tab === "issues")
+    return (
+      <IssuesView projectId={project.id} views={issues} members={members} onChanged={() => void refreshBoard()} onError={onError}
+        onDiscuss={async (issueId) => {
+          const i = issues.find((x) => x.issue.id === issueId);
+          try {
+            const m = await api.createMeeting({ projectId: project.id, kind: "design", title: `讨论：${i?.issue.title ?? ""}`, hostId: null, taskId: null, issueIds: [issueId], maxAgentReplies: 12 });
+            await refreshBoard(); onOpenMeeting(m.id);
+          } catch (e) { onError(String(e)); }
+        }} />
+    );
+  if (tab === "meetings")
+    return (
+      <MeetingsView projectId={project.id} meetings={meetings} members={members} issues={issues} tasks={taskViews} events={events} running={running}
+        focusId={meetingFocus} onFocused={onFocusHandled} onChanged={() => void refreshBoard()} onError={onError} />
+    );
   if (tab === "memory") return <Placeholder title="项目记忆">架构、接口约定、业务规则、已知问题与历史决策。员工被唤醒时只检索与当前任务相关的少量条目。</Placeholder>;
   return <Placeholder title="项目文档">需求、架构说明、决策记录、测试基线。计划存放在项目仓库的 docs/ 目录，由员工通过同一套分支与合并流程维护。</Placeholder>;
 }

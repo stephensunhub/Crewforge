@@ -58,3 +58,14 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
     </label>
   );
 }
+
+export const ISSUE_KIND_LABEL: Record<string, string> = {
+  technical: "技术方案", requirement: "需求澄清", bug: "Bug 归因", risk: "风险", process: "流程", implementation: "代码细节",
+};
+export const ISSUE_STATUS_LABEL: Record<string, string> = {
+  open: "待讨论", discussing: "讨论中", pending_decision: "待决策", decided: "已决议",
+  implementing: "实施中", closed: "已关闭", shelved: "搁置", cancelled: "已取消",
+};
+export const MEETING_KIND_LABEL: Record<string, string> = {
+  requirements: "需求评审", design: "方案评审", code_review: "Code Review", qa_case: "QA Case 评审", retro: "复盘",
+};

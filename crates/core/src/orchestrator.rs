@@ -66,6 +66,9 @@ impl Orchestrator {
             project_path: PathBuf::from(&task.worktree_path),
             task_id: Some(task.id.clone()),
             project_id,
+            read_only: false,
+            meeting_id: None,
+            log_prompt: None,
             program: self.program.clone(),
         };
         let result = run_turn(&self.db, employee, &cfg, prompt, approver, observer).await;

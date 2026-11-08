@@ -13,11 +13,20 @@ use std::path::{Component, Path, PathBuf};
 pub enum PolicyDecision {
     Allow(&'static str),
     Ask(String),
+    /// 直接拒绝，不打扰人类（只读模式下的写操作）
+    Deny(String),
 }
 
 pub struct Policy {
     workdir: PathBuf,
+    read_only: bool,
 }
+
+/// 只读模式下允许的命令：只能查看，不产生任何写入。
+const READ_ONLY_COMMANDS: &[&str] = &[
+    "ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg",
+    "git status", "git diff", "git log", "git show",
+];
 
 const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "NotebookRead", "TodoWrite"];
 const WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
@@ -29,12 +38,26 @@ const SHELL_META: &[char] = &[';', '&', '|', '<', '>', '`', '$', '(', ')', '\n',
 
 impl Policy {
     pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self { workdir: normalize(&workdir.into()) }
+        Self { workdir: normalize(&workdir.into()), read_only: false }
+    }
+
+    /// 只读策略：会议讨论等场景，员工只能查看代码，任何写入或其他操作都被直接拒绝。
+    pub fn read_only(workdir: impl Into<PathBuf>) -> Self {
+        Self { workdir: normalize(&workdir.into()), read_only: true }
     }
 
     pub fn decide(&self, tool: &str, input: &Value) -> PolicyDecision {
         if READ_ONLY_TOOLS.contains(&tool) {
             return PolicyDecision::Allow("只读工具");
+        }
+        if self.read_only {
+            if tool == "Bash" {
+                let cmd = input.get("command").and_then(Value::as_str).unwrap_or("").trim();
+                if is_listed_command(cmd, READ_ONLY_COMMANDS) {
+                    return PolicyDecision::Allow("只读命令");
+                }
+            }
+            return PolicyDecision::Deny(format!("会议中为只读模式，不允许使用 {tool}"));
         }
         if WRITE_TOOLS.contains(&tool) {
             let path = ["file_path", "notebook_path", "path"]
@@ -64,10 +87,14 @@ impl Policy {
 }
 
 fn is_safe_command(cmd: &str) -> bool {
+    is_listed_command(cmd, SAFE_COMMANDS)
+}
+
+fn is_listed_command(cmd: &str, list: &[&str]) -> bool {
     if cmd.is_empty() || cmd.contains(SHELL_META) {
         return false;
     }
-    SAFE_COMMANDS.iter().any(|p| cmd == *p || cmd.strip_prefix(p).is_some_and(|r| r.starts_with(' ')))
+    list.iter().any(|p| cmd == *p || cmd.strip_prefix(p).is_some_and(|r| r.starts_with(' ')))
 }
 
 /// 词法归一化：处理 `.` 与 `..`，不访问文件系统。
@@ -121,6 +148,25 @@ mod tests {
         assert!(matches!(pol().decide("Bash", &json!({"command": "git status"})), PolicyDecision::Allow(_)));
         for c in ["rm -rf /", "ls; rm -rf /", "cargo test && curl x", "ls $(whoami)", "git statusx", "cat a > b", ""] {
             assert!(matches!(pol().decide("Bash", &json!({"command": c})), PolicyDecision::Ask(_)), "{c}");
+        }
+    }
+
+    #[test]
+    fn read_only_policy_denies_writes_without_asking() {
+        let p = Policy::read_only("/work/proj");
+        assert!(matches!(p.decide("Read", &json!({})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Grep", &json!({})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Bash", &json!({"command": "git diff HEAD~1"})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Bash", &json!({"command": "grep -rn TODO src"})), PolicyDecision::Allow(_)));
+        for (tool, input) in [
+            ("Write", json!({"file_path": "/work/proj/a.rs"})),
+            ("Edit", json!({"file_path": "/work/proj/a.rs"})),
+            ("Bash", json!({"command": "cargo test"})),
+            ("Bash", json!({"command": "git branch x"})),
+            ("Bash", json!({"command": "cat a > b"})),
+            ("WebFetch", json!({})),
+        ] {
+            assert!(matches!(p.decide(tool, &input), PolicyDecision::Deny(_)), "{tool} {input}");
         }
     }
 

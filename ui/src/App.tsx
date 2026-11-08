@@ -4,7 +4,7 @@ import { COMPANY_TABS, CompanyView, type CompanyTab } from "./CompanyView";
 import { PROJECT_TABS, ProjectView, type ProjectTab } from "./ProjectView";
 import { CostView, SettingsView } from "./SettingsView";
 import { short } from "./common";
-import type { ApprovalReq, Company, EmployeeCard, EventRow, ProjectSummary } from "./types";
+import type { ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary } from "./types";
 
 const MAX_EVENTS = 2000;
 const SCOPE_KEY = "crewforge.scope";
@@ -31,6 +31,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [inbox, setInbox] = useState(false);
   const [ready, setReady] = useState(false);
+  const [pending, setPending] = useState<PendingDecision[]>([]);
+  const [meetingFocus, setMeetingFocus] = useState<string | null>(null);
 
   const employees = useMemo(() => cards.map((c) => c.employee), [cards]);
   const nameById = useMemo(() => new Map(employees.map((e) => [e.id, e.name])), [employees]);
@@ -48,6 +50,7 @@ export default function App() {
       try {
         const [evs, run] = await Promise.all([api.recentEvents(null, 800), api.running()]);
         setEvents(evs); setRunning(run);
+        setPending(await api.pendingDecisions());
         let saved = 0;
         try { saved = Number(localStorage.getItem(CONCURRENCY_KEY)) || 0; } catch { /* 忽略 */ }
         setConcurrency(await (saved > 0 ? api.setConcurrency(saved) : api.getConcurrency()));
@@ -58,6 +61,7 @@ export default function App() {
       onEvent: (e) => {
         setEvents((p) => [...p, e].slice(-MAX_EVENTS));
         if (["employee_created", "project_created"].includes(e.kind)) void reloadStatic();
+        if (e.kind.startsWith("issue_")) void api.pendingDecisions().then(setPending).catch(() => undefined);
         if (["task_created", "task_merged", "task_abandoned", "task_started", "turn_result", "task_failed"].includes(e.kind)) void api.projects().then(setProjects).catch(() => undefined);
       },
       onApproval: (a) => setApprovals((p) => [...p, a]),
@@ -89,7 +93,7 @@ export default function App() {
     try { localStorage.setItem(CONCURRENCY_KEY, String(n)); } catch { /* 忽略 */ }
     try { setConcurrency(await api.setConcurrency(n)); } catch (e) { setError(String(e)); }
   }
-  const openProject = (id: string) => { setProjectTab("chat"); setScope({ kind: "project", id }); };
+  const openProject = (id: string, tab: ProjectTab = "chat") => { setProjectTab(tab); setScope({ kind: "project", id }); };
   const projectName = (id: string | null) => projects.find((p) => p.project.id === id)?.project.name ?? "";
 
   const tabs = scope.kind === "company" ? COMPANY_TABS : scope.kind === "project" ? PROJECT_TABS : null;
@@ -118,7 +122,7 @@ export default function App() {
             </div>
           )}
           <button className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
-            🔔{approvals.length > 0 && <span className="count">{approvals.length}</span>}
+            🔔{approvals.length + pending.length > 0 && <span className="count">{approvals.length + pending.length}</span>}
           </button>
           <button className={`icon-btn text ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>成本</button>
           <button className={`icon-btn ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })} title="设置">⚙</button>
@@ -126,7 +130,14 @@ export default function App() {
         {inbox && (
           <div className="inbox">
             <b>待你处理</b>
-            {approvals.length === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
+            {approvals.length + pending.length === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
+            {pending.map((p) => (
+              <div className="inbox-item" key={p.issue.id}>
+                <div>议题待你裁决：<b>{p.issue.title}</b><span className="hint"> · {p.project_name}</span></div>
+                {p.issue.summary && <div className="hint">{short(p.issue.summary, 120)}</div>}
+                <div className="btns"><button className="btn primary" onClick={() => { openProject(p.issue.project_id, "issues"); setInbox(false); }}>去处理</button></div>
+              </div>
+            ))}
             {approvals.map((a) => (
               <div className="inbox-item" key={a.id}>
                 <div><b>{a.employee}</b> 请求 <b>{a.tool}</b>{a.project_id && <span className="hint"> · {projectName(a.project_id)}</span>}</div>
@@ -162,6 +173,7 @@ export default function App() {
         {scope.kind === "project" && currentProject && (
           <ProjectView key={currentProject.project.id} tab={projectTab} summary={currentProject} employees={employees} events={events}
             nameById={nameById} running={running} approvals={approvals} concurrency={concurrency}
+            meetingFocus={meetingFocus} onFocusHandled={() => setMeetingFocus(null)} onOpenMeeting={(id) => { setProjectTab("meetings"); setMeetingFocus(id); }}
             onDecide={(a, allow) => void decide(a, allow)} onChanged={() => void reloadStatic()} onError={setError}
             onLeave={() => setScope({ kind: "company" })} />
         )}
