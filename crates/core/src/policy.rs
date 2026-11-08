@@ -50,6 +50,10 @@ impl Policy {
         if READ_ONLY_TOOLS.contains(&tool) {
             return PolicyDecision::Allow("只读工具");
         }
+        // 我们自己的团队协作工具只写入"提议"（议题、记忆候选），不改代码，也无权拍板，只读模式下同样允许
+        if tool.starts_with("mcp__crewforge__") {
+            return PolicyDecision::Allow("团队协作工具");
+        }
         if self.read_only {
             if tool == "Bash" {
                 let cmd = input.get("command").and_then(Value::as_str).unwrap_or("").trim();
@@ -168,6 +172,17 @@ mod tests {
         ] {
             assert!(matches!(p.decide(tool, &input), PolicyDecision::Deny(_)), "{tool} {input}");
         }
+    }
+
+    #[test]
+    fn own_team_tools_are_allowed_but_other_mcp_tools_are_not() {
+        for p in [Policy::new("/w"), Policy::read_only("/w")] {
+            assert!(matches!(p.decide("mcp__crewforge__propose_issue", &json!({})), PolicyDecision::Allow(_)));
+        }
+        assert!(matches!(Policy::new("/w").decide("mcp__other__thing", &json!({})), PolicyDecision::Ask(_)));
+        assert!(matches!(Policy::read_only("/w").decide("mcp__other__thing", &json!({})), PolicyDecision::Deny(_)));
+        // 名字相近但不是我们的，不能被放行
+        assert!(matches!(Policy::new("/w").decide("mcp__crewforgeX__a", &json!({})), PolicyDecision::Ask(_)));
     }
 
     #[test]

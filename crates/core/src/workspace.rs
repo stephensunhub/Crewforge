@@ -170,6 +170,11 @@ impl WorkspaceManager {
         self.locks.lock().unwrap().entry(repo.to_path_buf()).or_default().clone()
     }
 
+    /// 数据目录（worktrees 的上一级）。
+    pub fn data_dir(&self) -> PathBuf {
+        self.root.parent().map(Path::to_path_buf).unwrap_or_else(|| self.root.clone())
+    }
+
     pub fn worktree_path(&self, repo_root: &Path, employee_slug: &str) -> PathBuf {
         let name = repo_root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "repo".into());
         let safe: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();

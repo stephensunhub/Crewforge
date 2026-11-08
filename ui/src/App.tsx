@@ -34,6 +34,7 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [pending, setPending] = useState<PendingDecision[]>([]);
   const [unverified, setUnverified] = useState<[string, string, number][]>([]);
+  const [proposals, setProposals] = useState<PendingDecision[]>([]);
   const [meetingFocus, setMeetingFocus] = useState<string | null>(null);
 
   const employees = useMemo(() => cards.map((c) => c.employee), [cards]);
@@ -53,6 +54,7 @@ export default function App() {
         const [evs, run] = await Promise.all([api.recentEvents(null, 800), api.running()]);
         setEvents(evs); setRunning(run);
         setPending(await api.pendingDecisions());
+        setProposals(await api.pendingProposals());
         setUnverified(await api.unverifiedCounts());
         let saved = 0;
         try { saved = Number(localStorage.getItem(CONCURRENCY_KEY)) || 0; } catch { /* 忽略 */ }
@@ -62,9 +64,13 @@ export default function App() {
     })();
     const un = subscribe({
       onEvent: (e) => {
-        setEvents((p) => [...p, e].slice(-MAX_EVENTS));
+        // 事件由后端按 id 推送；启动时的初始加载与推送可能有重叠，按 id 去重
+        setEvents((p) => (p.length > 0 && p[p.length - 1].id >= e.id ? p : [...p, e].slice(-MAX_EVENTS)));
         if (["employee_created", "project_created"].includes(e.kind)) void reloadStatic();
-        if (e.kind.startsWith("issue_")) void api.pendingDecisions().then(setPending).catch(() => undefined);
+        if (e.kind.startsWith("issue_") || e.kind === "agent_proposed") {
+          void api.pendingDecisions().then(setPending).catch(() => undefined);
+          void api.pendingProposals().then(setProposals).catch(() => undefined);
+        }
         if (e.kind.startsWith("memory_") && e.kind !== "memory_injected") void api.unverifiedCounts().then(setUnverified).catch(() => undefined);
         if (["task_created", "task_merged", "task_abandoned", "task_started", "turn_result", "task_failed"].includes(e.kind)) void api.projects().then(setProjects).catch(() => undefined);
       },
@@ -130,7 +136,7 @@ export default function App() {
             </div>
           )}
           <button className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
-            🔔{approvals.length + pending.length + unverified.length > 0 && <span className="count">{approvals.length + pending.length + unverified.length}</span>}
+            🔔{approvals.length + pending.length + unverified.length + proposals.length > 0 && <span className="count">{approvals.length + pending.length + unverified.length + proposals.length}</span>}
           </button>
           <button className={`icon-btn text ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>成本</button>
           <button className={`icon-btn ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })} title="设置">⚙</button>
@@ -138,7 +144,15 @@ export default function App() {
         {inbox && (
           <div className="inbox">
             <b>待你处理</b>
-            {approvals.length + pending.length + unverified.length === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
+            {approvals.length + pending.length + unverified.length + proposals.length === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
+            {proposals.map((p) => (
+              <div className="inbox-item" key={p.issue.id}>
+                <div>员工提议了议题：<b>{p.issue.title}</b><span className="hint"> · {p.project_name}</span></div>
+                {p.issue.summary && <div className="hint">{short(p.issue.summary, 120)}</div>}
+                <div className="hint">确认值得讨论后才会进入讨论；你也可以驳回。</div>
+                <div className="btns"><button className="btn primary" onClick={() => { openProject(p.issue.project_id, "issues"); setInbox(false); }}>去处理</button></div>
+              </div>
+            ))}
             {unverified.map(([pid, pname, n]) => (
               <div className="inbox-item" key={pid}>
                 <div><b>{n}</b> 条经验等待验证<span className="hint"> · {pname}</span></div>

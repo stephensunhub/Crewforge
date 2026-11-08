@@ -334,7 +334,7 @@ impl Orchestrator {
         });
         prompt.push_str("每条结论尽量指出具体的文件或模块；没有查证的内容写“未确认”，不要编造；不要修改任何文件。");
         let cfg = TurnConfig {
-            project_path: Path::new(&p.path).to_path_buf(), task_id: None, project_id: None, read_only: true, meeting_id: None, purpose: "onboarding".into(), attr_project: Some(project_id.to_string()),
+            project_path: Path::new(&p.path).to_path_buf(), task_id: None, project_id: None, read_only: true, meeting_id: None, mcp: None, purpose: "onboarding".into(), attr_project: Some(project_id.to_string()),
             log_prompt: Some(format!("[导入评估:{kind}] {}", p.name)), program: self.program.clone(),
         };
         let r = run_turn(&self.db, employee, &cfg, &prompt, approver, &NoopObserver).await?;

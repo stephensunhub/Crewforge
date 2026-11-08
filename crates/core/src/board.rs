@@ -422,6 +422,19 @@ impl Db {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// AI 员工提议、等待人类确认是否值得讨论的议题（待办收件箱使用）。
+    pub fn ai_proposals(&self) -> Result<Vec<PendingDecision>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT i.id, i.project_id, i.title, i.summary, i.kind, i.high_risk, i.status, i.raised_by, i.owner_id,
+                    i.decision, i.decision_reason, i.decided_by, i.decided_at, i.supersedes, i.created_at, i.updated_at, p.name
+             FROM issues i JOIN projects p ON p.id = i.project_id
+             WHERE i.status = 'open' AND i.raised_by IS NOT NULL AND p.status = 'active' ORDER BY i.created_at"
+        ))?;
+        let rows = stmt.query_map([], |r| Ok(PendingDecision { issue: row_to_issue(r)?, project_name: r.get(16)? }))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     // ================= 会议 =================
     pub fn create_meeting(
         &self, project_id: &str, kind: &str, title: &str, host_id: Option<&str>, task_id: Option<&str>,

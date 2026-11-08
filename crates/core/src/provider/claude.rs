@@ -4,7 +4,10 @@
 //! - `--input-format stream-json --output-format stream-json --verbose`
 //! - `--permission-prompt-tool stdio`：权限请求以 `control_request` 出现在 stdout，
 //!   宿主通过 stdin 回复 `control_response`
-//! - `--safe-mode`：保留登录，关闭用户全局 hooks/插件/CLAUDE.md 等干扰
+//! - 隔离用户的全局配置：`--setting-sources ""`（不加载任何设置来源，因此没有 hooks、
+//!   用户安装的插件、CLAUDE.md）+ `--disable-slash-commands` + `--strict-mcp-config`。
+//!   不用 `--safe-mode`：实测它会把 `--mcp-config` 一起关掉，而我们需要通过 MCP 给员工提供协作工具。
+//!   登录（keychain）不受影响。
 //! - 宿主必须一直持有 stdin，直到本轮结束，否则正在等待的工具调用会失败
 
 use anyhow::{Context, Result, bail};
@@ -26,16 +29,34 @@ pub struct ClaudeSpec {
     pub cwd: PathBuf,
     /// 可执行文件，默认 `claude`
     pub program: String,
+    /// 提供给员工的团队协作工具（MCP 服务器）；None 表示不提供
+    pub mcp: Option<McpLaunch>,
+}
+
+/// 如何启动我们自己的 MCP 服务器进程（就是 crewforge 可执行文件的 `mcp-serve` 子命令）。
+#[derive(Debug, Clone)]
+pub struct McpLaunch {
+    pub exe: PathBuf,
+    pub args: Vec<String>,
+}
+
+impl McpLaunch {
+    pub fn config_json(&self) -> String {
+        json!({"mcpServers": {"crewforge": {"command": self.exe.to_string_lossy(), "args": self.args}}}).to_string()
+    }
 }
 
 impl ClaudeSpec {
     pub fn new(session_id: String, resume: bool, persona: String, cwd: PathBuf) -> Self {
-        Self { session_id, resume, persona, cwd, program: "claude".into() }
+        Self { session_id, resume, persona, cwd, program: "claude".into(), mcp: None }
     }
 
     pub fn args(&self) -> Vec<String> {
         let mut a: Vec<String> = [
-            "-p", "--safe-mode",
+            "-p",
+            "--setting-sources", "",
+            "--disable-slash-commands",
+            "--strict-mcp-config",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
@@ -44,6 +65,9 @@ impl ClaudeSpec {
         ]
         .map(String::from)
         .into();
+        // 总是传 --mcp-config：配合 --strict-mcp-config，既屏蔽用户自己的 MCP 服务器，又只开放我们提供的
+        a.push("--mcp-config".into());
+        a.push(self.mcp.as_ref().map(McpLaunch::config_json).unwrap_or_else(|| r#"{"mcpServers":{}}"#.into()));
         a.push(if self.resume { "--resume" } else { "--session-id" }.into());
         a.push(self.session_id.clone());
         if !self.persona.is_empty() {
@@ -282,13 +306,28 @@ mod tests {
         let s = ClaudeSpec::new("sid".into(), false, "你是 Alice".into(), ".".into());
         let a = s.args();
         assert!(a.windows(2).any(|w| w == ["--session-id", "sid"]));
-        assert!(a.contains(&"--safe-mode".to_string()));
+        assert!(!a.contains(&"--safe-mode".to_string()), "--safe-mode 会关掉 MCP");
+        assert!(a.windows(2).any(|w| w == ["--setting-sources", ""]), "空的设置来源");
+        assert!(a.contains(&"--strict-mcp-config".to_string()) && a.contains(&"--disable-slash-commands".to_string()));
+        assert!(a.windows(2).any(|w| w == ["--mcp-config", r#"{"mcpServers":{}}"#]), "没有 MCP 时也要屏蔽用户的 MCP");
         assert!(a.windows(2).any(|w| w == ["--permission-prompt-tool", "stdio"]));
         assert!(a.windows(2).any(|w| w == ["--append-system-prompt", "你是 Alice"]));
         let s = ClaudeSpec::new("sid".into(), true, String::new(), ".".into());
         let a = s.args();
         assert!(a.windows(2).any(|w| w == ["--resume", "sid"]));
         assert!(!a.contains(&"--append-system-prompt".to_string()));
+    }
+
+    #[test]
+    fn mcp_config_points_at_our_own_server_with_fixed_identity() {
+        let mut s = ClaudeSpec::new("sid".into(), false, String::new(), ".".into());
+        s.mcp = Some(McpLaunch { exe: "/bin/crewforge".into(), args: vec!["mcp-serve".into(), "--employee".into(), "e1".into()] });
+        let a = s.args();
+        let i = a.iter().position(|x| x == "--mcp-config").unwrap();
+        let v: Value = serde_json::from_str(&a[i + 1]).unwrap();
+        assert_eq!(v["mcpServers"]["crewforge"]["command"], "/bin/crewforge");
+        assert_eq!(v["mcpServers"]["crewforge"]["args"], json!(["mcp-serve", "--employee", "e1"]));
+        assert_eq!(v["mcpServers"].as_object().unwrap().len(), 1, "只有我们自己的服务器");
     }
 
     #[test]

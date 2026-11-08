@@ -5,6 +5,7 @@
 //!   crewforge employee list
 //!   crewforge run [--cwd 目录] [--max 并发数] <员工> <任务> [<员工> <任务> ...]
 //!   crewforge sessions
+//!   crewforge mcp-serve --data-dir D --employee E --project P --origin O   （内部使用：团队协作工具的 MCP 服务器）
 //!   crewforge cost [天数]                 成本与额度汇总（费用为 CLI 报告的等值估算，未知的数据不计入）
 //!   crewforge scan [目录]                 只读扫描项目（技术栈、结构、Git 历史、建议的基线命令）
 //!   crewforge init-repo [目录]            初始化 Git 仓库（worktree 需要至少一个提交）
@@ -71,6 +72,10 @@ impl Observer for Printer {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // MCP 服务器模式：由 Claude Code 启动，stdout 只能输出协议消息，所以要在任何其他初始化之前处理
+    if args.first().map(String::as_str) == Some("mcp-serve") {
+        return crewforge_core::mcp::run_from_args(&args[1..]);
+    }
     let data_dir = crewforge_core::db::default_data_dir();
     let db = Arc::new(Db::open(&data_dir)?);
     let orch = Arc::new(Orchestrator::new(db.clone(), Arc::new(WorkspaceManager::new(&data_dir))));

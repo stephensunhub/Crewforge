@@ -52,7 +52,7 @@ export function IssuesView({ projectId, views, members, onChanged, onError, onDi
                 <div className="card clickable" key={v.issue.id} onClick={() => setOpenId(v.issue.id)}>
                   <div className="card-top">
                     <div style={{ minWidth: 0 }}><b>{v.issue.title}</b>
-                      <div className="hint">{ISSUE_KIND_LABEL[v.issue.kind]}{v.issue.high_risk ? " · 高风险" : ""}</div></div>
+                      <div className="hint">{ISSUE_KIND_LABEL[v.issue.kind]}{v.issue.high_risk ? " · 高风险" : ""}{v.raised_by_name ? ` · ${v.raised_by_name} 提议` : ""}</div></div>
                     <span className={`badge st-${v.issue.status}`}>{ISSUE_STATUS_LABEL[v.issue.status]}</span>
                   </div>
                   {v.issue.summary && <div className="card-persona">{v.issue.summary}</div>}
@@ -60,6 +60,7 @@ export function IssuesView({ projectId, views, members, onChanged, onError, onDi
                     <span className="chip static">{v.options.length} 个方案</span>
                     <span className="chip static">拍板：{v.decider}</span>
                     {v.issue.status === "pending_decision" && <span className="chip static" style={{ color: "var(--warn)" }}>等待裁决</span>}
+                    {v.issue.status === "open" && v.raised_by_name && <span className="chip static" style={{ color: "var(--warn)" }}>等你确认是否讨论</span>}
                   </div>
                   {v.issue.decision && <div className="note ok">决议：{v.issue.decision}</div>}
                   {v.superseded_by && <div className="note warn">已被《{v.superseded_by[1]}》取代</div>}
@@ -140,6 +141,7 @@ function IssueDetail({ v, members, onClose, guard, onDiscuss, onSupersede }: {
           <span className="chip static">负责人：{v.owner_name ?? "未指定"}</span>
           <span className="chip static">拍板：{v.decider}</span>
         </div>
+        {i.status === "open" && v.raised_by_name && <div className="note warn">这是 {v.raised_by_name} 提议的议题。你确认值得讨论之后，才会进入讨论；不值得就驳回。</div>}
         {v.supersedes_title && <div className="note warn">取代了：《{v.supersedes_title}》</div>}
         {v.superseded_by && <div className="note warn">已被《{v.superseded_by[1]}》取代</div>}
         {i.summary && <div style={{ whiteSpace: "pre-wrap" }}>{i.summary}</div>}
@@ -176,9 +178,13 @@ function IssueDetail({ v, members, onClose, guard, onDiscuss, onSupersede }: {
 
         <div className="form-btns" style={{ justifyContent: "flex-start", flexWrap: "wrap" }}>
           {i.status === "pending_decision" && <button className="btn primary" onClick={() => setDeciding(true)}>拍板</button>}
-          {(NEXT[i.status] ?? []).map(([to, label]) => (
+          {(NEXT[i.status] ?? []).map(([to, plain]) => {
+            // 员工提议的议题在“待讨论”阶段，操作的含义是接受或驳回提议
+            const label = i.status === "open" && v.raised_by_name ? (to === "discussing" ? "接受，开始讨论" : "驳回提议") : plain;
+            return (
             <button key={to} className="btn" onClick={async () => { if (await guard(() => api.setIssueStatus(i.id, to))) onClose(); }}>{label}</button>
-          ))}
+            );
+          })}
           {editable && <button className="btn" onClick={onDiscuss}>发起会议讨论</button>}
           {["decided", "implementing", "closed"].includes(i.status) && !v.superseded_by && <button className="btn" onClick={onSupersede}>推翻并重新讨论</button>}
         </div>

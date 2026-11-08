@@ -41,6 +41,7 @@ export const api = {
   // 议题
   issues: (projectId: string) => invoke<IssueView[]>("list_issues", { projectId }),
   pendingDecisions: () => invoke<PendingDecision[]>("pending_decisions"),
+  pendingProposals: () => invoke<PendingDecision[]>("pending_proposals"),
   createIssue: (a: { projectId: string; title: string; summary: string; kind: string; highRisk: boolean; ownerId: string | null; supersedes: string | null }) =>
     invoke<void>("create_issue", a),
   addOption: (issueId: string, title: string, description: string) => invoke<void>("add_issue_option", { issueId, title, description }),

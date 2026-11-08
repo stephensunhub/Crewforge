@@ -20,6 +20,8 @@ pub struct Orchestrator {
     pub ws: Arc<WorkspaceManager>,
     /// CLI 可执行文件，默认 `claude`；测试中替换为假的 CLI
     pub program: String,
+    /// 提供团队协作工具（MCP）所用的可执行文件：就是应用或命令行自身的 `mcp-serve` 子命令；None 表示不提供
+    pub mcp_exe: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,7 +43,7 @@ fn title_of(prompt: &str) -> String {
 
 impl Orchestrator {
     pub fn new(db: Arc<Db>, ws: Arc<WorkspaceManager>) -> Self {
-        Self { db, ws, program: "claude".into() }
+        Self { db, ws, program: "claude".into(), mcp_exe: std::env::current_exe().ok() }
     }
 
     /// 给员工分配工作：继续其进行中的任务，没有则新建任务和分支。
@@ -77,6 +79,7 @@ impl Orchestrator {
         let cfg = TurnConfig {
             project_path: PathBuf::from(&task.worktree_path),
             task_id: Some(task.id.clone()),
+            mcp: project_id.as_deref().and_then(|p| self.mcp_launch(&employee.id, p, &format!("task:{}", task.id))),
             attr_project: project_id.clone(),
             project_id,
             read_only: false,

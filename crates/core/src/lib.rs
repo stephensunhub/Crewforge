@@ -3,6 +3,7 @@
 pub mod board;
 pub mod cost;
 pub mod db;
+pub mod mcp;
 pub mod meeting;
 pub mod onboarding;
 pub mod memory;

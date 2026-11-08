@@ -242,6 +242,8 @@ impl Db {
     }
 
     fn init(conn: Connection, jsonl: Option<File>) -> Result<Self> {
+        // MCP 服务器是另一个进程，会和应用同时写同一个库：忙时等待而不是立刻报错
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
@@ -468,6 +470,18 @@ impl Db {
 
     pub fn recent_events(&self, limit: usize) -> Result<Vec<EventRow>> {
         self.query_events("", &[], limit)
+    }
+
+    pub fn max_event_id(&self) -> Result<i64> {
+        Ok(self.conn.lock().unwrap().query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))?)
+    }
+
+    /// id 大于 `after_id` 的事件，按 id 升序。用于把**其他进程**（MCP 服务器、命令行）写入的事件推送给界面。
+    pub fn events_after(&self, after_id: i64, limit: usize) -> Result<Vec<EventRow>> {
+        let mut v = self.query_events("WHERE id > ?1", &[&after_id], usize::MAX / 2)?;
+        v.sort_by_key(|e| e.id);
+        v.truncate(limit);
+        Ok(v)
     }
 
     /// 某个项目的最近事件（项目群聊使用）。
@@ -827,6 +841,19 @@ mod tests {
         assert_eq!(v.len(), 3);
         assert_eq!(v[0].payload["i"], 2);
         assert_eq!(v[2].payload["i"], 4);
+    }
+
+    #[test]
+    fn events_after_returns_only_newer_events_in_order() {
+        let db = Db::open_memory().unwrap();
+        assert_eq!(db.max_event_id().unwrap(), 0);
+        for i in 0..5 { db.append_event("t", None, None, &json!({"i": i})).unwrap(); }
+        let first = db.events_after(0, 100).unwrap();
+        assert_eq!(first.iter().map(|e| e.payload["i"].as_i64().unwrap()).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
+        let mid = first[2].id;
+        assert_eq!(db.events_after(mid, 100).unwrap().len(), 2);
+        assert_eq!(db.events_after(mid, 1).unwrap()[0].payload["i"], 3, "limit 取最早的几条，保证不漏");
+        assert!(db.events_after(db.max_event_id().unwrap(), 10).unwrap().is_empty());
     }
 
     #[test]

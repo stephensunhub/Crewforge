@@ -40,6 +40,8 @@ pub struct TurnConfig {
     pub purpose: String,
     /// 成本归属的项目（与事件在哪个群里可见无关）
     pub attr_project: Option<String>,
+    /// 提供给员工的团队协作工具（议题、记忆提议等）；None 表示不提供
+    pub mcp: Option<crate::provider::claude::McpLaunch>,
     /// 测试时可替换为假的 CLI
     pub program: String,
 }
@@ -70,6 +72,10 @@ pub async fn run_turn<A: Approver, O: Observer>(
 
     let mut spec = ClaudeSpec::new(session.id.clone(), session.started, employee.persona.clone(), cfg.project_path.clone());
     spec.program = cfg.program.clone();
+    if cfg.mcp.is_some() {
+        spec.persona = format!("{}\n\n{}", spec.persona, crate::mcp::TEAM_TOOLS_HINT);
+        spec.mcp = cfg.mcp.clone();
+    }
     let policy = if cfg.read_only { Policy::read_only(&cfg.project_path) } else { Policy::new(&cfg.project_path) };
 
     db.set_session_status(&session.id, "running")?;

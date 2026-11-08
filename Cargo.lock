@@ -422,6 +422,7 @@ dependencies = [
  "anyhow",
  "crewforge-core",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

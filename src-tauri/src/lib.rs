@@ -14,10 +14,21 @@ pub fn run() {
         .setup(|app| {
             let data_dir = default_data_dir();
             let db = Arc::new(Db::open(&data_dir)?);
-            // 每条落库的事件实时推送给界面
+            // 把事件表里的新增事件推送给界面。不用进程内的钩子：MCP 服务器和命令行是别的进程，
+            // 它们写入的事件只有通过读库才看得到。
             let handle = app.handle().clone();
-            db.set_event_hook(move |e| {
-                let _ = handle.emit("crewforge://event", e);
+            let poll_db = db.clone();
+            std::thread::spawn(move || {
+                let mut last = poll_db.max_event_id().unwrap_or(0);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    if let Ok(events) = poll_db.events_after(last, 500) {
+                        for e in events {
+                            last = e.id;
+                            let _ = handle.emit("crewforge://event", &e);
+                        }
+                    }
+                }
             });
             app.manage(state::AppState::new(db, &data_dir));
             Ok(())
@@ -33,6 +44,7 @@ pub fn run() {
             commands::latest_task_check,
             commands::list_issues,
             commands::pending_decisions,
+            commands::pending_proposals,
             commands::create_issue,
             commands::update_issue,
             commands::add_issue_option,

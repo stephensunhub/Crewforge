@@ -158,6 +158,7 @@ impl Orchestrator {
             task_id: None,
             project_id: None, // 不进入项目群聊的事件流，会议内容只在会议里显示
             read_only: true,
+            mcp: self.mcp_launch(&employee.id, &meeting.project_id, &format!("meeting:{meeting_id}")),
             purpose: "meeting".into(),
             attr_project: Some(meeting.project_id.clone()),
             meeting_id: Some(meeting_id.into()),
@@ -202,6 +203,7 @@ impl Orchestrator {
             task_id: None,
             project_id: None,
             read_only: true,
+            mcp: None,
             purpose: "minutes".into(),
             attr_project: Some(meeting.project_id.clone()),
             meeting_id: Some(meeting_id.into()),

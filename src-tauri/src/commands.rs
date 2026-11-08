@@ -291,6 +291,11 @@ pub fn pending_decisions(state: State<'_, AppState>) -> CmdResult<Vec<PendingDec
 }
 
 #[tauri::command]
+pub fn pending_proposals(state: State<'_, AppState>) -> CmdResult<Vec<PendingDecision>> {
+    state.db.ai_proposals().map_err(err)
+}
+
+#[tauri::command]
 pub fn create_issue(
     state: State<'_, AppState>, project_id: String, title: String, summary: String, kind: String,
     high_risk: bool, owner_id: Option<String>, supersedes: Option<String>,

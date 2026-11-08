@@ -139,6 +139,14 @@ export function Chat({
       case "task_failed":
       case "task_error":
         return <div className="line bad" key={e.id}><span>✗ {name} 任务失败：{short(String(p.error ?? ""), 200)}</span>{t}</div>;
+      case "agent_proposed": {
+        const icons: Record<string, string> = { issue: "💡", option: "➕", request_decision: "🗳", memory: "🧠" };
+        const text: Record<string, string> = {
+          issue: `提议了议题《${p.title}》，等你确认`, option: `给《${p.issue_title}》补充了方案《${p.title}》`,
+          request_decision: `请求拍板《${p.title}》${p.note ? `：${p.note}` : ""}`, memory: `提议了一条经验《${p.title}》，等你验证`,
+        };
+        return <div className="line warn" key={e.id}><span>{icons[p.type] ?? "•"} {name} {text[p.type] ?? "提出了建议"}</span>{t}</div>;
+      }
       case "project_created":
         return <div className="line" key={e.id}><span>📁 项目「{p.name}」已创建</span>{t}</div>;
       default:
