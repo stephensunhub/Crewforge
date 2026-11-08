@@ -1,5 +1,8 @@
 use crate::approval::Pending;
 use crewforge_core::db::Db;
+use crewforge_core::orchestrator::Orchestrator;
+use crewforge_core::workspace::WorkspaceManager;
+use std::path::Path;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
@@ -11,6 +14,8 @@ pub const MAX_CONCURRENCY: usize = 50;
 
 pub struct AppState {
     pub db: Arc<Db>,
+    pub orch: Arc<Orchestrator>,
+    pub ws: Arc<WorkspaceManager>,
     pub pending: Pending,
     pub sem: Arc<Semaphore>,
     limit: Arc<Mutex<usize>>,
@@ -19,8 +24,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(db: Arc<Db>) -> Self {
+    pub fn new(db: Arc<Db>, data_dir: &Path) -> Self {
+        let ws = Arc::new(WorkspaceManager::new(data_dir));
         Self {
+            orch: Arc::new(Orchestrator::new(db.clone(), ws.clone())),
+            ws,
             db,
             pending: Pending::default(),
             sem: Arc::new(Semaphore::new(DEFAULT_CONCURRENCY)),

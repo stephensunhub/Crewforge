@@ -24,7 +24,10 @@ impl Observer for NoopObserver {
 }
 
 pub struct TurnConfig {
+    /// 员工的工作目录（任务所在的 worktree）
     pub project_path: PathBuf,
+    /// 关联的任务，写入事件，便于追溯每次执行属于哪个任务
+    pub task_id: Option<String>,
     /// 测试时可替换为假的 CLI
     pub program: String,
 }
@@ -57,7 +60,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
     let policy = Policy::new(&cfg.project_path);
 
     db.set_session_status(&session.id, "running")?;
-    db.append_event("task_started", eid, sid, &json!({"prompt": prompt, "resume": session.started}))?;
+    db.append_event("task_started", eid, sid, &json!({"prompt": prompt, "resume": session.started, "task_id": cfg.task_id}))?;
 
     let mut proc = match ClaudeProcess::spawn(&spec, &effective_prompt).await {
         Ok(p) => p,
@@ -103,7 +106,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
                 }
                 AgentEvent::Result(r) => {
                     db.append_event("turn_result", eid, sid, &json!({
-                        "is_error": r.is_error, "subtype": r.subtype, "cost_usd": r.cost_usd,
+                        "task_id": cfg.task_id, "is_error": r.is_error, "subtype": r.subtype, "cost_usd": r.cost_usd,
                         "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
                         "cache_read_tokens": r.cache_read_tokens, "cache_creation_tokens": r.cache_creation_tokens,
                     }))?;

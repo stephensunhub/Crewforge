@@ -29,3 +29,43 @@ export interface ApprovalReq {
   input: any;
   reason: string;
 }
+
+export interface RepoStatus {
+  is_repo: boolean;
+  root: string | null;
+  branch: string | null;
+  has_commits: boolean;
+  dirty: boolean;
+}
+export interface FileChange {
+  path: string;
+  insertions: number | null;
+  deletions: number | null;
+  untracked: boolean;
+}
+export interface Task {
+  id: string;
+  repo_path: string;
+  employee_id: string;
+  title: string;
+  branch: string;
+  base_branch: string;
+  base_commit: string;
+  worktree_path: string;
+  status: "active" | "merged" | "abandoned";
+  merged_commit: string | null;
+  created_at: number;
+  updated_at: number;
+}
+export interface TaskView {
+  task: Task;
+  employee_name: string;
+  files: FileChange[];
+  merge: { clean: boolean; conflicts: string[] } | null;
+  overlaps: { path: string; task_ids: string[] }[];
+}
+export type MergeOutcome =
+  | { outcome: "merged"; commit: string }
+  | { outcome: "empty" }
+  | { outcome: "conflict"; files: string[] }
+  | { outcome: "blocked"; reason: string };

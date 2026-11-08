@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, subscribe } from "./api";
-import type { ApprovalReq, Employee, EventRow, Session } from "./types";
+import { TasksPanel } from "./TasksPanel";
+import type { ApprovalReq, Employee, EventRow, RepoStatus, Session, TaskView } from "./types";
 
 const PROJECT_KEY = "crewforge.project";
 const CONCURRENCY_KEY = "crewforge.concurrency";
+const TASK_EVENTS = ["task_created", "checkpoint_committed", "checkpoint_failed", "task_merged", "task_merge_blocked", "task_abandoned", "turn_result", "task_failed", "task_error"];
 const MAX_EVENTS = 1500;
 const COLORS = ["#ffb347", "#6ec1ff", "#9be37a", "#e58bff", "#ff8a8a", "#7fe3d0"];
 
@@ -51,6 +53,9 @@ export default function App() {
   const [showNew, setShowNew] = useState(false);
   const [concurrency, setConcurrency] = useState(3);
   const [filter, setFilter] = useState("");
+  const [repo, setRepo] = useState<RepoStatus | null>(null);
+  const [taskViews, setTaskViews] = useState<TaskView[]>([]);
+  const [panelOpen, setPanelOpen] = useState(true);
   const [dataDir, setDataDir] = useState("");
   const feedRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -64,6 +69,23 @@ export default function App() {
     } catch (e) { setError(String(e)); }
   }, []);
 
+  const refreshRepo = useCallback(async () => {
+    if (!project) { setRepo(null); setTaskViews([]); return; }
+    try {
+      const [r, t] = await Promise.all([api.repoStatus(project), api.taskViews(project)]);
+      setRepo(r); setTaskViews(t);
+    } catch (e) { setError(String(e)); }
+  }, [project]);
+  // 事件到来时合并刷新，避免一轮任务里连续触发多次
+  const refreshTimer = useRef<number | undefined>(undefined);
+  const refreshSoon = useCallback(() => {
+    window.clearTimeout(refreshTimer.current);
+    refreshTimer.current = window.setTimeout(() => void refreshRepo(), 400);
+  }, [refreshRepo]);
+  const refreshSoonRef = useRef(refreshSoon);
+  refreshSoonRef.current = refreshSoon;
+  useEffect(() => { void refreshRepo(); }, [refreshRepo]);
+
   useEffect(() => {
     void reload();
     // 并发上限由界面持久化，启动时同步给后端
@@ -76,6 +98,7 @@ export default function App() {
         if (e.kind === "employee_created") void api.employees().then(setEmployees);
         if (["task_started", "turn_result", "task_failed", "task_error"].includes(e.kind))
           void api.sessions().then(setSessions);
+        if (TASK_EVENTS.includes(e.kind)) refreshSoonRef.current();
       },
       onApproval: (a) => setApprovals((p) => [...p, a]),
       onRunning: setRunning,
@@ -131,6 +154,15 @@ export default function App() {
 
   const hasSession = (empId: string) => sessions.some((s) => s.employee_id === empId && s.project_path === project);
 
+  async function initRepository() {
+    try { await api.initRepo(project); await refreshRepo(); } catch (e) { setError(String(e)); }
+  }
+  const repoProblem = !project || !repo ? null
+    : !repo.is_repo ? "not_repo"
+    : !repo.has_commits ? "no_commits"
+    : !repo.branch ? "detached" : null;
+  const activeTasks = taskViews.filter((v) => v.task.status === "active");
+
   async function pickProject() {
     try { const p = await api.pickDirectory(); if (p) setProject(p); } catch (e) { setError(String(e)); }
   }
@@ -147,6 +179,7 @@ export default function App() {
     const body = text.trim();
     if (!body) return;
     if (!project) { setError("请先选择项目目录"); return; }
+    if (repoProblem) { setError("当前目录还不能分配任务，请先处理页面上方的 Git 提示"); return; }
     const names = [...body.matchAll(/@([^\s@]+)/g)].map((m) => m[1]).filter((n) => employees.some((e) => e.name === n));
     const targets = [...new Set(names)];
     if (targets.length === 0) { setError("请用 @员工名 指定要找谁，例如 @alice"); return; }
@@ -179,6 +212,18 @@ export default function App() {
         );
       case "task_queued":
         return <div className="line warn" key={e.id}><span>⏸ {name} 排队中：并发已满（上限 {concurrency}），有空位后自动开始</span><span className="time">{hhmm(e.ts)}</span></div>;
+      case "task_created":
+        return <div className="line" key={e.id}><span>🌿 {name} 开始新任务</span><span className="t">{p.title}</span><code>{p.branch}</code><span className="time">{hhmm(e.ts)}</span></div>;
+      case "checkpoint_committed":
+        return <div className="line" key={e.id}><span>💾 {name} 保存检查点</span><span>{p.files} 个文件 <span style={{ color: "var(--ok)" }}>+{p.insertions}</span> <span style={{ color: "var(--bad)" }}>−{p.deletions}</span></span><code>{String(p.commit).slice(0, 8)}</code><span className="time">{hhmm(e.ts)}</span></div>;
+      case "checkpoint_failed":
+        return <div className="line bad" key={e.id}><span>✗ {name} 检查点保存失败：{short(String(p.error ?? ""), 160)}</span><span className="time">{hhmm(e.ts)}</span></div>;
+      case "task_merged":
+        return <div className="line ok" key={e.id}><span>🔀 已合并 {name} 的任务</span><span className="t">{p.title}</span>{p.commit && <code>{String(p.commit).slice(0, 8)}</code>}<span className="time">{hhmm(e.ts)}</span></div>;
+      case "task_merge_blocked":
+        return <div className="line bad" key={e.id}><span>⛔ {name} 的任务未能合并</span><span>{p.kind === "conflict" ? `冲突：${(p.files ?? []).join("、")}` : p.reason}</span><span className="time">{hhmm(e.ts)}</span></div>;
+      case "task_abandoned":
+        return <div className="line" key={e.id}><span>🗑 {name} 的任务已放弃（分支 {p.branch} 保留）</span><span className="time">{hhmm(e.ts)}</span></div>;
       case "agent_text":
         return (
           <div className="msg" key={e.id}>
@@ -297,11 +342,23 @@ export default function App() {
               <input type="number" min={1} max={50} value={concurrency} onChange={(e) => void changeConcurrency(Number(e.target.value))} />
             </label>
           </div>
+          <button className="btn" onClick={() => setPanelOpen((v) => !v)}>
+            任务{activeTasks.length > 0 ? ` (${activeTasks.length})` : ""}
+          </button>
           <label className="tog"><input type="checkbox" checked={verbose} onChange={(e) => setVerbose(e.target.checked)} />显示自动放行</label>
         </header>
 
+        {repoProblem === "not_repo" && (
+          <div className="banner info">
+            <span>这个目录还不是 Git 仓库。员工需要在隔离的 Git 工作区里工作，请先初始化。</span>
+            <button className="btn" onClick={initRepository}>初始化 Git 仓库</button>
+          </div>
+        )}
+        {repoProblem === "no_commits" && <div className="banner info"><span>仓库还没有任何提交，无法创建员工工作区。请先在项目里提交一次。</span></div>}
+        {repoProblem === "detached" && <div className="banner info"><span>主工作区处于游离 HEAD，请先切换到某个分支。</span></div>}
         {error && <div className="banner"><span>{error}</span><button onClick={() => setError("")}>✕</button></div>}
 
+        <div className="body"><div className="col">
         <div className="feed" ref={feedRef} onScroll={(e) => {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -344,6 +401,11 @@ export default function App() {
           <div className="chips">
             <span className="hint">{mention ? "选择员工（Tab 补全第一个）" : employees.length > 6 ? "输入 @ 搜索员工" : "@"}</span>
             {suggestions.map((e) => <button key={e.id} className="chip" onClick={() => insertMention(e.name)}>{e.name}</button>)}
+            {!mention && (() => {
+              const m = [...text.matchAll(/@([^\s@]+)/g)].map((x) => x[1]);
+              const cont = activeTasks.filter((v) => m.includes(v.employee_name));
+              return cont.length > 0 ? <span className="hint">↻ 将继续：{cont.map((v) => `${v.employee_name}《${v.task.title}》`).join("、")}</span> : null;
+            })()}
             {mention && suggestions.length === 0 && <span className="hint">没有匹配的员工</span>}
           </div>
           <div className="row">
@@ -360,6 +422,11 @@ export default function App() {
             <button className="btn primary" disabled={!text.trim()} onClick={() => void send()}>发送</button>
           </div>
         </footer>
+        </div>
+        {panelOpen && (
+          <TasksPanel views={taskViews} busy={running} onChanged={() => { void refreshRepo(); }} onError={setError} />
+        )}
+        </div>
       </section>
     </div>
   );

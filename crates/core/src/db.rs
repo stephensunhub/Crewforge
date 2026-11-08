@@ -13,9 +13,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SCHEMA_VERSION: i64 = 1;
+/// 迁移列表：下标 + 1 即版本号。只能追加，不能修改已发布的迁移。
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2];
 
-const SCHEMA: &str = r#"
+const MIGRATION_1: &str = r#"
 CREATE TABLE employees (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
@@ -45,6 +46,27 @@ CREATE INDEX idx_events_session ON events(session_id, id);
 CREATE INDEX idx_events_kind ON events(kind, id);
 "#;
 
+/// 任务：员工在某个仓库里的一项工作，对应一个分支。
+/// 员工在每个仓库有一个持久的 worktree（便于复用 CLI 会话），任务以分支区分。
+const MIGRATION_2: &str = r#"
+CREATE TABLE tasks (
+    id             TEXT PRIMARY KEY,
+    repo_path      TEXT NOT NULL,
+    employee_id    TEXT NOT NULL REFERENCES employees(id),
+    title          TEXT NOT NULL,
+    branch         TEXT NOT NULL,
+    base_branch    TEXT NOT NULL,
+    base_commit    TEXT NOT NULL,
+    worktree_path  TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'active', -- active | merged | abandoned
+    merged_commit  TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+CREATE INDEX idx_tasks_employee ON tasks(employee_id, repo_path, status);
+CREATE INDEX idx_tasks_repo ON tasks(repo_path, created_at);
+"#;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Employee {
     pub id: String,
@@ -60,6 +82,22 @@ pub struct Session {
     pub project_path: String,
     pub status: String,
     pub started: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Task {
+    pub id: String,
+    pub repo_path: String,
+    pub employee_id: String,
+    pub title: String,
+    pub branch: String,
+    pub base_branch: String,
+    pub base_commit: String,
+    pub worktree_path: String,
+    pub status: String,
+    pub merged_commit: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -118,11 +156,14 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version == 0 {
-            conn.execute_batch(SCHEMA)?;
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        } else if version != SCHEMA_VERSION {
-            anyhow::bail!("数据库版本 {version} 与程序版本 {SCHEMA_VERSION} 不一致，尚未实现迁移");
+        let latest = MIGRATIONS.len() as i64;
+        if version > latest {
+            anyhow::bail!("数据库版本 {version} 高于程序支持的版本 {latest}，请升级程序");
+        }
+        for (i, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
+            // 每个迁移在一个事务内完成，失败则整体回滚
+            conn.execute_batch(&format!("BEGIN;\n{sql}\nPRAGMA user_version = {};\nCOMMIT;", i + 1))
+                .with_context(|| format!("执行数据库迁移 {} 失败", i + 1))?;
         }
         Ok(Self { conn: Mutex::new(conn), jsonl: Mutex::new(jsonl), hook: Mutex::new(None) })
     }
@@ -155,6 +196,19 @@ impl Db {
             .query_row(
                 "SELECT id, name, role, persona FROM employees WHERE name = ?1",
                 [name],
+                |r| Ok(Employee { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, persona: r.get(3)? }),
+            )
+            .optional()?)
+    }
+
+    pub fn employee_by_id(&self, id: &str) -> Result<Option<Employee>> {
+        Ok(self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id, name, role, persona FROM employees WHERE id = ?1",
+                [id],
                 |r| Ok(Employee { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, persona: r.get(3)? }),
             )
             .optional()?)
@@ -224,6 +278,56 @@ impl Db {
         Ok(())
     }
 
+    pub fn create_task(&self, t: &Task) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO tasks (id, repo_path, employee_id, title, branch, base_branch, base_commit,
+                                worktree_path, status, merged_commit, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            params![t.id, t.repo_path, t.employee_id, t.title, t.branch, t.base_branch, t.base_commit,
+                    t.worktree_path, t.status, t.merged_commit, t.created_at, t.updated_at],
+        )?;
+        Ok(())
+    }
+
+    /// 员工在某仓库里正在进行的任务（同一时刻至多一个）。
+    pub fn active_task(&self, employee_id: &str, repo_path: &str) -> Result<Option<Task>> {
+        Ok(self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                &format!("{TASK_SELECT} WHERE employee_id = ?1 AND repo_path = ?2 AND status = 'active'"),
+                params![employee_id, repo_path],
+                row_to_task,
+            )
+            .optional()?)
+    }
+
+    pub fn get_task(&self, id: &str) -> Result<Option<Task>> {
+        Ok(self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(&format!("{TASK_SELECT} WHERE id = ?1"), [id], row_to_task)
+            .optional()?)
+    }
+
+    /// 某仓库的任务，最新的在前。
+    pub fn list_tasks(&self, repo_path: &str) -> Result<Vec<Task>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&format!("{TASK_SELECT} WHERE repo_path = ?1 ORDER BY created_at DESC"))?;
+        let rows = stmt.query_map([repo_path], row_to_task)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn set_task_status(&self, id: &str, status: &str, merged_commit: Option<&str>) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE tasks SET status = ?2, merged_commit = COALESCE(?3, merged_commit), updated_at = ?4 WHERE id = ?1",
+            params![id, status, merged_commit, now_ms()],
+        )?;
+        Ok(())
+    }
+
     /// 追加事件：先写 SQLite，再写 JSONL。返回事件 id。
     pub fn append_event(
         &self,
@@ -283,6 +387,26 @@ impl Db {
     }
 }
 
+const TASK_SELECT: &str = "SELECT id, repo_path, employee_id, title, branch, base_branch, base_commit,
+    worktree_path, status, merged_commit, created_at, updated_at FROM tasks";
+
+fn row_to_task(r: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+    Ok(Task {
+        id: r.get(0)?,
+        repo_path: r.get(1)?,
+        employee_id: r.get(2)?,
+        title: r.get(3)?,
+        branch: r.get(4)?,
+        base_branch: r.get(5)?,
+        base_commit: r.get(6)?,
+        worktree_path: r.get(7)?,
+        status: r.get(8)?,
+        merged_commit: r.get(9)?,
+        created_at: r.get(10)?,
+        updated_at: r.get(11)?,
+    })
+}
+
 fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
     Ok(Session {
         id: r.get(0)?,
@@ -339,6 +463,50 @@ mod tests {
         db.append_event("a", None, None, &json!({})).unwrap();
         db.append_event("b", None, None, &json!({})).unwrap();
         assert_eq!(*seen.lock().unwrap(), vec!["a", "b"]);
+    }
+
+    fn sample_task(emp: &str, id: &str) -> Task {
+        Task {
+            id: id.into(), repo_path: "/r".into(), employee_id: emp.into(), title: "t".into(),
+            branch: format!("b-{id}"), base_branch: "main".into(), base_commit: "abc".into(),
+            worktree_path: "/w".into(), status: "active".into(), merged_commit: None,
+            created_at: 1, updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn task_lifecycle() {
+        let db = Db::open_memory().unwrap();
+        let a = db.add_employee("alice", "fullstack", "p").unwrap();
+        db.create_task(&sample_task(&a.id, "t1")).unwrap();
+        assert_eq!(db.active_task(&a.id, "/r").unwrap().unwrap().id, "t1");
+        assert!(db.active_task(&a.id, "/other").unwrap().is_none());
+        db.set_task_status("t1", "merged", Some("deadbeef")).unwrap();
+        assert!(db.active_task(&a.id, "/r").unwrap().is_none());
+        let t = db.get_task("t1").unwrap().unwrap();
+        assert_eq!((t.status.as_str(), t.merged_commit.as_deref()), ("merged", Some("deadbeef")));
+        db.create_task(&sample_task(&a.id, "t2")).unwrap();
+        assert_eq!(db.list_tasks("/r").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn migrates_v1_database_to_latest() {
+        let dir = std::env::temp_dir().join(format!("crewforge-mig-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            // 模拟只有 v1 结构的旧数据库，并带有数据
+            let c = Connection::open(dir.join("crewforge.db")).unwrap();
+            c.execute_batch(MIGRATION_1).unwrap();
+            c.pragma_update(None, "user_version", 1).unwrap();
+            c.execute("INSERT INTO employees (id,name,role,persona,created_at) VALUES ('e','old','r','p',1)", []).unwrap();
+        }
+        let db = Db::open(&dir).unwrap();
+        assert_eq!(db.employee_by_name("old").unwrap().unwrap().id, "e");
+        db.create_task(&sample_task("e", "t1")).unwrap();
+        drop(db);
+        // 再次打开不会重复迁移
+        assert!(Db::open(&dir).unwrap().get_task("t1").unwrap().is_some());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

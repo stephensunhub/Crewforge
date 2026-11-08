@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
-import type { ApprovalReq, Employee, EventRow, Session } from "./types";
+import { ask, open } from "@tauri-apps/plugin-dialog";
+import type { ApprovalReq, Employee, EventRow, MergeOutcome, RepoStatus, Session, TaskView } from "./types";
 
 export const api = {
   employees: () => invoke<Employee[]>("list_employees"),
@@ -16,6 +16,14 @@ export const api = {
   runTask: (employee: string, prompt: string, projectPath: string) =>
     invoke<void>("run_task", { employee, prompt, projectPath }),
   respondApproval: (id: string, allow: boolean) => invoke<boolean>("respond_approval", { id, allow }),
+  repoStatus: (projectPath: string) => invoke<RepoStatus>("repo_status", { projectPath }),
+  initRepo: (projectPath: string) => invoke<void>("init_repo", { projectPath }),
+  taskViews: (projectPath: string) => invoke<TaskView[]>("list_task_views", { projectPath }),
+  taskDiff: (taskId: string) => invoke<string>("task_diff", { taskId }),
+  mergeTask: (taskId: string) => invoke<MergeOutcome>("merge_task", { taskId }),
+  abandonTask: (taskId: string) => invoke<void>("abandon_task", { taskId }),
+  reveal: (taskId: string) => invoke<void>("reveal_in_finder", { taskId }),
+  confirm: (message: string, title: string) => ask(message, { title, kind: "warning", okLabel: "确认", cancelLabel: "取消" }),
   pickDirectory: async (): Promise<string | null> => {
     const r = await open({ directory: true, multiple: false });
     return typeof r === "string" ? r : null;

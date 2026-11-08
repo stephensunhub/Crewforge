@@ -5,6 +5,11 @@
 //!   crewforge employee list
 //!   crewforge run [--cwd 目录] [--max 并发数] <员工> <任务> [<员工> <任务> ...]
 //!   crewforge sessions
+//!   crewforge init-repo [目录]            初始化 Git 仓库（worktree 需要至少一个提交）
+//!   crewforge tasks [目录]                列出项目的任务、改动文件、冲突预检
+//!   crewforge diff <任务ID>               查看任务改动
+//!   crewforge merge <任务ID>              合并任务（squash）
+//!   crewforge abandon <任务ID>            放弃任务（保留分支）
 //!   crewforge events [条数]
 //!
 //! 数据目录：环境变量 CREWFORGE_HOME，默认为系统数据目录下的 Crewforge。
@@ -12,7 +17,9 @@
 use anyhow::{Result, bail};
 use crewforge_core::db::Db;
 use crewforge_core::provider::claude::{self, AgentEvent, ApprovalRequest, Decision};
-use crewforge_core::runner::{Approver, Observer, TurnConfig, run_turn};
+use crewforge_core::orchestrator::Orchestrator;
+use crewforge_core::runner::{Approver, Observer};
+use crewforge_core::workspace::{MergeOutcome, WorkspaceManager};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -62,7 +69,9 @@ impl Observer for Printer {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let db = Arc::new(Db::open(&crewforge_core::db::default_data_dir())?);
+    let data_dir = crewforge_core::db::default_data_dir();
+    let db = Arc::new(Db::open(&data_dir)?);
+    let orch = Arc::new(Orchestrator::new(db.clone(), Arc::new(WorkspaceManager::new(&data_dir))));
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["employee", "add", name, role, persona] => {
             let e = db.add_employee(name, role, persona)?;
@@ -80,7 +89,28 @@ async fn main() -> Result<()> {
         }
         ["events"] => print_events(&db, 20)?,
         ["events", n] => print_events(&db, n.parse()?)?,
-        ["run", rest @ ..] => run(db, rest).await?,
+        ["run", rest @ ..] => run(db, orch, rest).await?,
+        ["init-repo"] => init_repo(&orch, &std::env::current_dir()?).await?,
+        ["init-repo", dir] => init_repo(&orch, &PathBuf::from(dir)).await?,
+        ["tasks"] => tasks(&orch, &std::env::current_dir()?).await?,
+        ["tasks", dir] => tasks(&orch, &PathBuf::from(dir)).await?,
+        ["diff", id] => print!("{}", orch.task_diff(id).await?),
+        ["abandon", id] => {
+            orch.abandon_task(id).await?;
+            println!("已放弃，分支保留");
+        }
+        ["merge", id] => match orch.merge_task(id).await? {
+            MergeOutcome::Merged { commit } => println!("已合并: {commit}"),
+            MergeOutcome::Empty => println!("没有任何改动，无需合并"),
+            MergeOutcome::Conflict { files } => {
+                eprintln!("存在冲突，未合并: {}", files.join(", "));
+                std::process::exit(1);
+            }
+            MergeOutcome::Blocked { reason } => {
+                eprintln!("无法合并: {reason}");
+                std::process::exit(1);
+            }
+        },
         _ => {
             eprintln!("用法见 crates/cli/src/main.rs 顶部注释");
             std::process::exit(2);
@@ -96,7 +126,28 @@ fn print_events(db: &Db, n: usize) -> Result<()> {
     Ok(())
 }
 
-async fn run(db: Arc<Db>, mut args: &[&str]) -> Result<()> {
+async fn init_repo(orch: &Orchestrator, dir: &PathBuf) -> Result<()> {
+    orch.ws.init_repo(dir).await?;
+    println!("已初始化 Git 仓库: {}", dir.display());
+    Ok(())
+}
+
+async fn tasks(orch: &Orchestrator, dir: &PathBuf) -> Result<()> {
+    for v in orch.task_views(dir).await? {
+        let merge = match &v.merge {
+            Some(m) if m.clean => "可合并".to_string(),
+            Some(m) => format!("冲突: {}", m.conflicts.join(",")),
+            None => "-".into(),
+        };
+        println!("{} [{}] {} · {} · 改动 {} 个文件 · {}", v.task.id, v.task.status, v.employee_name, v.task.title, v.files.len(), merge);
+        for o in &v.overlaps {
+            println!("    ⚠ 与其他任务同时修改: {}", o.path);
+        }
+    }
+    Ok(())
+}
+
+async fn run(db: Arc<Db>, orch: Arc<Orchestrator>, mut args: &[&str]) -> Result<()> {
     let mut cwd = std::env::current_dir()?;
     let mut max = 3usize;
     loop {
@@ -118,12 +169,11 @@ async fn run(db: Arc<Db>, mut args: &[&str]) -> Result<()> {
     for pair in args.chunks(2) {
         let (name, prompt) = (pair[0].to_string(), pair[1].to_string());
         let Some(emp) = db.employee_by_name(&name)? else { bail!("员工不存在: {name}") };
-        let (db, sem, approver, cwd) = (db.clone(), sem.clone(), approver.clone(), cwd.clone());
+        let (orch, sem, approver, cwd) = (orch.clone(), sem.clone(), approver.clone(), cwd.clone());
         set.spawn(async move {
             let r = async {
                 let _permit = sem.acquire_owned().await?;
-                let cfg = TurnConfig { project_path: cwd, program: "claude".into() };
-                run_turn(&db, &emp, &cfg, &prompt, &*approver, &Printer).await
+                orch.assign(&emp, &cwd, &prompt, &*approver, &Printer).await
             }
             .await;
             (name, r)

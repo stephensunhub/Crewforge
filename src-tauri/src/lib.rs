@@ -12,13 +12,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let db = Arc::new(Db::open(&default_data_dir())?);
+            let data_dir = default_data_dir();
+            let db = Arc::new(Db::open(&data_dir)?);
             // 每条落库的事件实时推送给界面
             let handle = app.handle().clone();
             db.set_event_hook(move |e| {
                 let _ = handle.emit("crewforge://event", e);
             });
-            app.manage(state::AppState::new(db));
+            app.manage(state::AppState::new(db, &data_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -30,6 +31,13 @@ pub fn run() {
             commands::run_task,
             commands::respond_approval,
             commands::data_dir,
+            commands::repo_status,
+            commands::init_repo,
+            commands::list_task_views,
+            commands::task_diff,
+            commands::merge_task,
+            commands::abandon_task,
+            commands::reveal_in_finder,
             commands::get_concurrency,
             commands::set_concurrency,
         ])
