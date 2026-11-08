@@ -214,7 +214,7 @@ export interface Memory {
   uses: number;
 }
 
-export interface BaselineCommand { id: string; label: string; kind: string; command: string; reason: string; default_on: boolean }
+export interface BaselineCommand { id: string; label: string; kind: string; command: string; reason: string; default_on: boolean; candidate?: string | null }
 export interface ScanModule { name: string; path: string; files: number; kind: string }
 export interface GitInfo {
   is_repo: boolean; branch: string | null; head: string | null; commit_count: number | null; branch_count: number | null;

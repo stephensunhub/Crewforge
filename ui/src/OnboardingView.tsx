@@ -6,6 +6,8 @@ import type { BaselineCommand, CommandResult, EventRow, Member, OnboardingState,
 const STATUS_LABEL: Record<string, string> = { passed: "通过", failed: "失败", timeout: "超时", skipped: "跳过", error: "出错", running: "运行中" };
 const REPORT_LABEL = { architect: "全栈工程师评估", qa: "QA 评估" } as const;
 
+const KIND_OPTIONS: [string, string][] = [["setup", "准备"], ["build", "构建"], ["test", "测试"], ["lint", "检查"], ["parity", "对照"]];
+
 function Chips({ label, items }: { label: string; items: string[] }) {
   return (
     <div className="scan-row"><span className="scan-k">{label}</span>
@@ -116,8 +118,8 @@ export function OnboardingView({ projectId, members, events, running, onError, o
 
   async function startBaseline() {
     if (selected.length === 0) { onError("请至少勾选一条命令"); return; }
-    const ok = await api.confirm(`将在已提交 HEAD 的干净检出里运行这些命令（不会改动你的工作目录）：\n\n${selected.map((c) => `• ${c.command}`).join("\n")}\n\n这会执行项目里的构建脚本和测试代码。确认运行？`, "运行测试基线");
-    if (ok) await run("baseline", () => api.runBaseline(projectId, selected));
+    const ok = await api.confirm(`将在已提交 HEAD 的干净检出里运行这些命令（不会改动你的工作目录）：\n\n${selected.map((c) => (c.kind === "parity" ? `• [对照] 旧：${c.command}${c.candidate?.trim() ? `\n    新：${c.candidate}` : ""}` : `• ${c.command}`)).join("\n")}\n\n这会执行项目里的构建脚本和测试代码。确认运行？`, "运行测试基线");
+    if (ok) await run("baseline", () => api.runBaseline(projectId, selected.map((c) => ({ ...c, candidate: c.kind === "parity" && c.candidate?.trim() ? c.candidate.trim() : null }))));
   }
 
   return (
@@ -141,16 +143,30 @@ export function OnboardingView({ projectId, members, events, running, onError, o
             <div className="hint">基线记录项目<b>导入时</b>的原始构建和测试结果。命令在已提交 HEAD 的干净检出里运行，不会改动你的目录；未提交的改动不包含在内。运行前请确认命令，它们会执行项目里的代码。</div>
             {scan.git.dirty && <div className="note warn">⚠ 工作区有未提交的改动，基线不包含它们。</div>}
             <div className="cmds">
-              {cmds.map((c, i) => (
-                <div className="cmd-row" key={c.id}>
-                  <input type="checkbox" checked={!!picked[c.id]} onChange={(e) => setPicked({ ...picked, [c.id]: e.target.checked })} />
-                  <b style={{ width: 130 }}>{c.label}</b>
-                  <input value={c.command} onChange={(e) => setCmds(cmds.map((x, j) => (j === i ? { ...x, command: e.target.value } : x)))} />
-                  <span className="hint" style={{ width: 150 }}>{short(c.reason, 24)}</span>
-                </div>
-              ))}
+              {cmds.map((c, i) => {
+                const upd = (patch: Partial<BaselineCommand>) => setCmds(cmds.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+                const parity = c.kind === "parity";
+                return (
+                  <div className="cmd-row" key={c.id} style={parity ? { flexWrap: "wrap" } : undefined}>
+                    <input type="checkbox" checked={!!picked[c.id]} onChange={(e) => setPicked({ ...picked, [c.id]: e.target.checked })} />
+                    <b style={{ width: 130 }}>{c.label}</b>
+                    <select value={c.kind} onChange={(e) => upd({ kind: e.target.value, candidate: e.target.value === "parity" ? (c.candidate ?? "") : null })}>
+                      {KIND_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                    <input value={c.command} placeholder={parity ? "旧实现的命令（输出作为标准答案）" : "命令"} onChange={(e) => upd({ command: e.target.value })} />
+                    <span className="hint" style={{ width: 150 }}>{short(c.reason, 24)}</span>
+                    {parity && (
+                      <div style={{ flexBasis: "100%", display: "flex", gap: 8, paddingLeft: 26, alignItems: "center" }}>
+                        <span className="hint" style={{ width: 130 }}>新实现的命令</span>
+                        <input style={{ flex: 1 }} value={c.candidate ?? ""} placeholder="留空则两边都运行上面的命令；检查任务时运行这条，输出必须与标准答案逐字一致"
+                          onChange={(e) => upd({ candidate: e.target.value })} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
               <button className="btn" onClick={() => {
-                const id = `custom-${cmds.length}`;
+                const id = `custom-${cmds.length}-${Date.now() % 100000}`;
                 setCmds([...cmds, { id, label: "自定义", kind: "test", command: "", reason: "手动添加", default_on: true }]);
                 setPicked({ ...picked, [id]: true });
               }}>＋ 添加命令</button>
