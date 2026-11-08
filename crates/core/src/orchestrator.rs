@@ -56,6 +56,7 @@ impl Orchestrator {
         let repo = self.ws.repo_info(project_path).await?;
         let repo_key = repo.root.to_string_lossy().into_owned();
 
+        let project_id = self.db.project_by_path(&repo_key)?.map(|p| p.id);
         let task = match self.db.active_task(&employee.id, &repo_key)? {
             Some(t) => t,
             None => self.start_task(employee, &repo.root, &repo.branch, prompt).await?,
@@ -64,6 +65,7 @@ impl Orchestrator {
         let cfg = TurnConfig {
             project_path: PathBuf::from(&task.worktree_path),
             task_id: Some(task.id.clone()),
+            project_id,
             program: self.program.clone(),
         };
         let result = run_turn(&self.db, employee, &cfg, prompt, approver, observer).await;
@@ -76,6 +78,11 @@ impl Orchestrator {
         );
         self.checkpoint_task(&task, employee, &msg).await;
         result
+    }
+
+    /// 仓库路径对应的项目（未登记为项目时为 None，例如命令行直接使用）。
+    fn project_of(&self, repo_path: &str) -> Option<String> {
+        self.db.project_by_path(repo_path).ok().flatten().map(|p| p.id)
     }
 
     async fn start_task(&self, employee: &Employee, repo: &Path, base_branch: &str, prompt: &str) -> Result<Task> {
@@ -99,7 +106,7 @@ impl Orchestrator {
             updated_at: now,
         };
         self.db.create_task(&task)?;
-        self.db.append_event("task_created", Some(&employee.id), None, &json!({
+        self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_created", Some(&employee.id), None, &json!({
             "task_id": task.id, "title": task.title, "branch": task.branch,
             "base_branch": task.base_branch, "worktree": task.worktree_path,
         }))?;
@@ -110,14 +117,14 @@ impl Orchestrator {
         let eid = Some(employee.id.as_str());
         match self.ws.checkpoint(Path::new(&task.worktree_path), &employee.name, msg).await {
             Ok(Some(cp)) => {
-                let _ = self.db.append_event("checkpoint_committed", eid, None, &json!({
+                let _ = self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "checkpoint_committed", eid, None, &json!({
                     "task_id": task.id, "commit": cp.commit, "files": cp.files,
                     "insertions": cp.insertions, "deletions": cp.deletions,
                 }));
             }
             Ok(None) => {}
             Err(e) => {
-                let _ = self.db.append_event("checkpoint_failed", eid, None,
+                let _ = self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "checkpoint_failed", eid, None,
                     &json!({"task_id": task.id, "error": e.to_string()}));
             }
         }
@@ -147,17 +154,17 @@ impl Orchestrator {
         match &outcome {
             MergeOutcome::Merged { commit } => {
                 self.db.set_task_status(&task.id, "merged", Some(commit))?;
-                self.db.append_event("task_merged", eid, None, &json!({"task_id": task.id, "commit": commit, "title": task.title}))?;
+                self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_merged", eid, None, &json!({"task_id": task.id, "commit": commit, "title": task.title}))?;
             }
             MergeOutcome::Empty => {
                 self.db.set_task_status(&task.id, "merged", None)?;
-                self.db.append_event("task_merged", eid, None, &json!({"task_id": task.id, "commit": null, "title": task.title, "empty": true}))?;
+                self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_merged", eid, None, &json!({"task_id": task.id, "commit": null, "title": task.title, "empty": true}))?;
             }
             MergeOutcome::Conflict { files } => {
-                self.db.append_event("task_merge_blocked", eid, None, &json!({"task_id": task.id, "kind": "conflict", "files": files}))?;
+                self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_merge_blocked", eid, None, &json!({"task_id": task.id, "kind": "conflict", "files": files}))?;
             }
             MergeOutcome::Blocked { reason } => {
-                self.db.append_event("task_merge_blocked", eid, None, &json!({"task_id": task.id, "kind": "blocked", "reason": reason}))?;
+                self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_merge_blocked", eid, None, &json!({"task_id": task.id, "kind": "blocked", "reason": reason}))?;
             }
         }
         Ok(outcome)
@@ -171,7 +178,7 @@ impl Orchestrator {
         }
         self.checkpoint_task(&task, &emp, &format!("[crewforge] {}: {} (已放弃，保留为 WIP)\n\nCrewforge-Task: {}", emp.name, task.title, task.id)).await;
         self.db.set_task_status(&task.id, "abandoned", None)?;
-        self.db.append_event("task_abandoned", Some(&emp.id), None,
+        self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_abandoned", Some(&emp.id), None,
             &json!({"task_id": task.id, "branch": task.branch, "title": task.title}))?;
         Ok(())
     }

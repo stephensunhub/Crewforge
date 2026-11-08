@@ -28,6 +28,8 @@ pub struct TurnConfig {
     pub project_path: PathBuf,
     /// 关联的任务，写入事件，便于追溯每次执行属于哪个任务
     pub task_id: Option<String>,
+    /// 事件归属的项目（群聊按它过滤）
+    pub project_id: Option<String>,
     /// 测试时可替换为假的 CLI
     pub program: String,
 }
@@ -43,12 +45,13 @@ pub async fn run_turn<A: Approver, O: Observer>(
     let project = cfg.project_path.to_string_lossy().to_string();
     let session = db.get_or_create_session(&employee.id, &project)?;
     let (eid, sid) = (Some(employee.id.as_str()), Some(session.id.as_str()));
+    let pid = cfg.project_id.as_deref();
 
     // 上次停留在 running，说明客户端或 CLI 曾异常退出：用 --resume 接上，并给 Agent 一条精简说明。
     let recovered = session.status == "running";
     let mut effective_prompt = prompt.to_string();
     if recovered {
-        db.append_event("session_recovered", eid, sid, &json!({"reason": "上次任务未正常结束"}))?;
+        db.append_event_for(pid, "session_recovered", eid, sid, &json!({"reason": "上次任务未正常结束"}))?;
         effective_prompt = format!(
             "[系统提示] 上一次任务被意外中断。请先用只读方式核对工作区当前状态（例如 git status、git diff），\
              确认哪些修改已经完成，再继续下面的任务。\n\n{prompt}"
@@ -60,13 +63,13 @@ pub async fn run_turn<A: Approver, O: Observer>(
     let policy = Policy::new(&cfg.project_path);
 
     db.set_session_status(&session.id, "running")?;
-    db.append_event("task_started", eid, sid, &json!({"prompt": prompt, "resume": session.started, "task_id": cfg.task_id}))?;
+    db.append_event_for(pid, "task_started", eid, sid, &json!({"prompt": prompt, "resume": session.started, "task_id": cfg.task_id}))?;
 
     let mut proc = match ClaudeProcess::spawn(&spec, &effective_prompt).await {
         Ok(p) => p,
         Err(e) => {
             db.set_session_status(&session.id, "idle")?;
-            db.append_event("task_failed", eid, sid, &json!({"error": e.to_string()}))?;
+            db.append_event_for(pid, "task_failed", eid, sid, &json!({"error": e.to_string()}))?;
             return Err(e);
         }
     };
@@ -80,32 +83,32 @@ pub async fn run_turn<A: Approver, O: Observer>(
             match &ev {
                 AgentEvent::Init { .. } => db.mark_session_started(&session.id)?,
                 AgentEvent::Text(t) => {
-                    db.append_event("agent_text", eid, sid, &json!({"text": t}))?;
+                    db.append_event_for(pid, "agent_text", eid, sid, &json!({"text": t}))?;
                 }
                 AgentEvent::ToolUse { name, input, .. } => {
-                    db.append_event("tool_use", eid, sid, &json!({"tool": name, "input": input}))?;
+                    db.append_event_for(pid, "tool_use", eid, sid, &json!({"tool": name, "input": input}))?;
                 }
                 AgentEvent::RateLimit { status, five_hour, seven_day } => {
-                    db.append_event("rate_limit", eid, sid,
+                    db.append_event_for(pid, "rate_limit", eid, sid,
                         &json!({"status": status, "five_hour": five_hour, "seven_day": seven_day}))?;
                 }
                 AgentEvent::Approval(req) => {
                     let (decision, by, reason) = match policy.decide(&req.tool_name, &req.input) {
                         PolicyDecision::Allow(why) => (Decision::Allow, "policy", why.to_string()),
                         PolicyDecision::Ask(why) => {
-                            db.append_event("approval_requested", eid, sid,
+                            db.append_event_for(pid, "approval_requested", eid, sid,
                                 &json!({"tool": req.tool_name, "input": req.input, "reason": why}))?;
                             (approver.ask(&employee.name, req, &why).await, "human", why)
                         }
                     };
-                    db.append_event("approval_decided", eid, sid, &json!({
+                    db.append_event_for(pid, "approval_decided", eid, sid, &json!({
                         "tool": req.tool_name, "input": req.input, "decided_by": by, "reason": reason,
                         "decision": match &decision { Decision::Allow => "allow", Decision::Deny(_) => "deny" },
                     }))?;
                     proc.respond(req, &decision).await?;
                 }
                 AgentEvent::Result(r) => {
-                    db.append_event("turn_result", eid, sid, &json!({
+                    db.append_event_for(pid, "turn_result", eid, sid, &json!({
                         "task_id": cfg.task_id, "is_error": r.is_error, "subtype": r.subtype, "cost_usd": r.cost_usd,
                         "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
                         "cache_read_tokens": r.cache_read_tokens, "cache_creation_tokens": r.cache_creation_tokens,
@@ -126,7 +129,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
         Err(e) => {
             proc.kill().await;
             // 保持 running：下次启动会被识别为需要恢复
-            db.append_event("task_failed", eid, sid, &json!({"error": e.to_string()}))?;
+            db.append_event_for(pid, "task_failed", eid, sid, &json!({"error": e.to_string()}))?;
             Err(e)
         }
     }

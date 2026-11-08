@@ -1,0 +1,228 @@
+import { useEffect, useState } from "react";
+import { api } from "./api";
+import { Avatar, Field, Modal, Placeholder, basename } from "./common";
+import type { Company, EmployeeCard, ProjectSummary } from "./types";
+
+export type CompanyTab = "employees" | "projects" | "memory" | "docs" | "manage";
+export const COMPANY_TABS: [CompanyTab, string][] = [
+  ["employees", "员工"], ["projects", "项目"], ["memory", "记忆"], ["docs", "文档"], ["manage", "管理"],
+];
+
+const ROLES = ["全栈工程师", "QA 测试工程师", "架构师 / CTO", "其他"];
+
+function EmployeeForm({ initial, onSubmit, onClose }: {
+  initial?: { name: string; role: string; persona: string };
+  onSubmit: (name: string, role: string, persona: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? "");
+  const [role, setRole] = useState(initial?.role ?? ROLES[0]);
+  const [persona, setPersona] = useState(initial?.persona ?? "");
+  const [busy, setBusy] = useState(false);
+  const valid = name.trim() !== "" && !/[\s@]/.test(name);
+  return (
+    <Modal title={initial ? `编辑 ${initial.name}` : "新员工"} onClose={onClose}>
+      <div className="form">
+        <Field label="名称" hint={initial ? "名称不可修改（它决定工作区目录和分支名）" : "不含空格和 @，创建后不可修改"}>
+          <input value={name} disabled={!!initial} onChange={(e) => setName(e.target.value)} autoFocus={!initial} />
+        </Field>
+        <Field label="岗位">
+          <select value={role} onChange={(e) => setRole(e.target.value)}>
+            {[...new Set([role, ...ROLES])].map((r) => <option key={r}>{r}</option>)}
+          </select>
+        </Field>
+        <Field label="身份说明" hint="告诉 TA 是谁、怎么沟通、擅长什么。留空会使用默认说明。">
+          <textarea rows={5} value={persona} onChange={(e) => setPersona(e.target.value)} />
+        </Field>
+        <div className="form-btns">
+          <button className="btn primary" disabled={!valid || busy} onClick={async () => {
+            setBusy(true);
+            try { await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`); } finally { setBusy(false); }
+          }}>{initial ? "保存" : "创建"}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: string, path: string, init: boolean) => Promise<void>; onClose: () => void }) {
+  const [path, setPath] = useState("");
+  const [name, setName] = useState("");
+  const [desc, setDesc] = useState("");
+  const [init, setInit] = useState(true);
+  const [busy, setBusy] = useState(false);
+  async function pick() {
+    const p = await api.pickDirectory();
+    if (p) { setPath(p); if (!name) setName(basename(p)); }
+  }
+  return (
+    <Modal title="新建 / 导入项目" onClose={onClose}>
+      <div className="form">
+        <Field label="项目目录" hint="选择已有代码目录即为导入；选择空目录即为新建。">
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={path} readOnly placeholder="尚未选择" />
+            <button className="btn" onClick={() => void pick()}>选择…</button>
+          </div>
+        </Field>
+        <Field label="项目名称"><input value={name} onChange={(e) => setName(e.target.value)} /></Field>
+        <Field label="描述（可选）"><textarea rows={3} value={desc} onChange={(e) => setDesc(e.target.value)} /></Field>
+        <label className="tog"><input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} />
+          目录还不是 Git 仓库时，自动初始化（员工需要在 Git 工作区里工作）</label>
+        <div className="form-btns">
+          <button className="btn primary" disabled={!path || !name.trim() || busy} onClick={async () => {
+            setBusy(true);
+            try { await onSubmit(name, desc, path, init); } finally { setBusy(false); }
+          }}>创建项目</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+export function CompanyView({
+  tab, cards, projects, company, running, onOpenProject, onChanged, onError,
+}: {
+  tab: CompanyTab;
+  cards: EmployeeCard[];
+  projects: ProjectSummary[];
+  company: Company | null;
+  running: string[];
+  onOpenProject: (id: string) => void;
+  onChanged: () => void;
+  onError: (m: string) => void;
+}) {
+  const [modal, setModal] = useState<"new-emp" | "new-proj" | { edit: EmployeeCard } | null>(null);
+  const [filter, setFilter] = useState("");
+  const visible = filter.trim()
+    ? cards.filter((c) => (c.employee.name + c.employee.role).toLowerCase().includes(filter.trim().toLowerCase()))
+    : cards;
+
+  async function guard(fn: () => Promise<unknown>) {
+    try { await fn(); onChanged(); return true; } catch (e) { onError(String(e)); return false; }
+  }
+
+  if (tab === "employees") {
+    return (
+      <div className="page">
+        <div className="page-head">
+          <div><h2>AI 员工</h2><div className="hint">员工是公司的长期身份，可以参与多个项目。数量不设上限。</div></div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {cards.length > 8 && <input style={{ width: 200 }} placeholder={`搜索 ${cards.length} 名员工`} value={filter} onChange={(e) => setFilter(e.target.value)} />}
+            <button className="btn primary" onClick={() => setModal("new-emp")}>＋ 新员工</button>
+          </div>
+        </div>
+        {cards.length === 0 && (
+          <div className="empty"><img src="/logo.png" alt="" /><h2>先组建你的团队</h2><p>团队规模由你决定，一个人或二十个人都可以。</p>
+            <button className="btn primary" onClick={() => setModal("new-emp")}>创建第一名员工</button></div>
+        )}
+        <div className="cards">
+          {visible.map((c) => {
+            const busy = running.includes(c.employee.name);
+            return (
+              <div className="card" key={c.employee.id}>
+                <div className="card-top">
+                  <Avatar name={c.employee.name} size={38} />
+                  <div style={{ minWidth: 0 }}>
+                    <b>{c.employee.name}</b>
+                    <div className="hint">{c.employee.role}</div>
+                  </div>
+                  <span className={`status ${busy ? "run" : ""}`}>{busy ? "● 工作中" : "○ 空闲"}</span>
+                </div>
+                <div className="card-persona">{c.employee.persona}</div>
+                <div className="card-meta">
+                  {c.projects.length === 0 ? <span className="hint">未参与任何项目</span> : c.projects.map(([id, n]) => (
+                    <button key={id} className="chip" onClick={() => onOpenProject(id)}>{n}</button>
+                  ))}
+                </div>
+                <div className="card-foot">
+                  {c.active_tasks > 0 && <span className="hint">{c.active_tasks} 个进行中的任务</span>}
+                  <span style={{ flex: 1 }} />
+                  <button className="btn" onClick={() => setModal({ edit: c })}>编辑</button>
+                  <button className="btn danger" onClick={async () => {
+                    if (await api.confirm(`归档 ${c.employee.name}？\n历史记录和记忆会保留，但不再出现在列表里，也不能分配任务。`, "确认归档"))
+                      await guard(() => api.archiveEmployee(c.employee.id));
+                  }}>归档</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {modal === "new-emp" && <EmployeeForm onClose={() => setModal(null)} onSubmit={async (n, r, p) => { if (await guard(() => api.addEmployee(n, r, p))) setModal(null); }} />}
+        {modal && typeof modal === "object" && "edit" in modal && (
+          <EmployeeForm
+            initial={{ name: modal.edit.employee.name, role: modal.edit.employee.role, persona: modal.edit.employee.persona }}
+            onClose={() => setModal(null)}
+            onSubmit={async (_n, r, p) => { if (await guard(() => api.updateEmployee(modal.edit.employee.id, r, p))) setModal(null); }}
+          />
+        )}
+      </div>
+    );
+  }
+
+  if (tab === "projects") {
+    return (
+      <div className="page">
+        <div className="page-head">
+          <div><h2>项目</h2><div className="hint">每个项目有自己的群聊、任务、成员和记忆。</div></div>
+          <button className="btn primary" onClick={() => setModal("new-proj")}>＋ 新建 / 导入项目</button>
+        </div>
+        {projects.length === 0 && (
+          <div className="empty"><img src="/logo.png" alt="" /><h2>还没有项目</h2><p>选择一个已有代码目录导入，或选择空目录新建。</p>
+            <button className="btn primary" onClick={() => setModal("new-proj")}>新建 / 导入项目</button></div>
+        )}
+        <div className="cards">
+          {projects.map((s) => (
+            <div className="card clickable" key={s.project.id} onClick={() => onOpenProject(s.project.id)}>
+              <div className="card-top"><div style={{ minWidth: 0 }}><b>{s.project.name}</b>
+                <div className="hint path-line" title={s.project.path}>{s.project.path}</div></div></div>
+              {s.project.description && <div className="card-persona">{s.project.description}</div>}
+              <div className="card-meta">
+                <span className="chip static">{s.member_count} 名成员</span>
+                <span className="chip static">{s.active_tasks} 个进行中任务</span>
+                <span className="chip static">负责人：{s.lead_name ?? "人类（你）"}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {modal === "new-proj" && (
+          <ProjectForm onClose={() => setModal(null)} onSubmit={async (n, d, p, i) => {
+            const ok = await guard(() => api.createProject(n, d, p, i));
+            if (ok) setModal(null);
+          }} />
+        )}
+      </div>
+    );
+  }
+
+  if (tab === "manage") return <CompanyManage company={company} onSaved={onChanged} onError={onError} />;
+  if (tab === "memory") return <Placeholder title="公司记忆">跨项目通用的经验、工程习惯与踩过的坑。每次只会检索少量相关条目，并标注来源与验证状态。</Placeholder>;
+  return <Placeholder title="公司文档">公司级工程规范、技术选型原则、通用流程。存放在数据目录，供所有项目引用。</Placeholder>;
+}
+
+function CompanyManage({ company, onSaved, onError }: { company: Company | null; onSaved: () => void; onError: (m: string) => void }) {
+  const [name, setName] = useState("");
+  const [desc, setDesc] = useState("");
+  const [conv, setConv] = useState("");
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (company) { setName(company.name); setDesc(company.description); setConv(company.conventions); }
+  }, [company]);
+  return (
+    <div className="page narrow">
+      <div className="page-head"><div><h2>公司管理</h2><div className="hint">这些设置对所有项目生效。</div></div></div>
+      <div className="form">
+        <Field label="公司名称"><input value={name} onChange={(e) => { setName(e.target.value); setSaved(false); }} /></Field>
+        <Field label="简介"><textarea rows={3} value={desc} onChange={(e) => { setDesc(e.target.value); setSaved(false); }} /></Field>
+        <Field label="公司级工程规范" hint="例如代码风格、测试要求、提交规范。后续会随任务注入给员工（尚未接入）。">
+          <textarea rows={8} value={conv} onChange={(e) => { setConv(e.target.value); setSaved(false); }} />
+        </Field>
+        <div className="form-btns">
+          {saved && <span className="hint">已保存</span>}
+          <button className="btn primary" disabled={!name.trim()} onClick={async () => {
+            try { await api.updateCompany(name, desc, conv); setSaved(true); onSaved(); } catch (e) { onError(String(e)); }
+          }}>保存</button>
+        </div>
+      </div>
+    </div>
+  );
+}

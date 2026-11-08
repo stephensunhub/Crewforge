@@ -1,6 +1,6 @@
 use crate::approval::UiApprover;
 use crate::state::AppState;
-use crewforge_core::db::{Employee, EventRow, Session, default_data_dir};
+use crewforge_core::db::{Company, Employee, EmployeeCard, EventRow, Member, Project, ProjectSummary, Session, default_data_dir};
 use crewforge_core::provider::claude::Decision;
 use crewforge_core::orchestrator::TaskView;
 use crewforge_core::runner::NoopObserver;
@@ -32,9 +32,104 @@ pub fn list_sessions(state: State<'_, AppState>) -> CmdResult<Vec<Session>> {
     state.db.list_sessions().map_err(err)
 }
 
+/// 某个项目的最近事件；不传项目则返回全部。
 #[tauri::command]
-pub fn recent_events(state: State<'_, AppState>, limit: usize) -> CmdResult<Vec<EventRow>> {
-    state.db.recent_events(limit.min(2000)).map_err(err)
+pub fn recent_events(state: State<'_, AppState>, project_id: Option<String>, limit: usize) -> CmdResult<Vec<EventRow>> {
+    let limit = limit.min(2000);
+    match project_id {
+        Some(id) => state.db.recent_events_for_project(&id, limit),
+        None => state.db.recent_events(limit),
+    }
+    .map_err(err)
+}
+
+#[tauri::command]
+pub fn get_company(state: State<'_, AppState>) -> CmdResult<Company> {
+    state.db.company().map_err(err)
+}
+
+#[tauri::command]
+pub fn update_company(state: State<'_, AppState>, name: String, description: String, conventions: String) -> CmdResult<()> {
+    state.db.update_company(&name, &description, &conventions).map_err(err)
+}
+
+#[tauri::command]
+pub fn employee_cards(state: State<'_, AppState>) -> CmdResult<Vec<EmployeeCard>> {
+    state.db.employee_cards().map_err(err)
+}
+
+#[tauri::command]
+pub fn update_employee(state: State<'_, AppState>, id: String, role: String, persona: String) -> CmdResult<()> {
+    state.db.update_employee(&id, role.trim(), persona.trim()).map_err(err)
+}
+
+#[tauri::command]
+pub fn archive_employee(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    let emp = state.db.employee_by_id(&id).map_err(err)?.ok_or("员工不存在")?;
+    if state.running.lock().unwrap().contains(&emp.name) {
+        return Err("该员工正在执行任务，请等待完成".into());
+    }
+    if !state.db.employee_projects(&id).map_err(err)?.is_empty() {
+        return Err("该员工还在项目中，请先在各项目的成员页把 TA 移出".into());
+    }
+    state.db.set_employee_archived(&id, true).map_err(err)
+}
+
+#[tauri::command]
+pub fn list_projects(state: State<'_, AppState>) -> CmdResult<Vec<ProjectSummary>> {
+    state.db.project_summaries().map_err(err)
+}
+
+/// 新建或导入项目。`init_git` 为 true 时，目录不是仓库就初始化（员工的工作区需要 Git）。
+#[tauri::command]
+pub async fn create_project(
+    state: State<'_, AppState>,
+    name: String,
+    description: String,
+    path: String,
+    init_git: bool,
+) -> CmdResult<Project> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err(format!("目录不存在: {path}"));
+    }
+    let info = state.ws.ensure_ready(&p.canonicalize().map_err(err)?, init_git).await.map_err(err)?;
+    state.db.create_project(&name, &description, &info.root.to_string_lossy()).map_err(err)
+}
+
+#[tauri::command]
+pub fn update_project(state: State<'_, AppState>, id: String, name: String, description: String) -> CmdResult<()> {
+    state.db.update_project(&id, &name, &description).map_err(err)
+}
+
+#[tauri::command]
+pub fn archive_project(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.db.archive_project(&id).map_err(err)
+}
+
+#[tauri::command]
+pub fn list_members(state: State<'_, AppState>, project_id: String) -> CmdResult<Vec<Member>> {
+    state.db.list_members(&project_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn add_member(state: State<'_, AppState>, project_id: String, employee_id: String, role: String) -> CmdResult<()> {
+    state.db.add_member(&project_id, &employee_id, &role).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_member_role(state: State<'_, AppState>, project_id: String, employee_id: String, role: String) -> CmdResult<()> {
+    state.db.set_member_role(&project_id, &employee_id, &role).map_err(err)
+}
+
+#[tauri::command]
+pub fn remove_member(state: State<'_, AppState>, project_id: String, employee_id: String) -> CmdResult<()> {
+    state.db.remove_member(&project_id, &employee_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn claude_version() -> CmdResult<String> {
+    crewforge_core::provider::claude::detect("claude").await.map_err(err)
 }
 
 #[tauri::command]
@@ -113,11 +208,12 @@ pub fn run_task(
     state: State<'_, AppState>,
     employee: String,
     prompt: String,
-    project_path: String,
+    project_id: String,
 ) -> CmdResult<()> {
-    let path = PathBuf::from(&project_path);
+    let project = state.db.get_project(&project_id).map_err(err)?.ok_or("项目不存在")?;
+    let path = PathBuf::from(&project.path);
     if !path.is_dir() {
-        return Err(format!("项目目录不存在: {project_path}"));
+        return Err(format!("项目目录不存在: {}", project.path));
     }
     let path = path.canonicalize().map_err(err)?;
     if prompt.trim().is_empty() {
@@ -128,6 +224,12 @@ pub fn run_task(
         .employee_by_name(&employee)
         .map_err(err)?
         .ok_or_else(|| format!("员工不存在: {employee}"))?;
+    if emp.archived {
+        return Err(format!("{} 已归档，不能分配任务", emp.name));
+    }
+    if !state.db.is_member(&project.id, &emp.id).map_err(err)? {
+        return Err(format!("{} 不是项目「{}」的成员，请先在成员页添加", emp.name, project.name));
+    }
     if !state.running.lock().unwrap().insert(emp.name.clone()) {
         return Err(format!("{} 正在执行任务，请等待完成", emp.name));
     }
@@ -137,7 +239,7 @@ pub fn run_task(
     let orch = state.orch.clone();
     let sem = state.sem.clone();
     let running = state.running.clone();
-    let approver = UiApprover { app: app.clone(), pending: state.pending.clone() };
+    let approver = UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: Some(project.id.clone()) };
     tauri::async_runtime::spawn(async move {
         let result = async {
             // 并发已满时先记录排队，界面据此区分"排队中"与"工作中"

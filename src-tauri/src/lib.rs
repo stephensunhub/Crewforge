@@ -23,6 +23,20 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::get_company,
+            commands::update_company,
+            commands::employee_cards,
+            commands::update_employee,
+            commands::archive_employee,
+            commands::list_projects,
+            commands::create_project,
+            commands::update_project,
+            commands::archive_project,
+            commands::list_members,
+            commands::add_member,
+            commands::set_member_role,
+            commands::remove_member,
+            commands::claude_version,
             commands::list_employees,
             commands::add_employee,
             commands::list_sessions,

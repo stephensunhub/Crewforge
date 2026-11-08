@@ -202,6 +202,21 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// 让目录成为可用的项目仓库：`init` 为 true 时，缺少 Git 仓库就初始化，
+    /// 有仓库但还没有提交就补一个空的初始提交。返回仓库信息（根目录以 Git 为准）。
+    pub async fn ensure_ready(&self, path: &Path, init: bool) -> Result<RepoInfo> {
+        let st = self.repo_status(path).await?;
+        if init {
+            if !st.is_repo {
+                self.init_repo(path).await?;
+            } else if !st.has_commits {
+                let root = st.root.context("无效的仓库")?;
+                git_as(Path::new(&root), "Crewforge", &["commit", "--allow-empty", "-m", "Initial commit"]).await?;
+            }
+        }
+        self.repo_info(path).await
+    }
+
     /// 为任务准备工作区：首次为员工创建 worktree，之后在其中切换到新的任务分支。
     /// 返回 (worktree 路径, 基础提交)。
     pub async fn prepare_task(

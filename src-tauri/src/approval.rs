@@ -24,6 +24,7 @@ impl Pending {
 #[derive(Serialize, Clone)]
 struct ApprovalPayload<'a> {
     id: &'a str,
+    project_id: Option<&'a str>,
     employee: &'a str,
     tool: &'a str,
     input: &'a Value,
@@ -33,6 +34,7 @@ struct ApprovalPayload<'a> {
 pub struct UiApprover {
     pub app: AppHandle,
     pub pending: Pending,
+    pub project_id: Option<String>,
 }
 
 impl Approver for UiApprover {
@@ -42,7 +44,7 @@ impl Approver for UiApprover {
         self.pending.0.lock().unwrap().insert(id.clone(), tx);
         let _ = self.app.emit(
             "crewforge://approval",
-            ApprovalPayload { id: &id, employee, tool: &req.tool_name, input: &req.input, reason },
+            ApprovalPayload { id: &id, project_id: self.project_id.as_deref(), employee, tool: &req.tool_name, input: &req.input, reason },
         );
         // 界面关闭或任务被取消导致发送端被丢弃时，按拒绝处理
         rx.await.unwrap_or(Decision::Deny("审批请求已失效".into()))

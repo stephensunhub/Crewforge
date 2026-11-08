@@ -4,6 +4,39 @@ export interface Employee {
   name: string;
   role: string;
   persona: string;
+  archived: boolean;
+}
+export interface Company {
+  name: string;
+  description: string;
+  conventions: string;
+}
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+export interface ProjectSummary {
+  project: Project;
+  member_count: number;
+  active_tasks: number;
+  lead_name: string | null;
+}
+export type ProjectRole = "lead" | "developer" | "qa" | "reviewer";
+export interface Member {
+  employee_id: string;
+  name: string;
+  title: string;
+  role: ProjectRole;
+}
+export interface EmployeeCard {
+  employee: Employee;
+  projects: [string, string][];
+  active_tasks: number;
 }
 export interface Session {
   id: string;
@@ -16,6 +49,7 @@ export interface EventRow {
   id: number;
   ts: number;
   kind: string;
+  project_id: string | null;
   employee_id: string | null;
   session_id: string | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -23,6 +57,7 @@ export interface EventRow {
 }
 export interface ApprovalReq {
   id: string;
+  project_id: string | null;
   employee: string;
   tool: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

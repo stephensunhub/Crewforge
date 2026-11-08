@@ -177,3 +177,24 @@ async fn empty_merge_and_dirty_worktree_guard() {
     assert!(e.ws.prepare_task(&e.repo, "alice", "crewforge/alice/t2", "main").await.is_err());
     assert!(w.join("wip.txt").exists());
 }
+
+#[tokio::test]
+async fn ensure_ready_initializes_only_when_asked() {
+    let d = tempfile::tempdir().unwrap();
+    let ws = WorkspaceManager::new(d.path());
+    let proj = d.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+    assert!(ws.ensure_ready(&proj, false).await.is_err(), "未授权时不得擅自初始化");
+    assert!(!ws.repo_status(&proj).await.unwrap().is_repo);
+
+    let info = ws.ensure_ready(&proj, true).await.unwrap();
+    assert_eq!(info.branch, "main");
+    // 已有仓库但没有提交：补一个空提交
+    let q = d.path().join("q");
+    std::fs::create_dir_all(&q).unwrap();
+    sh(&q, &["init", "-q", "-b", "trunk"]);
+    assert!(ws.ensure_ready(&q, false).await.is_err());
+    assert_eq!(ws.ensure_ready(&q, true).await.unwrap().branch, "trunk");
+    // 已就绪的仓库保持不变
+    assert_eq!(ws.ensure_ready(&q, true).await.unwrap().branch, "trunk");
+}

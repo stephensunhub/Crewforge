@@ -187,3 +187,20 @@ async fn non_git_directory_is_rejected_with_clear_error() {
     let err = e.orch.assign(&alice, plain.path(), "x", &AutoDeny, &NoopObserver).await.unwrap_err();
     assert!(err.to_string().contains("不是 Git 仓库"), "{err}");
 }
+
+#[tokio::test]
+async fn events_of_a_registered_project_carry_its_id() {
+    let mut e = setup().await;
+    let alice = e.db.add_employee("alice", "fullstack", "p").unwrap();
+    let proj = e.db.create_project("Shop", "", e.repo.to_str().unwrap()).unwrap();
+    let other = e.db.create_project("Other", "", "/somewhere/else").unwrap();
+
+    e.orch.program = fake_cli(&e.tools, "c", "f.txt", "x", false);
+    e.orch.assign(&alice, &e.repo, "做点事", &AutoDeny, &NoopObserver).await.unwrap();
+
+    let kinds: Vec<String> = e.db.recent_events_for_project(&proj.id, 100).unwrap().into_iter().map(|x| x.kind).collect();
+    for k in ["task_created", "task_started", "checkpoint_committed", "turn_result"] {
+        assert!(kinds.contains(&k.to_string()), "项目群聊里应有 {k}，实际 {kinds:?}");
+    }
+    assert!(e.db.recent_events_for_project(&other.id, 100).unwrap().iter().all(|x| x.kind == "project_created"), "别的项目看不到这些事件");
+}
