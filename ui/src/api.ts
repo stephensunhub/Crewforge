@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, Meeting, MeetingDetail, MeetingKind,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind,
 } from "./types";
 
 export const api = {
@@ -89,6 +89,10 @@ export const api = {
   dataDir: () => invoke<string>("data_dir"),
   claudeVersion: () => invoke<string>("claude_version"),
   getConcurrency: () => invoke<number>("get_concurrency"),
+  schedulerStatus: () => invoke<SchedStatus>("scheduler_status"),
+  setSchedulerConfig: (config: SchedulerConfig) => invoke<void>("scheduler_set_config", { config }),
+  pauseScheduler: (paused: boolean) => invoke<void>("scheduler_pause", { paused }),
+  overrideScheduler: (minutes: number) => invoke<void>("scheduler_override", { minutes }),
   setConcurrency: (n: number) => invoke<number>("set_concurrency", { n }),
   // 对话框
   confirm: (message: string, title: string) => ask(message, { title, kind: "warning", okLabel: "确认", cancelLabel: "取消" }),

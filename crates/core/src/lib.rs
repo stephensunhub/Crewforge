@@ -11,4 +11,5 @@ pub mod orchestrator;
 pub mod policy;
 pub mod provider;
 pub mod runner;
+pub mod scheduler;
 pub mod workspace;

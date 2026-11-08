@@ -95,7 +95,7 @@ export function Chat({
           </div>
         );
       case "task_queued":
-        return <div className="line warn" key={e.id}><span>⏸ {name} 排队中：并发已满（上限 {concurrency}），有空位后自动开始</span>{t}</div>;
+        return <div className="line warn" key={e.id}><span>⏸ {name} 排队中：{p.reason ?? `并发已满（上限 ${concurrency}）`}，条件允许后自动开始</span>{t}</div>;
       case "task_created":
         return <div className="line" key={e.id}><span>🌿 {name} 开始新任务</span><span className="t">{p.title}</span><code>{p.branch}</code>{t}</div>;
       case "checkpoint_committed":

@@ -26,7 +26,8 @@ use crewforge_core::workspace::{MergeOutcome, WorkspaceManager};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
+use crewforge_core::scheduler::Scheduler;
 
 struct TerminalApprover {
     /// 多个员工并发时，同一时刻只向人类提一个问题
@@ -209,16 +210,21 @@ async fn run(db: Arc<Db>, orch: Arc<Orchestrator>, mut args: &[&str]) -> Result<
     let version = claude::detect("claude").await?;
     eprintln!("使用 {version}，工作目录 {}，并发上限 {max}", cwd.display());
 
-    let sem = Arc::new(Semaphore::new(max.max(1)));
+    // 与应用共用同一份额度数据：额度紧张时命令行也会限速/暂停
+    let sched = Scheduler::new(db.clone(), max);
+    sched.set_user_limit_transient(max);
     let approver = Arc::new(TerminalApprover { gate: Mutex::new(()) });
     let mut set = tokio::task::JoinSet::new();
     for pair in args.chunks(2) {
         let (name, prompt) = (pair[0].to_string(), pair[1].to_string());
         let Some(emp) = db.employee_by_name(&name)? else { bail!("员工不存在: {name}") };
-        let (orch, sem, approver, cwd) = (orch.clone(), sem.clone(), approver.clone(), cwd.clone());
+        let (orch, sched, approver, cwd) = (orch.clone(), sched.clone(), approver.clone(), cwd.clone());
         set.spawn(async move {
             let r = async {
-                let _permit = sem.acquire_owned().await?;
+                if !sched.would_start_now() {
+                    eprintln!("⏳ [{name}] 排队中：{}", sched.status().reason);
+                }
+                let _permit = sched.acquire().await;
                 orch.assign(&emp, &cwd, &prompt, &*approver, &Printer).await
             }
             .await;

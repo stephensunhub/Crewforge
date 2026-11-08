@@ -16,21 +16,33 @@ pub fn run() {
             let db = Arc::new(Db::open(&data_dir)?);
             // 把事件表里的新增事件推送给界面。不用进程内的钩子：MCP 服务器和命令行是别的进程，
             // 它们写入的事件只有通过读库才看得到。
+            let st = state::AppState::new(db.clone(), &data_dir);
+            let sched = st.sched.clone();
             let handle = app.handle().clone();
             let poll_db = db.clone();
             std::thread::spawn(move || {
                 let mut last = poll_db.max_event_id().unwrap_or(0);
+                let mut tick = 0u32;
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(300));
                     if let Ok(events) = poll_db.events_after(last, 500) {
                         for e in events {
                             last = e.id;
+                            // 新的额度读数：让排队的任务立刻重新评估
+                            if e.kind == "rate_limit" {
+                                sched.nudge();
+                            }
                             let _ = handle.emit("crewforge://event", &e);
                         }
                     }
+                    // 调度状态变化（含额度窗口到期自动恢复）时发布事件；每 3 秒检查一次
+                    tick += 1;
+                    if tick % 10 == 0 {
+                        sched.publish_if_changed();
+                    }
                 }
             });
-            app.manage(state::AppState::new(db, &data_dir));
+            app.manage(st);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -97,6 +109,10 @@ pub fn run() {
             commands::merge_task,
             commands::abandon_task,
             commands::reveal_in_finder,
+            commands::scheduler_status,
+            commands::scheduler_set_config,
+            commands::scheduler_pause,
+            commands::scheduler_override,
             commands::get_concurrency,
             commands::set_concurrency,
         ])

@@ -250,3 +250,11 @@ export interface CostReport {
   since: number | null; totals: Totals; by_employee: CostGroup[]; by_project: CostGroup[]; by_purpose: CostGroup[]; by_day: CostDay[];
   top_tasks: CostTask[]; efficiency: Efficiency; quota_now: QuotaNow | null; quota_series: QuotaPoint[];
 }
+
+export interface SchedulerConfig { enabled: boolean; soft: number; hard: number; stop: number }
+export type SchedLevel = "normal" | "throttled" | "paused";
+export interface SchedStatus {
+  config: SchedulerConfig; user_limit: number; effective_limit: number; running: number; waiting: number;
+  level: SchedLevel; reason: string; resume_at: number | null; manual_pause: boolean; override_until: number | null;
+  quota: QuotaNow | null;
+}

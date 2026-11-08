@@ -296,3 +296,10 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .cost-table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 8px; }
 .cost-table td { padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
 @media (max-width: 1100px) { .two-col, .qgrid { grid-template-columns: 1fr; } }
+
+/* 调度状态 */
+.sched-chip { display: flex; align-items: center; gap: 8px; border-radius: 999px; padding: 3px 6px 3px 12px; font-size: 12px; border: 1px solid var(--line); }
+.sched-chip.paused { border-color: var(--bad); color: var(--bad); }
+.sched-chip.throttled { border-color: var(--warn); color: var(--warn); }
+.sched-chip .btn { padding: 2px 10px; font-size: 12px; }
+.link-plain { background: none; border: none; color: inherit; padding: 0; font-size: 12px; }

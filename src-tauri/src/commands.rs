@@ -2,6 +2,7 @@ use crate::approval::UiApprover;
 use crate::state::AppState;
 use crewforge_core::onboarding::{OnboardingState, StoredCheck, DEFAULT_COMMAND_TIMEOUT, baseline::CheckReport, scan::{BaselineCommand, ScanReport}};
 use crewforge_core::cost::CostReport;
+use crewforge_core::scheduler::{SchedStatus, SchedulerConfig};
 use crewforge_core::memory::{DEFAULT_MAX_CHARS, DEFAULT_MAX_ITEMS, Memory, MemoryFilter, NewMemory};
 use crewforge_core::board::{Actor, IssueView, Meeting, MeetingMessage, PendingDecision};
 use crewforge_core::db::{Company, Employee, EmployeeCard, EventRow, Member, Project, ProjectSummary, Session, default_data_dir};
@@ -151,12 +152,38 @@ pub fn running_employees(state: State<'_, AppState>) -> Vec<String> {
 
 #[tauri::command]
 pub fn get_concurrency(state: State<'_, AppState>) -> usize {
-    state.concurrency()
+    state.sched.status().user_limit
 }
 
 #[tauri::command]
-pub fn set_concurrency(state: State<'_, AppState>, n: usize) -> usize {
-    state.set_concurrency(n)
+pub fn set_concurrency(state: State<'_, AppState>, n: usize) -> CmdResult<usize> {
+    state.sched.set_user_limit(n).map_err(err)
+}
+
+// ================= 额度调度 =================
+#[tauri::command]
+pub fn scheduler_status(state: State<'_, AppState>) -> SchedStatus {
+    state.sched.status()
+}
+
+#[tauri::command]
+pub fn scheduler_set_config(state: State<'_, AppState>, config: SchedulerConfig) -> CmdResult<()> {
+    state.sched.set_config(config).map_err(err)?;
+    state.sched.publish_if_changed();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn scheduler_pause(state: State<'_, AppState>, paused: bool) {
+    state.sched.set_manual_pause(paused);
+    state.sched.publish_if_changed();
+}
+
+/// 临时忽略额度限制 `minutes` 分钟；0 表示取消。
+#[tauri::command]
+pub fn scheduler_override(state: State<'_, AppState>, minutes: u32) {
+    state.sched.set_override(minutes.min(240));
+    state.sched.publish_if_changed();
 }
 
 #[tauri::command]
@@ -249,16 +276,22 @@ pub fn run_task(
 
     let db = state.db.clone();
     let orch = state.orch.clone();
-    let sem = state.sem.clone();
+    let sched = state.sched.clone();
     let running = state.running.clone();
     let approver = UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: Some(project.id.clone()) };
     tauri::async_runtime::spawn(async move {
         let result = async {
-            // 并发已满时先记录排队，界面据此区分"排队中"与"工作中"
-            if sem.available_permits() == 0 {
-                let _ = db.append_event("task_queued", Some(&emp.id), None, &serde_json::json!({"prompt": prompt}));
+            // 现在不能立刻开始（并发已满，或额度紧张/暂停）：先记录排队和原因，界面据此区分"排队中"与"工作中"
+            if !sched.would_start_now() {
+                let st = sched.status();
+                let reason = if st.level == crewforge_core::scheduler::Level::Normal {
+                    format!("已有 {} 个任务在运行（并发上限 {}）", st.running, st.effective_limit)
+                } else {
+                    st.reason.clone()
+                };
+                let _ = db.append_event("task_queued", Some(&emp.id), None, &serde_json::json!({"prompt": prompt, "reason": reason, "level": st.level}));
             }
-            let _permit = sem.acquire_owned().await?;
+            let _permit = sched.acquire().await;
             orch.assign(&emp, &path, &prompt, &approver, &NoopObserver).await
         }
         .await;
@@ -423,12 +456,13 @@ fn spawn_meeting_turn(app: &AppHandle, state: &AppState, meeting_id: &str, emplo
         return;
     }
     let _ = app.emit("crewforge://running", state.running.lock().unwrap().iter().cloned().collect::<Vec<_>>());
-    let (db, orch, sem, running) = (state.db.clone(), state.orch.clone(), state.sem.clone(), state.running.clone());
+    let (db, orch, sched, running) = (state.db.clone(), state.orch.clone(), state.sched.clone(), state.running.clone());
     let approver = UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: None };
     let (app, mid) = (app.clone(), meeting_id.to_string());
     tauri::async_runtime::spawn(async move {
         let res: anyhow::Result<()> = async {
-            let _permit = sem.acquire_owned().await?;
+            // 会议发言是交互式的：额度暂停时直接说明原因，不悄悄排队几个小时
+            let _permit = sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
             if minutes {
                 orch.draft_minutes(&mid, &approver).await?;
             } else {
@@ -553,7 +587,7 @@ pub async fn evaluate_project(app: AppHandle, state: State<'_, AppState>, projec
     }
     let _ = app.emit("crewforge://running", state.running.lock().unwrap().iter().cloned().collect::<Vec<_>>());
     let result = async {
-        let _permit = state.sem.clone().acquire_owned().await.map_err(err)?;
+        let _permit = state.sched.acquire_interactive().await?;
         let approver = UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: None };
         state.orch.evaluate_project(&project_id, &kind, &emp, &approver).await.map(|_| ()).map_err(err)
     }.await;

@@ -4,18 +4,32 @@ import { COMPANY_TABS, CompanyView, type CompanyTab } from "./CompanyView";
 import { PROJECT_TABS, ProjectView, type ProjectTab } from "./ProjectView";
 import { SettingsView } from "./SettingsView";
 import { CostView } from "./CostView";
-import { short } from "./common";
-import type { ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary } from "./types";
+import { hhmm, short } from "./common";
+import type { ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
 
 const MAX_EVENTS = 2000;
 const SCOPE_KEY = "crewforge.scope";
-const CONCURRENCY_KEY = "crewforge.concurrency";
 
 type Scope = { kind: "company" } | { kind: "project"; id: string } | { kind: "cost" } | { kind: "settings" };
 
 function loadScope(): Scope {
   try { const s = JSON.parse(localStorage.getItem(SCOPE_KEY) ?? ""); if (s?.kind) return s; } catch { /* 忽略 */ }
   return { kind: "company" };
+}
+
+function SchedChip({ s, onSettings, onAction }: { s: SchedStatus; onSettings: () => void; onAction: (fn: () => Promise<unknown>) => Promise<void> }) {
+  if (s.level === "normal" && !s.override_until && s.waiting === 0) return null;
+  const when = s.resume_at ? `，预计 ${hhmm(s.resume_at)} 恢复` : "";
+  return (
+    <div className={`sched-chip ${s.level}`} title={s.reason}>
+      <button className="link-plain" onClick={onSettings}>
+        {s.level === "paused" ? `⏸ 已暂停${when}` : s.level === "throttled" ? `⚠ 限速 ${s.effective_limit}/${s.user_limit}` : s.override_until ? `已临时忽略额度限制，至 ${hhmm(s.override_until)}` : "额度正常"}
+        {s.waiting > 0 && ` · ${s.waiting} 个排队`}
+      </button>
+      {s.manual_pause && <button className="btn" onClick={() => void onAction(() => api.pauseScheduler(false))}>取消暂停</button>}
+      {!s.manual_pause && s.level !== "normal" && <button className="btn" onClick={() => void onAction(() => api.overrideScheduler(30))}>仍然继续 30 分钟</button>}
+    </div>
+  );
 }
 
 export default function App() {
@@ -25,7 +39,8 @@ export default function App() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [running, setRunning] = useState<string[]>([]);
   const [approvals, setApprovals] = useState<ApprovalReq[]>([]);
-  const [concurrency, setConcurrency] = useState(3);
+  const [sched, setSched] = useState<SchedStatus | null>(null);
+  const concurrency = sched?.user_limit ?? 3;
   const [scope, setScope] = useState<Scope>(loadScope);
   const [companyTab, setCompanyTab] = useState<CompanyTab>("employees");
   const [projectTab, setProjectTab] = useState<ProjectTab>("chat");
@@ -56,9 +71,7 @@ export default function App() {
         setPending(await api.pendingDecisions());
         setProposals(await api.pendingProposals());
         setUnverified(await api.unverifiedCounts());
-        let saved = 0;
-        try { saved = Number(localStorage.getItem(CONCURRENCY_KEY)) || 0; } catch { /* 忽略 */ }
-        setConcurrency(await (saved > 0 ? api.setConcurrency(saved) : api.getConcurrency()));
+        setSched(await api.schedulerStatus());
       } catch (e) { setError(String(e)); }
       setReady(true);
     })();
@@ -67,6 +80,9 @@ export default function App() {
         // 事件由后端按 id 推送；启动时的初始加载与推送可能有重叠，按 id 去重
         setEvents((p) => (p.length > 0 && p[p.length - 1].id >= e.id ? p : [...p, e].slice(-MAX_EVENTS)));
         if (["employee_created", "project_created"].includes(e.kind)) void reloadStatic();
+        if (e.kind === "scheduler_state" || e.kind === "task_queued" || e.kind === "task_started" || e.kind === "turn_result" || e.kind === "rate_limit") {
+          void api.schedulerStatus().then(setSched).catch(() => undefined);
+        }
         if (e.kind.startsWith("issue_") || e.kind === "agent_proposed") {
           void api.pendingDecisions().then(setPending).catch(() => undefined);
           void api.pendingProposals().then(setProposals).catch(() => undefined);
@@ -99,9 +115,15 @@ export default function App() {
     try { await api.respondApproval(a.id, allow); } catch (e) { setError(String(e)); }
   }
   async function changeConcurrency(n: number) {
-    setConcurrency(n);
-    try { localStorage.setItem(CONCURRENCY_KEY, String(n)); } catch { /* 忽略 */ }
-    try { setConcurrency(await api.setConcurrency(n)); } catch (e) { setError(String(e)); }
+    try { await api.setConcurrency(n); setSched(await api.schedulerStatus()); } catch (e) { setError(String(e)); }
+  }
+  // 额度窗口到期会自动恢复，没有事件可等；定时刷新让倒计时和状态保持准确
+  useEffect(() => {
+    const t = window.setInterval(() => void api.schedulerStatus().then(setSched).catch(() => undefined), 15000);
+    return () => window.clearInterval(t);
+  }, []);
+  async function schedAction(fn: () => Promise<unknown>) {
+    try { await fn(); setSched(await api.schedulerStatus()); } catch (e) { setError(String(e)); }
   }
   const openProject = (id: string, tab?: ProjectTab) => {
     const importing = projects.find((p) => p.project.id === id)?.project.onboarding === "in_progress";
@@ -127,6 +149,7 @@ export default function App() {
           ))}
         </nav>
         <div className="top-right">
+          {sched && <SchedChip s={sched} onSettings={() => setScope({ kind: "settings" })} onAction={schedAction} />}
           {quota && (
             <div className="quota" title={`额度状态：${quota.status}`}>
               {([["5h", quota.five_hour], ["7d", quota.seven_day]] as const).map(([l, v]) => (
@@ -207,7 +230,7 @@ export default function App() {
             onLeave={() => setScope({ kind: "company" })} />
         )}
         {scope.kind === "cost" && <CostView events={events} onError={setError} />}
-        {scope.kind === "settings" && <SettingsView concurrency={concurrency} onConcurrency={(n) => void changeConcurrency(n)} />}
+        {scope.kind === "settings" && <SettingsView sched={sched} onConcurrency={(n) => void changeConcurrency(n)} onAction={schedAction} />}
       </main>
     </div>
   );

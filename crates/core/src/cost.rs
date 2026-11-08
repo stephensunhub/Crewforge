@@ -180,6 +180,19 @@ fn sorted(map: HashMap<String, (String, Totals)>) -> Vec<Group> {
 }
 
 impl Db {
+    /// 最近一次额度读数（调度器与成本页共用）。
+    pub fn latest_quota(&self) -> Result<Option<QuotaNow>> {
+        let row: Option<(i64, String)> = self.conn.lock().unwrap()
+            .query_row("SELECT ts, payload FROM events WHERE kind = 'rate_limit' ORDER BY id DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+        Ok(row.and_then(|(ts, p)| {
+            let v: serde_json::Value = serde_json::from_str(&p).ok()?;
+            Some(QuotaNow {
+                ts, status: v["status"].as_str().unwrap_or("unknown").to_string(), five_hour: v["five_hour"].as_f64(), seven_day: v["seven_day"].as_f64(),
+                five_resets_at: v["five_resets_at"].as_i64(), seven_resets_at: v["seven_resets_at"].as_i64(),
+            })
+        }))
+    }
+
     /// `since`：只统计该时间（毫秒）之后的事件；`tz_offset_minutes`：本地时区相对 UTC 的分钟数（东八区为 480），用于按天归并。
     pub fn cost_report(&self, since: Option<i64>, tz_offset_minutes: i64) -> Result<CostReport> {
         let since_v = since.unwrap_or(0);
