@@ -1,6 +1,17 @@
-[package]
-name = "Crewforge"
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+libc = "0.2"

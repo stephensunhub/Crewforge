@@ -1,0 +1,15 @@
+[package]
+name = "crewforge-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "crewforge"
+path = "src/main.rs"
+
+[dependencies]
+crewforge-core = { path = "../core" }
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+dirs.workspace = true
