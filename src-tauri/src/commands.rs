@@ -1,5 +1,6 @@
 use crate::approval::UiApprover;
 use crate::state::AppState;
+use crewforge_core::memory::{DEFAULT_MAX_CHARS, DEFAULT_MAX_ITEMS, Memory, MemoryFilter, NewMemory};
 use crewforge_core::board::{Actor, IssueView, Meeting, MeetingMessage, PendingDecision};
 use crewforge_core::db::{Company, Employee, EmployeeCard, EventRow, Member, Project, ProjectSummary, Session, default_data_dir};
 use crewforge_core::provider::claude::Decision;
@@ -433,4 +434,67 @@ fn spawn_meeting_turn(app: &AppHandle, state: &AppState, meeting_id: &str, emplo
             let _ = db.append_event("meeting_minutes", Some(&emp.id), None, &serde_json::json!({"meeting_id": mid}));
         }
     });
+}
+
+
+// ================= 记忆 =================
+#[tauri::command]
+pub fn list_memories(
+    state: State<'_, AppState>, layer: Option<String>, project_id: Option<String>, employee_id: Option<String>,
+    status: Option<String>, query: Option<String>,
+) -> CmdResult<Vec<Memory>> {
+    state.db.list_memories(&MemoryFilter { layer, project_id, employee_id, status, query }).map_err(err)
+}
+
+/// 人类手写的记忆直接是已验证。
+#[tauri::command]
+pub fn add_memory(
+    state: State<'_, AppState>, layer: String, project_id: Option<String>, employee_id: Option<String>,
+    kind: String, title: String, content: String, scope: String,
+) -> CmdResult<Memory> {
+    state.db.add_memory(NewMemory {
+        layer, project_id, employee_id, kind, title, content, scope,
+        source_kind: "human".into(), created_by: "human".into(), ..Default::default()
+    }).map_err(err)
+}
+
+#[tauri::command]
+pub fn update_memory(state: State<'_, AppState>, id: String, title: String, content: String, scope: String) -> CmdResult<()> {
+    state.db.update_memory(&id, &title, &content, &scope).map_err(err)
+}
+
+#[tauri::command]
+pub fn verify_memory(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.db.verify_memory(&id, "human").map_err(err)
+}
+
+#[tauri::command]
+pub fn expire_memory(state: State<'_, AppState>, id: String, reason: String) -> CmdResult<()> {
+    state.db.expire_memory(&id, reason.trim()).map_err(err)
+}
+
+#[tauri::command]
+pub fn delete_memory(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.db.delete_memory(&id).map_err(err)
+}
+
+#[tauri::command]
+pub fn promote_memory(state: State<'_, AppState>, id: String, employee_id: String) -> CmdResult<()> {
+    state.db.promote_memory(&id, &employee_id).map(|_| ()).map_err(err)
+}
+
+#[tauri::command]
+pub fn save_meeting_lessons(state: State<'_, AppState>, meeting_id: String) -> CmdResult<usize> {
+    state.db.save_meeting_lessons(&meeting_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn unverified_counts(state: State<'_, AppState>) -> CmdResult<Vec<(String, String, i64)>> {
+    state.db.unverified_counts().map_err(err)
+}
+
+/// 预览：给定任务描述，这名员工在这个项目里开始任务时会被注入哪些记忆。不记录使用情况。
+#[tauri::command]
+pub fn preview_retrieval(state: State<'_, AppState>, project_id: Option<String>, employee_id: String, text: String) -> CmdResult<Vec<Memory>> {
+    state.db.retrieve_memories(project_id.as_deref(), &employee_id, None, &text, DEFAULT_MAX_ITEMS, DEFAULT_MAX_CHARS).map_err(err)
 }

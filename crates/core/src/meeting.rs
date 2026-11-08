@@ -101,6 +101,20 @@ impl Orchestrator {
             if !issues.is_empty() {
                 p.push_str(&format!("\n相关议题：\n{issues}"));
             }
+            // 与会议主题、议题、最近发言相关的记忆
+            let mut q = format!("{} ", meeting.title);
+            for iid in self.db.meeting_issue_ids(&meeting.id)? {
+                if let Some(i) = self.db.get_issue(&iid)? {
+                    q.push_str(&format!("{} {} ", i.title, i.summary));
+                }
+            }
+            for m in new_msgs.iter().rev().take(3) {
+                q.push_str(&format!("{} ", m.content));
+            }
+            let mem = self.memory_block(Some(&project.id), employee, None, &q, "meeting", &meeting.id);
+            if !mem.is_empty() {
+                p.push_str(&format!("\n{mem}"));
+            }
             if let Some(tid) = &meeting.task_id {
                 if let Ok(diff) = self.task_diff(tid).await {
                     p.push_str(&format!("\n待评审的改动：\n```diff\n{}\n```\n", clip(&diff, MAX_DIFF_CHARS)));

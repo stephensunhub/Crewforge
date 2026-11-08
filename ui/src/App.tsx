@@ -32,6 +32,7 @@ export default function App() {
   const [inbox, setInbox] = useState(false);
   const [ready, setReady] = useState(false);
   const [pending, setPending] = useState<PendingDecision[]>([]);
+  const [unverified, setUnverified] = useState<[string, string, number][]>([]);
   const [meetingFocus, setMeetingFocus] = useState<string | null>(null);
 
   const employees = useMemo(() => cards.map((c) => c.employee), [cards]);
@@ -51,6 +52,7 @@ export default function App() {
         const [evs, run] = await Promise.all([api.recentEvents(null, 800), api.running()]);
         setEvents(evs); setRunning(run);
         setPending(await api.pendingDecisions());
+        setUnverified(await api.unverifiedCounts());
         let saved = 0;
         try { saved = Number(localStorage.getItem(CONCURRENCY_KEY)) || 0; } catch { /* 忽略 */ }
         setConcurrency(await (saved > 0 ? api.setConcurrency(saved) : api.getConcurrency()));
@@ -62,6 +64,7 @@ export default function App() {
         setEvents((p) => [...p, e].slice(-MAX_EVENTS));
         if (["employee_created", "project_created"].includes(e.kind)) void reloadStatic();
         if (e.kind.startsWith("issue_")) void api.pendingDecisions().then(setPending).catch(() => undefined);
+        if (e.kind.startsWith("memory_") && e.kind !== "memory_injected") void api.unverifiedCounts().then(setUnverified).catch(() => undefined);
         if (["task_created", "task_merged", "task_abandoned", "task_started", "turn_result", "task_failed"].includes(e.kind)) void api.projects().then(setProjects).catch(() => undefined);
       },
       onApproval: (a) => setApprovals((p) => [...p, a]),
@@ -122,7 +125,7 @@ export default function App() {
             </div>
           )}
           <button className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
-            🔔{approvals.length + pending.length > 0 && <span className="count">{approvals.length + pending.length}</span>}
+            🔔{approvals.length + pending.length + unverified.length > 0 && <span className="count">{approvals.length + pending.length + unverified.length}</span>}
           </button>
           <button className={`icon-btn text ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>成本</button>
           <button className={`icon-btn ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })} title="设置">⚙</button>
@@ -130,7 +133,14 @@ export default function App() {
         {inbox && (
           <div className="inbox">
             <b>待你处理</b>
-            {approvals.length + pending.length === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
+            {approvals.length + pending.length + unverified.length === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
+            {unverified.map(([pid, pname, n]) => (
+              <div className="inbox-item" key={pid}>
+                <div><b>{n}</b> 条经验等待验证<span className="hint"> · {pname}</span></div>
+                <div className="hint">未验证的经验不会被注入给员工。</div>
+                <div className="btns"><button className="btn primary" onClick={() => { openProject(pid, "memory"); setInbox(false); }}>去验证</button></div>
+              </div>
+            ))}
             {pending.map((p) => (
               <div className="inbox-item" key={p.issue.id}>
                 <div>议题待你裁决：<b>{p.issue.title}</b><span className="hint"> · {p.project_name}</span></div>
@@ -167,7 +177,7 @@ export default function App() {
 
       <main className="content">
         {scope.kind === "company" && (
-          <CompanyView tab={companyTab} cards={cards} projects={projects} company={company} running={running}
+          <CompanyView tab={companyTab} cards={cards} projects={projects} company={company} running={running} events={events}
             onOpenProject={openProject} onChanged={() => void reloadStatic()} onError={setError} />
         )}
         {scope.kind === "project" && currentProject && (

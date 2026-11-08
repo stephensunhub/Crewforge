@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import { Avatar, Field, Modal, Placeholder, basename } from "./common";
-import type { Company, EmployeeCard, ProjectSummary } from "./types";
+import { MemoryView } from "./MemoryView";
+import type { Company, EmployeeCard, EventRow, ProjectSummary } from "./types";
 
 export type CompanyTab = "employees" | "projects" | "memory" | "docs" | "manage";
 export const COMPANY_TABS: [CompanyTab, string][] = [
@@ -80,18 +81,19 @@ function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: str
 }
 
 export function CompanyView({
-  tab, cards, projects, company, running, onOpenProject, onChanged, onError,
+  tab, cards, projects, company, running, events, onOpenProject, onChanged, onError,
 }: {
   tab: CompanyTab;
   cards: EmployeeCard[];
   projects: ProjectSummary[];
   company: Company | null;
   running: string[];
+  events: EventRow[];
   onOpenProject: (id: string) => void;
   onChanged: () => void;
   onError: (m: string) => void;
 }) {
-  const [modal, setModal] = useState<"new-emp" | "new-proj" | { edit: EmployeeCard } | null>(null);
+  const [modal, setModal] = useState<"new-emp" | "new-proj" | { edit: EmployeeCard } | { memory: EmployeeCard } | null>(null);
   const [filter, setFilter] = useState("");
   const visible = filter.trim()
     ? cards.filter((c) => (c.employee.name + c.employee.role).toLowerCase().includes(filter.trim().toLowerCase()))
@@ -137,6 +139,7 @@ export function CompanyView({
                 <div className="card-foot">
                   {c.active_tasks > 0 && <span className="hint">{c.active_tasks} 个进行中的任务</span>}
                   <span style={{ flex: 1 }} />
+                  <button className="btn" onClick={() => setModal({ memory: c })}>个人记忆</button>
                   <button className="btn" onClick={() => setModal({ edit: c })}>编辑</button>
                   <button className="btn danger" onClick={async () => {
                     if (await api.confirm(`归档 ${c.employee.name}？\n历史记录和记忆会保留，但不再出现在列表里，也不能分配任务。`, "确认归档"))
@@ -148,6 +151,11 @@ export function CompanyView({
           })}
         </div>
         {modal === "new-emp" && <EmployeeForm onClose={() => setModal(null)} onSubmit={async (n, r, p) => { if (await guard(() => api.addEmployee(n, r, p))) setModal(null); }} />}
+        {modal && typeof modal === "object" && "memory" in modal && (
+          <Modal title={`${modal.memory.employee.name} 的个人记忆`} onClose={() => setModal(null)} width={760}>
+            <MemoryView embedded scope={{ layer: "employee", employeeId: modal.memory.employee.id, name: modal.memory.employee.name }} events={events} onError={onError} />
+          </Modal>
+        )}
         {modal && typeof modal === "object" && "edit" in modal && (
           <EmployeeForm
             initial={{ name: modal.edit.employee.name, role: modal.edit.employee.role, persona: modal.edit.employee.persona }}
@@ -195,7 +203,7 @@ export function CompanyView({
   }
 
   if (tab === "manage") return <CompanyManage company={company} onSaved={onChanged} onError={onError} />;
-  if (tab === "memory") return <Placeholder title="公司记忆">跨项目通用的经验、工程习惯与踩过的坑。每次只会检索少量相关条目，并标注来源与验证状态。</Placeholder>;
+  if (tab === "memory") return <MemoryView scope={{ layer: "company" }} events={events} onError={onError} />;
   return <Placeholder title="公司文档">公司级工程规范、技术选型原则、通用流程。存放在数据目录，供所有项目引用。</Placeholder>;
 }
 

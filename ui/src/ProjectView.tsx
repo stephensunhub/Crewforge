@@ -5,6 +5,7 @@ import { Chat } from "./Chat";
 import { TasksPanel } from "./TasksPanel";
 import { IssuesView } from "./IssuesView";
 import { MeetingsView } from "./MeetingsView";
+import { MemoryView } from "./MemoryView";
 import type { ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
 
 export type ProjectTab = "chat" | "tasks" | "issues" | "meetings" | "members" | "memory" | "docs";
@@ -114,7 +115,7 @@ export function ProjectView({
       <MeetingsView projectId={project.id} meetings={meetings} members={members} issues={issues} tasks={taskViews} events={events} running={running}
         focusId={meetingFocus} onFocused={onFocusHandled} onChanged={() => void refreshBoard()} onError={onError} />
     );
-  if (tab === "memory") return <Placeholder title="项目记忆">架构、接口约定、业务规则、已知问题与历史决策。员工被唤醒时只检索与当前任务相关的少量条目。</Placeholder>;
+  if (tab === "memory") return <MemoryView scope={{ layer: "project", projectId: project.id }} events={events} members={members} onError={onError} />;
   return <Placeholder title="项目文档">需求、架构说明、决策记录、测试基线。计划存放在项目仓库的 docs/ 目录，由员工通过同一套分支与合并流程维护。</Placeholder>;
 }
 

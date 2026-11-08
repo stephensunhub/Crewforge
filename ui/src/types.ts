@@ -175,3 +175,30 @@ export interface MeetingDetail {
   issue_ids: string[];
   agent_replies: number;
 }
+
+export type MemoryLayer = "company" | "project" | "employee" | "task";
+export type MemoryKind = "lesson" | "decision" | "fact" | "convention" | "pitfall";
+export interface Memory {
+  id: string;
+  layer: MemoryLayer;
+  project_id: string | null;
+  employee_id: string | null;
+  task_id: string | null;
+  kind: MemoryKind;
+  title: string;
+  content: string;
+  status: "unverified" | "verified" | "expired";
+  source_kind: "human" | "meeting" | "issue" | "promoted";
+  source_ref: string | null;
+  scope: string;
+  related_commit: string | null;
+  promoted_from: string | null;
+  created_by: string;
+  created_at: number;
+  verified_at: number | null;
+  verified_by: string | null;
+  expired_at: number | null;
+  expired_reason: string | null;
+  updated_at: number;
+  uses: number;
+}

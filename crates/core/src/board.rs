@@ -396,6 +396,14 @@ impl Db {
         )?;
         tx.commit()?;
         drop(conn);
+        // 决议沉淀为项目决策记忆；它取代的旧决议对应的记忆自动过期
+        if let Some(done) = self.get_issue(id)? {
+            let rejected: Vec<(String, String)> = self.issue_options(id)?.into_iter()
+                .filter(|o| o.status == "rejected")
+                .map(|o| (o.title, o.reject_reason.unwrap_or_default()))
+                .collect();
+            self.record_decision_memory(&done, &by, &rejected)?;
+        }
         self.append_event_for(Some(&i.project_id), "issue_decided", Some(&by).filter(|b| *b != "human").map(String::as_str), None,
             &json!({"issue_id": id, "title": i.title, "decision": decision.trim(), "decided_by": by}))?;
         Ok(())

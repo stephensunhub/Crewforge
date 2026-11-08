@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Meeting, MeetingDetail, MeetingKind,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, Meeting, MeetingDetail, MeetingKind,
 } from "./types";
 
 export const api = {
@@ -47,6 +47,20 @@ export const api = {
   draftMinutes: (meetingId: string) => invoke<void>("draft_minutes", { meetingId }),
   saveMinutes: (id: string, minutes: string) => invoke<void>("save_minutes", { id, minutes }),
   closeMeeting: (id: string) => invoke<void>("close_meeting", { id }),
+  // 记忆
+  memories: (f: { layer?: string; projectId?: string; employeeId?: string; status?: string; query?: string }) =>
+    invoke<Memory[]>("list_memories", { layer: f.layer ?? null, projectId: f.projectId ?? null, employeeId: f.employeeId ?? null, status: f.status ?? null, query: f.query ?? null }),
+  addMemory: (a: { layer: string; projectId: string | null; employeeId: string | null; kind: string; title: string; content: string; scope: string }) =>
+    invoke<Memory>("add_memory", a),
+  updateMemory: (id: string, title: string, content: string, scope: string) => invoke<void>("update_memory", { id, title, content, scope }),
+  verifyMemory: (id: string) => invoke<void>("verify_memory", { id }),
+  expireMemory: (id: string, reason: string) => invoke<void>("expire_memory", { id, reason }),
+  deleteMemory: (id: string) => invoke<void>("delete_memory", { id }),
+  promoteMemory: (id: string, employeeId: string) => invoke<void>("promote_memory", { id, employeeId }),
+  saveLessons: (meetingId: string) => invoke<number>("save_meeting_lessons", { meetingId }),
+  unverifiedCounts: () => invoke<[string, string, number][]>("unverified_counts"),
+  previewRetrieval: (projectId: string | null, employeeId: string, text: string) =>
+    invoke<Memory[]>("preview_retrieval", { projectId, employeeId, text }),
   // 事件与执行
   recentEvents: (projectId: string | null, limit: number) => invoke<EventRow[]>("recent_events", { projectId, limit }),
   running: () => invoke<string[]>("running_employees"),

@@ -57,10 +57,18 @@ impl Orchestrator {
         let repo_key = repo.root.to_string_lossy().into_owned();
 
         let project_id = self.db.project_by_path(&repo_key)?.map(|p| p.id);
-        let task = match self.db.active_task(&employee.id, &repo_key)? {
-            Some(t) => t,
-            None => self.start_task(employee, &repo.root, &repo.branch, prompt).await?,
+        // 只在新任务开始时注入记忆：继续同一任务时，会话里已经有这些内容，不重复传递
+        let (task, fresh) = match self.db.active_task(&employee.id, &repo_key)? {
+            Some(t) => (t, false),
+            None => (self.start_task(employee, &repo.root, &repo.branch, prompt).await?, true),
         };
+        let block = if fresh {
+            self.memory_block(project_id.as_deref(), employee, Some(&task.id), prompt, "task", &task.id)
+        } else {
+            String::new()
+        };
+        let injected = !block.is_empty();
+        let full_prompt = if injected { format!("{block}\n{prompt}") } else { prompt.to_string() };
 
         let cfg = TurnConfig {
             project_path: PathBuf::from(&task.worktree_path),
@@ -68,10 +76,11 @@ impl Orchestrator {
             project_id,
             read_only: false,
             meeting_id: None,
-            log_prompt: None,
+            // 事件里只记录原始任务，不重复存注入的记忆（注入量见 memory_injected 事件）
+            log_prompt: injected.then(|| prompt.to_string()),
             program: self.program.clone(),
         };
-        let result = run_turn(&self.db, employee, &cfg, prompt, approver, observer).await;
+        let result = run_turn(&self.db, employee, &cfg, &full_prompt, approver, observer).await;
 
         // 无论成功与否都保存检查点：被中断时的进展同样不能丢
         let label = if result.is_ok() { "" } else { " (WIP，执行被中断)" };
@@ -157,6 +166,8 @@ impl Orchestrator {
         match &outcome {
             MergeOutcome::Merged { commit } => {
                 self.db.set_task_status(&task.id, "merged", Some(commit))?;
+                // 合并即视为验证：关联该任务的待验证经验转为已验证
+                self.db.verify_task_memories(&task.id, Some(commit))?;
                 self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_merged", eid, None, &json!({"task_id": task.id, "commit": commit, "title": task.title}))?;
             }
             MergeOutcome::Empty => {

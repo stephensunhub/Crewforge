@@ -120,6 +120,7 @@ function MeetingRoom({ id, members, issues, events, running, onChanged, onError 
   const [minutes, setMinutes] = useState("");
   const [dirty, setDirty] = useState(false);
   const [waiting, setWaiting] = useState<string[]>([]);
+  const [lessonNote, setLessonNote] = useState("");
   const feed = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
 
@@ -192,8 +193,11 @@ function MeetingRoom({ id, members, issues, events, running, onChanged, onError 
 
       <div className="minutes">
         <div className="minutes-head"><b>会议纪要</b>
-          <span className="hint">决议、被否方案及原因、行动项、待验证经验。由 AI 起草，你可以修改。{dirty ? " · 有未保存的修改" : ""}</span>
+          <span className="hint">决议、被否方案及原因、行动项、待验证经验。由 AI 起草，你可以修改。{dirty ? " · 有未保存的修改" : ""}{lessonNote ? ` · ${lessonNote}` : ""}</span>
           <span style={{ flex: 1 }} />
+          <button className="btn" disabled={!m.minutes.trim() || dirty} title={dirty ? "请先保存纪要" : "把“待验证的经验”一节存为待验证的项目记忆"} onClick={async () => {
+            try { const n = await api.saveLessons(id); setLessonNote(n > 0 ? `已存入 ${n} 条待验证经验，到“记忆”页验证后才会生效` : "这些经验之前已经存过了"); } catch (e) { onError(String(e)); }
+          }}>把经验存入记忆</button>
           <button className="btn" disabled={!dirty} onClick={async () => { try { await api.saveMinutes(id, minutes); setDirty(false); await load(); } catch (e) { onError(String(e)); } }}>保存纪要</button>
         </div>
         <textarea rows={minutes ? 7 : 2} value={minutes} placeholder="还没有纪要。可以让主持人起草，也可以直接手写。" onChange={(e) => { setMinutes(e.target.value); setDirty(true); }} />

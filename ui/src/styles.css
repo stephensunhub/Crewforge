@@ -232,3 +232,19 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .minutes { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 18px; display: grid; gap: 6px; }
 .minutes-head { display: flex; align-items: center; gap: 10px; }
 .minutes textarea { font-size: 13px; min-height: 40px; }
+
+/* 记忆 */
+.mem-filters { display: flex; gap: 8px; margin-bottom: 12px; }
+.mem-filters input { max-width: 280px; } .mem-filters select { width: auto; }
+.mem-list { display: grid; gap: 10px; }
+.mem { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; background: var(--panel); display: grid; gap: 6px; }
+.mem.unverified { border-color: var(--warn); }
+.mem.expired { opacity: .6; }
+.mem-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mem-body { white-space: pre-wrap; font-size: 13px; }
+.mem-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.mem-btns .btn { padding: 3px 10px; font-size: 12px; }
+.badge.mst-unverified { color: var(--warn); border-color: var(--warn); }
+.badge.mst-verified { color: var(--ok); border-color: var(--ok); }
+.preview { margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); }
+.preview .row input { flex: 1; }

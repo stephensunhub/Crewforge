@@ -3,6 +3,7 @@
 pub mod board;
 pub mod db;
 pub mod meeting;
+pub mod memory;
 pub mod orchestrator;
 pub mod policy;
 pub mod provider;

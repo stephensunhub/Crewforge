@@ -69,3 +69,7 @@ export const ISSUE_STATUS_LABEL: Record<string, string> = {
 export const MEETING_KIND_LABEL: Record<string, string> = {
   requirements: "需求评审", design: "方案评审", code_review: "Code Review", qa_case: "QA Case 评审", retro: "复盘",
 };
+
+export const MEMORY_KIND_LABEL: Record<string, string> = { lesson: "经验", decision: "决策", fact: "事实", convention: "规范", pitfall: "踩过的坑" };
+export const MEMORY_STATUS_LABEL: Record<string, string> = { unverified: "待验证", verified: "已验证", expired: "已过期" };
+export const MEMORY_SOURCE_LABEL: Record<string, string> = { human: "人工写入", meeting: "会议纪要", issue: "议题决议", promoted: "学习自项目" };
