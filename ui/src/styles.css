@@ -276,3 +276,23 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .report-head { display: flex; align-items: center; gap: 10px; }
 .report-head select { width: auto; }
 .report-body { margin: 0; white-space: pre-wrap; word-break: break-word; font: 13px/1.6 inherit; max-height: 360px; overflow: auto; background: var(--bg); border-radius: 8px; padding: 10px 12px; }
+
+/* 成本与额度 */
+.panel-box { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 14px 16px; margin-bottom: 16px; }
+.qgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 8px; }
+.qmeter { display: grid; gap: 4px; }
+.qtop { display: flex; justify-content: space-between; }
+.meter.wide { width: 100%; height: 8px; margin-top: 0; }
+.spark { display: block; margin-top: 4px; }
+.cards4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 10px 14px; display: grid; gap: 2px; }
+.stat span { color: var(--muted); font-size: 12px; }
+.stat b { font-size: 22px; }
+.stat i { font-style: normal; font-size: 11px; color: var(--muted); }
+.bad { color: var(--bad); }
+.bars { width: 100%; max-height: 190px; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 18px; }
+.cost-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cost-table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 8px; }
+.cost-table td { padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+@media (max-width: 1100px) { .two-col, .qgrid { grid-template-columns: 1fr; } }

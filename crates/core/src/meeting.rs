@@ -158,6 +158,8 @@ impl Orchestrator {
             task_id: None,
             project_id: None, // 不进入项目群聊的事件流，会议内容只在会议里显示
             read_only: true,
+            purpose: "meeting".into(),
+            attr_project: Some(meeting.project_id.clone()),
             meeting_id: Some(meeting_id.into()),
             log_prompt: Some(format!("[会议:{}] {}", kind_label(&meeting.kind), meeting.title)),
             program: self.program.clone(),
@@ -200,6 +202,8 @@ impl Orchestrator {
             task_id: None,
             project_id: None,
             read_only: true,
+            purpose: "minutes".into(),
+            attr_project: Some(meeting.project_id.clone()),
             meeting_id: Some(meeting_id.into()),
             log_prompt: Some(format!("[纪要起草] {}", meeting.title)),
             program: self.program.clone(),

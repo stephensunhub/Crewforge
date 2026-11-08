@@ -231,3 +231,22 @@ export type Origin = "pre_existing" | "introduced" | "fixed" | "unknown";
 export interface Finding { command_id: string; command_label: string; item: string; origin: Origin; note: string }
 export interface CheckReport { findings: Finding[]; results: CommandResult[]; pre_existing: number; introduced: number; fixed: number; unknown: number }
 export interface StoredCheck { created_at: number; report: CheckReport }
+
+export interface Totals {
+  turns: number; errors: number; cost_usd: number; turns_with_cost: number; input_tokens: number; output_tokens: number;
+  cache_read_tokens: number; cache_creation_tokens: number; turns_with_tokens: number; duration_ms: number; turns_with_duration: number;
+}
+export interface CostGroup { key: string; label: string; totals: Totals }
+export interface CostDay { day: string; totals: Totals }
+export interface CostTask { task_id: string; title: string; employee: string; project: string; totals: Totals }
+export interface Efficiency {
+  avg_context_per_turn: number | null; cache_hit_ratio: number | null; resumed_starts: number; total_starts: number; failed_runs: number;
+  recovered_sessions: number; memory_injections: number; memory_items: number; memory_chars: number; avg_turns_per_task: number | null;
+  meeting_human_messages: number; meeting_agent_replies: number;
+}
+export interface QuotaPoint { ts: number; five_hour: number | null; seven_day: number | null }
+export interface QuotaNow { ts: number; status: string; five_hour: number | null; seven_day: number | null; five_resets_at: number | null; seven_resets_at: number | null }
+export interface CostReport {
+  since: number | null; totals: Totals; by_employee: CostGroup[]; by_project: CostGroup[]; by_purpose: CostGroup[]; by_day: CostDay[];
+  top_tasks: CostTask[]; efficiency: Efficiency; quota_now: QuotaNow | null; quota_series: QuotaPoint[];
+}

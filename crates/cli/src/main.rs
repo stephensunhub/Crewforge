@@ -5,6 +5,7 @@
 //!   crewforge employee list
 //!   crewforge run [--cwd 目录] [--max 并发数] <员工> <任务> [<员工> <任务> ...]
 //!   crewforge sessions
+//!   crewforge cost [天数]                 成本与额度汇总（费用为 CLI 报告的等值估算，未知的数据不计入）
 //!   crewforge scan [目录]                 只读扫描项目（技术栈、结构、Git 历史、建议的基线命令）
 //!   crewforge init-repo [目录]            初始化 Git 仓库（worktree 需要至少一个提交）
 //!   crewforge tasks [目录]                列出项目的任务、改动文件、冲突预检
@@ -55,7 +56,7 @@ impl Observer for Printer {
         match e {
             AgentEvent::Text(t) => eprintln!("💬 [{who}] {t}"),
             AgentEvent::ToolUse { name, .. } => eprintln!("🔧 [{who}] 调用 {name}"),
-            AgentEvent::RateLimit { status, five_hour, seven_day } if status != "allowed" => {
+            AgentEvent::RateLimit { status, five_hour, seven_day, .. } if status != "allowed" => {
                 eprintln!("📊 [{who}] 额度状态 {status}（5h {five_hour:?} / 7d {seven_day:?}）")
             }
             AgentEvent::Result(r) => eprintln!(
@@ -91,6 +92,8 @@ async fn main() -> Result<()> {
         ["events"] => print_events(&db, 20)?,
         ["events", n] => print_events(&db, n.parse()?)?,
         ["run", rest @ ..] => run(db, orch, rest).await?,
+        ["cost"] => cost(&db, None)?,
+        ["cost", d] => cost(&db, Some(d.parse()?))?,
         ["scan"] => scan(&std::env::current_dir()?).await?,
         ["scan", dir] => scan(&PathBuf::from(dir)).await?,
         ["init-repo"] => init_repo(&orch, &std::env::current_dir()?).await?,
@@ -126,6 +129,28 @@ fn print_events(db: &Db, n: usize) -> Result<()> {
     for e in db.recent_events(n)? {
         println!("#{} {} {} {}", e.id, e.kind, e.employee_id.unwrap_or_default(), e.payload);
     }
+    Ok(())
+}
+
+fn cost(db: &Db, days: Option<i64>) -> Result<()> {
+    let since = days.map(|d| crewforge_core::db::now_ms() - d * 86_400_000);
+    let r = db.cost_report(since, 0)?;
+    let t = &r.totals;
+    println!("调用 {} 次（{} 次出错）· 估算费用 {} · 上下文 token {} · 输出 {}",
+        t.turns, t.errors,
+        if t.turns_with_cost == 0 { "未知".to_string() } else { format!("${:.3}", t.cost_usd) },
+        t.context_tokens(), t.output_tokens);
+    for (title, groups) in [("员工", &r.by_employee), ("项目", &r.by_project), ("用途", &r.by_purpose)] {
+        for g in groups {
+            println!("  [{title}] {:<14} {} 次 ${:.3} 上下文 {}", g.label, g.totals.turns, g.totals.cost_usd, g.totals.context_tokens());
+        }
+    }
+    if let Some(q) = &r.quota_now {
+        println!("额度：5h {:?} / 7d {:?}（{}）", q.five_hour, q.seven_day, q.status);
+    }
+    let e = &r.efficiency;
+    println!("效率：平均上下文 {:?} · 缓存命中 {:?} · 会话复用 {}/{} · 失败 {} · 恢复 {}",
+        e.avg_context_per_turn.map(|v| v.round()), e.cache_hit_ratio.map(|v| (v * 100.0).round()), e.resumed_starts, e.total_starts, e.failed_runs, e.recovered_sessions);
     Ok(())
 }
 

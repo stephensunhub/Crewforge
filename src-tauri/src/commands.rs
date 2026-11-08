@@ -1,6 +1,7 @@
 use crate::approval::UiApprover;
 use crate::state::AppState;
 use crewforge_core::onboarding::{OnboardingState, StoredCheck, DEFAULT_COMMAND_TIMEOUT, baseline::CheckReport, scan::{BaselineCommand, ScanReport}};
+use crewforge_core::cost::CostReport;
 use crewforge_core::memory::{DEFAULT_MAX_CHARS, DEFAULT_MAX_ITEMS, Memory, MemoryFilter, NewMemory};
 use crewforge_core::board::{Actor, IssueView, Meeting, MeetingMessage, PendingDecision};
 use crewforge_core::db::{Company, Employee, EmployeeCard, EventRow, Member, Project, ProjectSummary, Session, default_data_dir};
@@ -576,4 +577,13 @@ pub async fn check_task(state: State<'_, AppState>, task_id: String) -> CmdResul
 #[tauri::command]
 pub fn latest_task_check(state: State<'_, AppState>, task_id: String) -> CmdResult<Option<StoredCheck>> {
     state.db.latest_task_check(&task_id).map_err(err)
+}
+
+
+// ================= 成本与额度 =================
+/// `days`：只统计最近多少天；不传表示全部。`tz_offset_minutes`：本地时区相对 UTC 的分钟数，用于按天归并。
+#[tauri::command]
+pub fn cost_report(state: State<'_, AppState>, days: Option<i64>, tz_offset_minutes: i64) -> CmdResult<CostReport> {
+    let since = days.filter(|d| *d > 0).map(|d| crewforge_core::db::now_ms() - d * 86_400_000);
+    state.db.cost_report(since, tz_offset_minutes).map_err(err)
 }

@@ -77,8 +77,10 @@ impl Orchestrator {
         let cfg = TurnConfig {
             project_path: PathBuf::from(&task.worktree_path),
             task_id: Some(task.id.clone()),
+            attr_project: project_id.clone(),
             project_id,
             read_only: false,
+            purpose: "task".into(),
             meeting_id: None,
             // 事件里只记录原始任务，不重复存注入的记忆（注入量见 memory_injected 事件）
             log_prompt: injected.then(|| prompt.to_string()),

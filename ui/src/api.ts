@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, ScanReport, BaselineCommand, CheckReport, StoredCheck, Meeting, MeetingDetail, MeetingKind,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, Meeting, MeetingDetail, MeetingKind,
 } from "./types";
 
 export const api = {
@@ -28,6 +28,8 @@ export const api = {
   addMember: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("add_member", { projectId, employeeId, role }),
   setMemberRole: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("set_member_role", { projectId, employeeId, role }),
   removeMember: (projectId: string, employeeId: string) => invoke<void>("remove_member", { projectId, employeeId }),
+  // 成本与额度
+  costReport: (days: number | null) => invoke<CostReport>("cost_report", { days, tzOffsetMinutes: -new Date().getTimezoneOffset() }),
   // 旧项目导入
   onboardingState: (projectId: string) => invoke<OnboardingState>("onboarding_state", { projectId }),
   runScan: (projectId: string) => invoke<ScanReport>("run_scan", { projectId }),

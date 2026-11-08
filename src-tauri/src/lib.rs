@@ -23,6 +23,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::cost_report,
             commands::onboarding_state,
             commands::run_scan,
             commands::run_baseline,

@@ -86,7 +86,14 @@ pub enum AgentEvent {
     Text(String),
     ToolUse { id: String, name: String, input: Value },
     Approval(ApprovalRequest),
-    RateLimit { status: String, five_hour: Option<f64>, seven_day: Option<f64> },
+    RateLimit {
+        status: String,
+        five_hour: Option<f64>,
+        seven_day: Option<f64>,
+        /// 窗口重置时间（Unix 秒）
+        five_resets_at: Option<i64>,
+        seven_resets_at: Option<i64>,
+    },
     Result(TurnResult),
 }
 
@@ -132,6 +139,8 @@ pub fn parse_line(line: &str) -> Vec<AgentEvent> {
                 status: info["status"].as_str().unwrap_or("unknown").into(),
                 five_hour: info["unifiedWindows"]["five_hour"]["utilization"].as_f64(),
                 seven_day: info["unifiedWindows"]["seven_day"]["utilization"].as_f64(),
+                five_resets_at: info["unifiedWindows"]["five_hour"]["resetsAt"].as_i64(),
+                seven_resets_at: info["unifiedWindows"]["seven_day"]["resetsAt"].as_i64(),
             }]
         }
         Some("result") => {
@@ -318,10 +327,10 @@ mod tests {
         let AgentEvent::Result(r) = &parse_line(&l)[0] else { panic!() };
         assert_eq!(r.cost_usd, Some(0.1));
         assert_eq!((r.input_tokens, r.output_tokens), (Some(3), Some(4)));
-        let l = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","unifiedWindows":{"five_hour":{"utilization":0.7},"seven_day":{"utilization":0.5}}}}"#;
+        let l = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","unifiedWindows":{"five_hour":{"utilization":0.7,"resetsAt":1700000000},"seven_day":{"utilization":0.5}}}}"#;
         assert_eq!(
             parse_line(l),
-            vec![AgentEvent::RateLimit { status: "allowed_warning".into(), five_hour: Some(0.7), seven_day: Some(0.5) }]
+            vec![AgentEvent::RateLimit { status: "allowed_warning".into(), five_hour: Some(0.7), seven_day: Some(0.5), five_resets_at: Some(1700000000), seven_resets_at: None }]
         );
     }
 

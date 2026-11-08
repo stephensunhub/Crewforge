@@ -36,6 +36,10 @@ pub struct TurnConfig {
     pub meeting_id: Option<String>,
     /// 写入事件的任务内容；会议中完整提示很长，只记录简短标签
     pub log_prompt: Option<String>,
+    /// 用途：task | meeting | minutes | onboarding，用于成本归类
+    pub purpose: String,
+    /// 成本归属的项目（与事件在哪个群里可见无关）
+    pub attr_project: Option<String>,
     /// 测试时可替换为假的 CLI
     pub program: String,
 }
@@ -74,6 +78,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
         "task_id": cfg.task_id, "meeting_id": cfg.meeting_id,
     }))?;
 
+    let started_at = std::time::Instant::now();
     let mut proc = match ClaudeProcess::spawn(&spec, &effective_prompt).await {
         Ok(p) => p,
         Err(e) => {
@@ -97,9 +102,11 @@ pub async fn run_turn<A: Approver, O: Observer>(
                 AgentEvent::ToolUse { name, input, .. } => {
                     db.append_event_for(pid, "tool_use", eid, sid, &json!({"tool": name, "input": input}))?;
                 }
-                AgentEvent::RateLimit { status, five_hour, seven_day } => {
-                    db.append_event_for(pid, "rate_limit", eid, sid,
-                        &json!({"status": status, "five_hour": five_hour, "seven_day": seven_day}))?;
+                AgentEvent::RateLimit { status, five_hour, seven_day, five_resets_at, seven_resets_at } => {
+                    db.append_event_for(pid, "rate_limit", eid, sid, &json!({
+                        "status": status, "five_hour": five_hour, "seven_day": seven_day,
+                        "five_resets_at": five_resets_at, "seven_resets_at": seven_resets_at,
+                    }))?;
                 }
                 AgentEvent::Approval(req) => {
                     let (decision, by, reason) = match policy.decide(&req.tool_name, &req.input) {
@@ -119,7 +126,8 @@ pub async fn run_turn<A: Approver, O: Observer>(
                 }
                 AgentEvent::Result(r) => {
                     db.append_event_for(pid, "turn_result", eid, sid, &json!({
-                        "task_id": cfg.task_id, "meeting_id": cfg.meeting_id, "is_error": r.is_error, "subtype": r.subtype, "cost_usd": r.cost_usd,
+                        "task_id": cfg.task_id, "meeting_id": cfg.meeting_id, "purpose": cfg.purpose, "project_id": cfg.attr_project,
+                        "duration_ms": started_at.elapsed().as_millis() as u64, "is_error": r.is_error, "subtype": r.subtype, "cost_usd": r.cost_usd,
                         "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
                         "cache_read_tokens": r.cache_read_tokens, "cache_creation_tokens": r.cache_creation_tokens,
                     }))?;

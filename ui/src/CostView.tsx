@@ -1,0 +1,191 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api } from "./api";
+import type { CostGroup, CostReport, EventRow, Totals } from "./types";
+
+const RANGES: [string, number | null][] = [["今天", 1], ["近 7 天", 7], ["近 30 天", 30], ["全部", null]];
+
+const fmtNum = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(1)}k` : n.toLocaleString("zh-CN"));
+const fmtCost = (n: number) => `$${n < 1 ? n.toFixed(3) : n.toFixed(2)}`;
+const pct = (n: number | null) => (n == null ? "未知" : `${(n * 100).toFixed(0)}%`);
+const secs = (ms: number) => (ms >= 60_000 ? `${(ms / 60_000).toFixed(1)} 分钟` : `${(ms / 1000).toFixed(1)} 秒`);
+
+function resetText(at: number | null): string {
+  if (at == null) return "重置时间未知";
+  const ms = at * 1000 - Date.now();
+  if (ms <= 0) return "已重置";
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  return h >= 24 ? `约 ${Math.floor(h / 24)} 天 ${h % 24} 小时后重置` : `约 ${h} 小时 ${m} 分后重置`;
+}
+
+function Spark({ points, label }: { points: (number | null)[]; label: string }) {
+  const v = points.filter((x): x is number => x != null);
+  if (v.length < 2) return <span className="hint">数据不足</span>;
+  const W = 220, H = 38;
+  const path = v.map((y, i) => `${i === 0 ? "M" : "L"}${((i / (v.length - 1)) * W).toFixed(1)},${(H - Math.min(1, y) * (H - 4) - 2).toFixed(1)}`).join(" ");
+  return (
+    <svg width={W} height={H} role="img" aria-label={label} className="spark">
+      <title>{label}</title>
+      <line x1="0" x2={W} y1={H - 0.85 * (H - 4) - 2} y2={H - 0.85 * (H - 4) - 2} stroke="var(--bad)" strokeDasharray="3 3" opacity=".5" />
+      <path d={path} fill="none" stroke="var(--accent)" strokeWidth="1.6" />
+    </svg>
+  );
+}
+
+function Meter({ label, v, reset, series }: { label: string; v: number | null; reset: number | null; series: (number | null)[] }) {
+  return (
+    <div className="qmeter">
+      <div className="qtop"><b>{label}</b><span className={(v ?? 0) > 0.85 ? "bad" : ""}>{pct(v)}</span></div>
+      <div className="meter wide"><i className={(v ?? 0) > 0.85 ? "hot" : ""} style={{ width: `${Math.min(100, (v ?? 0) * 100)}%` }} /></div>
+      <div className="hint">{resetText(reset)}</div>
+      <Spark points={series} label={`${label}使用率走势`} />
+    </div>
+  );
+}
+
+function Bars({ days, metric }: { days: CostReport["by_day"]; metric: "cost" | "tokens" }) {
+  if (days.length === 0) return <div className="hint">这个时间范围内还没有调用。</div>;
+  const val = (t: Totals) => (metric === "cost" ? t.cost_usd : t.input_tokens + t.cache_read_tokens + t.cache_creation_tokens + t.output_tokens);
+  const max = Math.max(1e-9, ...days.map((d) => val(d.totals)));
+  const W = 700, H = 150, bw = Math.min(46, (W - 20) / days.length - 4);
+  const step = (W - 20) / days.length;
+  return (
+    <svg viewBox={`0 0 ${W} ${H + 22}`} className="bars" role="img" aria-label={metric === "cost" ? "每日估算费用" : "每日 token 总量"}>
+      {days.map((d, i) => {
+        const h = (val(d.totals) / max) * (H - 14);
+        const x = 10 + i * step + (step - bw) / 2;
+        const label = `${d.day}：${metric === "cost" ? fmtCost(d.totals.cost_usd) : fmtNum(val(d.totals)) + " token"}（${d.totals.turns} 次调用）`;
+        return (
+          <g key={d.day}>
+            <title>{label}</title>
+            <rect x={x} y={H - h} width={bw} height={Math.max(h, 1)} rx="3" fill="var(--accent)" opacity=".85" />
+            {(days.length <= 10 || i % Math.ceil(days.length / 8) === 0 || i === days.length - 1) && (
+              <text x={x + bw / 2} y={H + 14} textAnchor="middle" fontSize="10" fill="var(--muted)">{d.day.slice(5)}</text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function GroupTable({ title, groups }: { title: string; groups: CostGroup[] }) {
+  return (
+    <div>
+      <h4 className="group-title">{title}</h4>
+      {groups.length === 0 ? <div className="hint">暂无数据</div> : (
+        <table className="cost-table">
+          <thead><tr><th></th><th>调用</th><th>估算费用</th><th>上下文 token</th><th>输出</th><th>缓存命中</th></tr></thead>
+          <tbody>{groups.map((g) => {
+            const t = g.totals, ctx = t.input_tokens + t.cache_read_tokens + t.cache_creation_tokens;
+            return (
+              <tr key={g.key}>
+                <td><b>{g.label}</b></td><td>{t.turns}{t.errors > 0 && <span className="bad"> · {t.errors} 出错</span>}</td>
+                <td>{t.turns_with_cost === 0 ? <span className="hint">未知</span> : fmtCost(t.cost_usd)}{t.turns_with_cost > 0 && t.turns_with_cost < t.turns && <span className="hint" title="其余轮数 CLI 没有给出费用"> *</span>}</td>
+                <td>{t.turns_with_tokens === 0 ? <span className="hint">未知</span> : fmtNum(ctx)}</td>
+                <td>{t.turns_with_tokens === 0 ? "" : fmtNum(t.output_tokens)}</td>
+                <td>{ctx > 0 ? pct(t.cache_read_tokens / ctx) : ""}</td>
+              </tr>
+            );
+          })}</tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+export function CostView({ events, onError }: { events: EventRow[]; onError: (m: string) => void }) {
+  const [days, setDays] = useState<number | null>(7);
+  const [r, setR] = useState<CostReport | null>(null);
+  const [metric, setMetric] = useState<"cost" | "tokens">("cost");
+
+  const load = useCallback(async () => {
+    try { setR(await api.costReport(days)); } catch (e) { onError(String(e)); }
+  }, [days, onError]);
+  useEffect(() => { void load(); }, [load]);
+  // 有新的调用结果或额度事件时刷新
+  const last = useMemo(() => events.reduce((m, e) => (e.kind === "turn_result" || e.kind === "rate_limit" ? Math.max(m, e.id) : m), 0), [events]);
+  useEffect(() => { if (last) void load(); }, [last, load]);
+
+  if (!r) return <div className="hint" style={{ padding: 20 }}>加载中…</div>;
+  const t = r.totals;
+  const ctx = t.input_tokens + t.cache_read_tokens + t.cache_creation_tokens;
+  const e = r.efficiency;
+  const q = r.quota_now;
+
+  return (
+    <div className="page wide">
+      <div className="page-head">
+        <div><h2>成本与额度</h2>
+          <div className="hint">数据来自每次调用的真实记录。<b>费用是 CLI 报告的等值估算，不是订阅账单上的实际扣费</b>；CLI 没给出的数据标为“未知”，不会按 0 计入。</div></div>
+        <select style={{ width: "auto" }} value={days ?? ""} onChange={(ev) => setDays(ev.target.value === "" ? null : Number(ev.target.value))}>
+          {RANGES.map(([l, d]) => <option key={l} value={d ?? ""}>{l}</option>)}
+        </select>
+      </div>
+
+      <section className="panel-box">
+        <h4 className="group-title">订阅额度（所有员工共享同一份）</h4>
+        {!q ? <div className="hint">还没有额度数据，员工执行过一次任务后就会出现。</div> : (
+          <>
+            <div className="qgrid">
+              <Meter label="5 小时窗口" v={q.five_hour} reset={q.five_resets_at} series={r.quota_series.map((p) => p.five_hour)} />
+              <Meter label="7 天窗口" v={q.seven_day} reset={q.seven_resets_at} series={r.quota_series.map((p) => p.seven_day)} />
+            </div>
+            <div className="hint">状态：{q.status === "allowed" ? "正常" : q.status === "allowed_warning" ? "接近上限（仍可使用）" : q.status}。虚线为 85% 警戒线。窗口数据来自最近一次调用，不是实时的。</div>
+          </>
+        )}
+      </section>
+
+      <div className="cards4">
+        <div className="stat"><span>调用次数</span><b>{t.turns}</b>{t.errors > 0 && <i className="bad">{t.errors} 次出错</i>}</div>
+        <div className="stat"><span>估算费用</span><b>{t.turns_with_cost === 0 ? "未知" : fmtCost(t.cost_usd)}</b>{t.turns_with_cost < t.turns && t.turns > 0 && <i>{t.turns - t.turns_with_cost} 轮无费用数据</i>}</div>
+        <div className="stat"><span>处理的上下文 token</span><b>{t.turns_with_tokens === 0 ? "未知" : fmtNum(ctx)}</b><i>含缓存读写</i></div>
+        <div className="stat"><span>输出 token</span><b>{t.turns_with_tokens === 0 ? "未知" : fmtNum(t.output_tokens)}</b></div>
+        <div className="stat"><span>平均每轮耗时</span><b>{t.turns_with_duration === 0 ? "未知" : secs(t.duration_ms / t.turns_with_duration)}</b></div>
+      </div>
+
+      <section className="panel-box">
+        <div className="page-head" style={{ marginBottom: 6 }}>
+          <h4 className="group-title" style={{ margin: 0 }}>每日用量</h4>
+          <select style={{ width: "auto" }} value={metric} onChange={(ev) => setMetric(ev.target.value as "cost" | "tokens")}>
+            <option value="cost">估算费用</option><option value="tokens">token 总量</option>
+          </select>
+        </div>
+        <Bars days={r.by_day} metric={metric} />
+      </section>
+
+      <div className="two-col">
+        <GroupTable title="按员工" groups={r.by_employee} />
+        <GroupTable title="按项目" groups={r.by_project} />
+      </div>
+      <GroupTable title="按用途（会议和评估也会消耗额度）" groups={r.by_purpose} />
+
+      <section style={{ marginTop: 18 }}>
+        <h4 className="group-title">花费最多的任务</h4>
+        {r.top_tasks.length === 0 ? <div className="hint">暂无任务数据</div> : (
+          <table className="cost-table"><thead><tr><th>任务</th><th>员工</th><th>项目</th><th>轮数</th><th>估算费用</th><th>上下文 token</th></tr></thead>
+            <tbody>{r.top_tasks.map((x) => (
+              <tr key={x.task_id}><td><b>{x.title}</b></td><td>{x.employee}</td><td>{x.project}</td><td>{x.totals.turns}</td>
+                <td>{x.totals.turns_with_cost === 0 ? "未知" : fmtCost(x.totals.cost_usd)}</td>
+                <td>{x.totals.turns_with_tokens === 0 ? "未知" : fmtNum(x.totals.input_tokens + x.totals.cache_read_tokens + x.totals.cache_creation_tokens)}</td></tr>))}</tbody></table>
+        )}
+      </section>
+
+      <section className="panel-box" style={{ marginTop: 18 }}>
+        <h4 className="group-title">省 token 效率指标</h4>
+        <div className="hint" style={{ marginBottom: 8 }}>用来验证“按需唤醒、会话复用、只检索相关记忆”这些设计是否真的省了。</div>
+        <table className="cost-table"><tbody>
+          <tr><td><b>平均每轮上下文</b><div className="hint">越小越省；包含缓存读写</div></td><td>{e.avg_context_per_turn == null ? "未知" : `${fmtNum(Math.round(e.avg_context_per_turn))} token`}</td></tr>
+          <tr><td><b>缓存命中率</b><div className="hint">越高越省；会话复用得好，缓存才用得上</div></td><td>{pct(e.cache_hit_ratio)}</td></tr>
+          <tr><td><b>会话复用率</b><div className="hint">开始执行时接续已有会话的比例</div></td><td>{e.total_starts === 0 ? "暂无" : `${pct(e.resumed_starts / e.total_starts)}（${e.resumed_starts}/${e.total_starts}）`}</td></tr>
+          <tr><td><b>每个任务平均轮数</b><div className="hint">反复追问会让它变大</div></td><td>{e.avg_turns_per_task == null ? "暂无" : e.avg_turns_per_task.toFixed(1)}</td></tr>
+          <tr><td><b>记忆注入</b><div className="hint">每次只注入少量相关记忆</div></td>
+            <td>{e.memory_injections === 0 ? "暂无" : `${e.memory_injections} 次，平均每次 ${(e.memory_items / e.memory_injections).toFixed(1)} 条 / ${Math.round(e.memory_chars / e.memory_injections)} 字`}</td></tr>
+          <tr><td><b>会议发言</b><div className="hint">只有被 @ 的 AI 发言才调用模型</div></td><td>人类 {e.meeting_human_messages} 条，AI 回复 {e.meeting_agent_replies} 条</td></tr>
+          <tr><td><b>执行失败 / 会话恢复</b><div className="hint">进程崩溃或中途退出的次数</div></td><td>{e.failed_runs} 次失败，{e.recovered_sessions} 次恢复</td></tr>
+        </tbody></table>
+      </section>
+      <div className="hint" style={{ marginTop: 10 }}>目前只有一个执行引擎（Claude Code，使用本机已登录账号）。重试次数尚未单独统计。</div>
+    </div>
+  );
+}

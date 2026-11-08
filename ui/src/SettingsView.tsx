@@ -34,6 +34,4 @@ export function SettingsView({ concurrency, onConcurrency }: { concurrency: numb
   );
 }
 
-export function CostView() {
-  return <Placeholder title="成本与额度">按员工、项目、任务统计调用次数、token 与耗时；CLI 不提供可靠数据时明确标为未知。顶部栏已显示 5 小时 / 7 天额度使用率。</Placeholder>;
-}
+

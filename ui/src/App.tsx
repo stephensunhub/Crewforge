@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, subscribe } from "./api";
 import { COMPANY_TABS, CompanyView, type CompanyTab } from "./CompanyView";
 import { PROJECT_TABS, ProjectView, type ProjectTab } from "./ProjectView";
-import { CostView, SettingsView } from "./SettingsView";
+import { SettingsView } from "./SettingsView";
+import { CostView } from "./CostView";
 import { short } from "./common";
 import type { ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary } from "./types";
 
@@ -191,7 +192,7 @@ export default function App() {
             onDecide={(a, allow) => void decide(a, allow)} onChanged={() => void reloadStatic()} onError={setError}
             onLeave={() => setScope({ kind: "company" })} />
         )}
-        {scope.kind === "cost" && <CostView />}
+        {scope.kind === "cost" && <CostView events={events} onError={setError} />}
         {scope.kind === "settings" && <SettingsView concurrency={concurrency} onConcurrency={(n) => void changeConcurrency(n)} />}
       </main>
     </div>
