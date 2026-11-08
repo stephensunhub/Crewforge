@@ -24,6 +24,17 @@ pub struct Orchestrator {
     pub mcp_exe: Option<std::path::PathBuf>,
 }
 
+/// 任务关联的评审会议：合并前要让人看到评审里提出了什么、有没有结束。
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewInfo {
+    pub meeting_id: String,
+    pub title: String,
+    pub status: String,
+    /// 纪要“行动项”一节的条目（没有纪要或写着“无”时为空）
+    pub action_items: Vec<String>,
+    pub agent_replies: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskView {
     pub task: Task,
@@ -33,6 +44,8 @@ pub struct TaskView {
     pub merge: Option<MergeCheck>,
     /// 与其他进行中任务同时修改的文件
     pub overlaps: Vec<Overlap>,
+    /// 关联的评审会议（仅进行中的任务会查询）
+    pub reviews: Vec<ReviewInfo>,
 }
 
 fn title_of(prompt: &str) -> String {
@@ -231,7 +244,16 @@ impl Orchestrator {
                 files = self.ws.changed_files(Path::new(&task.worktree_path), &task.base_commit).await.unwrap_or_default();
                 merge = self.ws.merge_check(Path::new(&task.repo_path), &task.base_branch, &task.branch).await.ok();
             }
-            views.push(TaskView { task, employee_name, files, merge, overlaps: vec![] });
+            let mut reviews = Vec::new();
+            if task.status == "active" {
+                for m in self.db.meetings_for_task(&task.id)? {
+                    reviews.push(ReviewInfo {
+                        action_items: crate::memory::extract_section_items(&m.minutes, "行动项"),
+                        agent_replies: self.db.agent_reply_count(&m.id)?, meeting_id: m.id, title: m.title, status: m.status,
+                    });
+                }
+            }
+            views.push(TaskView { task, employee_name, files, merge, overlaps: vec![], reviews });
         }
         let sets: Vec<(String, Vec<String>)> = views
             .iter()

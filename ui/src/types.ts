@@ -93,12 +93,14 @@ export interface Task {
   created_at: number;
   updated_at: number;
 }
+export interface ReviewInfo { meeting_id: string; title: string; status: "open" | "closed"; action_items: string[]; agent_replies: number }
 export interface TaskView {
   task: Task;
   employee_name: string;
   files: FileChange[];
   merge: { clean: boolean; conflicts: string[] } | null;
   overlaps: { path: string; task_ids: string[] }[];
+  reviews: ReviewInfo[];
 }
 export type MergeOutcome =
   | { outcome: "merged"; commit: string }

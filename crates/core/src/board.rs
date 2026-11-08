@@ -485,6 +485,14 @@ impl Db {
         Ok(self.get_meeting(&id)?.context("创建会议失败")?)
     }
 
+    /// 以某个任务为评审对象的会议（最新的在前）。
+    pub fn meetings_for_task(&self, task_id: &str) -> Result<Vec<Meeting>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&format!("{MEETING_SELECT} WHERE task_id = ?1 ORDER BY created_at DESC"))?;
+        let rows = stmt.query_map([task_id], row_to_meeting)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     pub fn get_meeting(&self, id: &str) -> Result<Option<Meeting>> {
         Ok(self.conn.lock().unwrap().query_row(&format!("{MEETING_SELECT} WHERE id = ?1"), [id], row_to_meeting).optional()?)
     }

@@ -4,7 +4,7 @@ import { COMPANY_TABS, CompanyView, type CompanyTab } from "./CompanyView";
 import { PROJECT_TABS, ProjectView, type ProjectTab } from "./ProjectView";
 import { SettingsView } from "./SettingsView";
 import { CostView } from "./CostView";
-import { hhmm, short } from "./common";
+import { formatApprovalInput, hhmm, short } from "./common";
 import type { ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
 
 const MAX_EVENTS = 2000;
@@ -194,7 +194,7 @@ export default function App() {
               <div className="inbox-item" key={a.id}>
                 <div><b>{a.employee}</b> 请求 <b>{a.tool}</b>{a.project_id && <span className="hint"> · {projectName(a.project_id)}</span>}</div>
                 <div className="hint">{a.reason}</div>
-                <code className="hint">{short(JSON.stringify(a.input), 140)}</code>
+                <code className="hint" style={{ whiteSpace: "pre-wrap" }}>{short(formatApprovalInput(a.tool, a.input), 240)}</code>
                 <div className="btns">
                   <button className="btn primary" onClick={() => void decide(a, true)}>允许</button>
                   <button className="btn danger" onClick={() => void decide(a, false)}>拒绝</button>

@@ -91,7 +91,12 @@ export function TasksPanel({
     } catch (e) { onError(String(e)); }
   }
   async function merge(v: TaskView) {
-    const warn = v.overlaps.length ? `\n\n注意：与其他进行中的任务同时修改了 ${v.overlaps.map((o) => o.path).join("、")}。` : "";
+    let warn = v.overlaps.length ? `\n\n注意：与其他进行中的任务同时修改了 ${v.overlaps.map((o) => o.path).join("、")}。` : "";
+    // 评审里提出的问题不会自动拦住合并，所以合并前把它们摆到你面前
+    for (const rv of v.reviews) {
+      if (rv.status === "open") warn += `\n\n⚠ 评审会议「${rv.title}」还没有结束。`;
+      if (rv.action_items.length > 0) warn += `\n\n评审纪要里有 ${rv.action_items.length} 条行动项，请确认都已处理：\n${rv.action_items.map((x) => `• ${x}`).join("\n")}`;
+    }
     if (!(await api.confirm(`将「${v.task.title}」合并到 ${v.task.base_branch}？\n改动会压缩成一个提交。${warn}`, "确认合并"))) return;
     setWorking(v.task.id);
     try {
@@ -138,6 +143,12 @@ export function TasksPanel({
                   {v.files.length > 6 && <li className="hint">… 另有 {v.files.length - 6} 个</li>}
                 </ul>
               )}
+              {v.reviews.map((rv) => (
+                <div key={rv.meeting_id} className={`note ${rv.status === "open" || rv.action_items.length > 0 ? "warn" : "ok"}`}>
+                  💬 评审「{rv.title}」{rv.status === "open" ? "进行中" : "已结束"}
+                  {rv.action_items.length > 0 ? ` · ${rv.action_items.length} 条行动项待确认` : rv.status === "closed" ? " · 没有行动项" : ""}
+                </div>
+              ))}
               {v.overlaps.length > 0 && (
                 <div className="note warn">⚠ 与 {others.join("、")} 同时修改：{v.overlaps.map((o) => o.path).join("、")}</div>
               )}

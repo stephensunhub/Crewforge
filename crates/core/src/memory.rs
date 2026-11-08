@@ -205,14 +205,14 @@ fn fts_query(terms: &[(String, u32)]) -> Option<String> {
     Some(terms.iter().map(|(t, _)| format!("\"{}\"", t.replace('"', "\"\""))).collect::<Vec<_>>().join(" OR "))
 }
 
-/// 从会议纪要的“待验证的经验”一节提取条目。没有、或写着“无”时返回空。
-pub fn extract_lessons(minutes: &str) -> Vec<String> {
+/// 从会议纪要里取出某一节（标题以 `heading_prefix` 开头）的条目。没有这一节、或写着“无”时返回空。
+pub fn extract_section_items(minutes: &str, heading_prefix: &str) -> Vec<String> {
     let mut in_section = false;
     let mut out = Vec::new();
     for line in minutes.lines() {
         let t = line.trim();
         if t.starts_with('#') {
-            in_section = t.trim_start_matches('#').trim().starts_with("待验证");
+            in_section = t.trim_start_matches('#').trim().starts_with(heading_prefix);
             continue;
         }
         if !in_section || t.is_empty() {
@@ -228,6 +228,11 @@ pub fn extract_lessons(minutes: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// 从会议纪要的“待验证的经验”一节提取条目。
+pub fn extract_lessons(minutes: &str) -> Vec<String> {
+    extract_section_items(minutes, "待验证")
 }
 
 pub fn layer_label(layer: &str) -> &'static str {
@@ -640,6 +645,15 @@ mod tests {
         assert_eq!(query_terms("数据库").first().unwrap().1, 2, "刚好 3 字的中文词权重 2");
         // 查询里的引号不会破坏 FTS 语法
         assert!(fts_query(&[("a\"b".into(), 1)]).unwrap().contains("\"a\"\"b\""));
+    }
+
+    #[test]
+    fn extracts_any_section_by_heading() {
+        let m = "## 决议\n- 用 SSE\n## 行动项\n1. alice 修复溢出\n2、bob 补测试\n## 待验证的经验\n无";
+        assert_eq!(extract_section_items(m, "行动项"), vec!["alice 修复溢出", "bob 补测试"]);
+        assert_eq!(extract_section_items(m, "决议"), vec!["用 SSE"]);
+        assert!(extract_section_items(m, "待验证").is_empty());
+        assert!(extract_section_items(m, "不存在").is_empty());
     }
 
     #[test]

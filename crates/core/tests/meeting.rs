@@ -180,3 +180,29 @@ async fn code_review_includes_the_task_diff_and_minutes_are_drafted() {
     let empty = e.db.create_meeting(&e.project_id, "design", "空会议", None, None, &[], 5).unwrap();
     assert!(e.orch.draft_minutes(&empty.id, &MustNotAsk).await.is_err(), "没有发言不能起草");
 }
+
+#[tokio::test]
+async fn task_views_surface_linked_reviews_and_their_action_items() {
+    let mut e = setup().await;
+    let alice = e.db.add_employee("alice", "全栈", "p").unwrap();
+    e.db.add_member(&e.project_id, &alice.id, "developer").unwrap();
+    let work = e.tools.join("work");
+    std::fs::write(&work, "#!/bin/sh\nread -r l\necho '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"x\"}'\necho x > f.txt\necho '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"usage\":{}}'\n").unwrap();
+    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o755)).unwrap();
+    e.orch.program = work.to_string_lossy().into_owned();
+    struct Deny;
+    impl Approver for Deny { async fn ask(&self, _: &str, _: &ApprovalRequest, _: &str) -> Decision { Decision::Deny("x".into()) } }
+    e.orch.assign(&alice, &e.repo, "做点事", &Deny, &NoopObserver).await.unwrap();
+    let task = e.orch.task_views(&e.repo).await.unwrap().remove(0);
+    assert!(task.reviews.is_empty(), "没有评审会议时为空");
+
+    let m = e.db.create_meeting(&e.project_id, "code_review", "评审：做点事", None, Some(&task.task.id), &[], 5).unwrap();
+    e.db.set_minutes(&m.id, "## 决议\n- 需要修复溢出\n## 行动项\n- alice 把 to.balance += amount 改成 checked_add\n- bob 补溢出测试\n## 待验证的经验\n无").unwrap();
+    let v = e.orch.task_views(&e.repo).await.unwrap().remove(0);
+    assert_eq!(v.reviews.len(), 1);
+    assert_eq!((v.reviews[0].status.as_str(), v.reviews[0].action_items.len()), ("open", 2), "会议未结束，且有 2 条行动项");
+    assert!(v.reviews[0].action_items[0].contains("checked_add"));
+    // 别的会议（没有关联这个任务）不会混进来
+    e.db.create_meeting(&e.project_id, "design", "无关", None, None, &[], 5).unwrap();
+    assert_eq!(e.orch.task_views(&e.repo).await.unwrap().remove(0).reviews.len(), 1);
+}

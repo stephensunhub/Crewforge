@@ -15,6 +15,20 @@ export const hhmm = (ts: number) => new Date(ts).toLocaleTimeString("zh-CN", { h
 export const short = (s: string, n = 90) => (s.length > n ? s.slice(0, n) + "…" : s);
 export const basename = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
+/** 审批卡片里展示被请求的操作。命令按原样显示（保留换行），不要当成一行 JSON 字符串让人去读转义。 */
+export function formatApprovalInput(tool: string, input: Record<string, unknown> | undefined): string {
+  if (!input) return "";
+  if (tool === "Bash" && typeof input.command === "string") {
+    const d = typeof input.description === "string" && input.description ? `# ${input.description}\n` : "";
+    return `${d}${input.command}`;
+  }
+  if (typeof input.file_path === "string") {
+    const body = typeof input.content === "string" ? `\n---\n${input.content}` : typeof input.new_string === "string" ? `\n--- 替换为 ---\n${input.new_string}` : "";
+    return `${input.file_path}${body}`;
+  }
+  return JSON.stringify(input, null, 2);
+}
+
 export function Avatar({ name, size = 30 }: { name: string; size?: number }) {
   return (
     <div className="avatar" style={{ background: colorFor(name), width: size, height: size, fontSize: size * 0.45 }}>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { Avatar, hhmm, short } from "./common";
+import { Avatar, formatApprovalInput, hhmm, short } from "./common";
 import type { ApprovalReq, EventRow, Member, Project, RepoStatus, TaskView } from "./types";
 
 function toolSummary(input: Record<string, unknown> | undefined): string {
@@ -190,7 +190,7 @@ export function Chat({
             <div className="apv" key={a.id}>
               <b>⚠ {a.employee} 请求审批 · {a.tool}</b>
               <div className="hint">{a.reason}</div>
-              <pre>{JSON.stringify(a.input, null, 2)}</pre>
+              <pre>{formatApprovalInput(a.tool, a.input)}</pre>
               <div className="btns">
                 <button className="btn primary" onClick={() => onDecide(a, true)}>允许</button>
                 <button className="btn danger" onClick={() => onDecide(a, false)}>拒绝</button>
