@@ -76,6 +76,9 @@ pub async fn run_turn<A: Approver, O: Observer>(
         spec.persona = format!("{}\n\n{}", spec.persona, crate::mcp::TEAM_TOOLS_HINT);
         spec.mcp = cfg.mcp.clone();
     }
+    if !cfg.read_only && db.get_setting("sandbox")?.as_deref() != Some("off") {
+        spec.sandbox = Some(sandbox_writable_dirs(&cfg.project_path));
+    }
     let policy = if cfg.read_only { Policy::read_only(&cfg.project_path) } else { Policy::new(&cfg.project_path) };
 
     db.set_session_status(&session.id, "running")?;
@@ -157,4 +160,25 @@ pub async fn run_turn<A: Approver, O: Observer>(
             Err(e)
         }
     }
+}
+
+/// 沙箱里除工作区外还需要可写的目录：worktree 的 git 公共目录（提交要写那里）与常见包缓存。
+fn sandbox_writable_dirs(workdir: &std::path::Path) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Ok(o) = std::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(workdir)
+        .output()
+    {
+        let d = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if o.status.success() && !d.is_empty() {
+            v.push(PathBuf::from(d));
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for sub in [".cargo", ".npm", ".cache", ".rustup"] {
+            v.push(home.join(sub));
+        }
+    }
+    v
 }

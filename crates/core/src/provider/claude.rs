@@ -31,7 +31,16 @@ pub struct ClaudeSpec {
     pub program: String,
     /// 提供给员工的团队协作工具（MCP 服务器）；None 表示不提供
     pub mcp: Option<McpLaunch>,
+    /// 命令沙箱（macOS Seatbelt，由 CLI 自带）：沙箱内的命令不再逐条审批，
+    /// 工作区之外的写入由系统拦截。值为除工作区外额外可写的目录（如 git 公共目录、包缓存）。
+    pub sandbox: Option<Vec<PathBuf>>,
 }
+
+/// 沙箱内允许访问的网络域名（包管理器与代码托管）；其他域名仍需审批。
+const SANDBOX_DOMAINS: &[&str] = &[
+    "registry.npmjs.org", "crates.io", "index.crates.io", "static.crates.io",
+    "static.rust-lang.org", "github.com", "pypi.org", "files.pythonhosted.org",
+];
 
 /// 如何启动我们自己的 MCP 服务器进程（就是 crewforge 可执行文件的 `mcp-serve` 子命令）。
 #[derive(Debug, Clone)]
@@ -48,7 +57,7 @@ impl McpLaunch {
 
 impl ClaudeSpec {
     pub fn new(session_id: String, resume: bool, persona: String, cwd: PathBuf) -> Self {
-        Self { session_id, resume, persona, cwd, program: "claude".into(), mcp: None }
+        Self { session_id, resume, persona, cwd, program: "claude".into(), mcp: None, sandbox: None }
     }
 
     pub fn args(&self) -> Vec<String> {
@@ -68,6 +77,10 @@ impl ClaudeSpec {
         // 总是传 --mcp-config：配合 --strict-mcp-config，既屏蔽用户自己的 MCP 服务器，又只开放我们提供的
         a.push("--mcp-config".into());
         a.push(self.mcp.as_ref().map(McpLaunch::config_json).unwrap_or_else(|| r#"{"mcpServers":{}}"#.into()));
+        if let Some(extra) = &self.sandbox {
+            a.push("--settings".into());
+            a.push(sandbox_settings(extra));
+        }
         a.push(if self.resume { "--resume" } else { "--session-id" }.into());
         a.push(self.session_id.clone());
         if !self.persona.is_empty() {
@@ -76,6 +89,17 @@ impl ClaudeSpec {
         }
         a
     }
+}
+
+pub fn sandbox_settings(extra_write: &[PathBuf]) -> String {
+    let allow: Vec<String> = extra_write.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    json!({"sandbox": {
+        "enabled": true,
+        "autoAllowBashIfSandboxed": true,
+        "allowUnsandboxedCommands": false,
+        "filesystem": {"allowWrite": allow},
+        "network": {"allowedDomains": SANDBOX_DOMAINS, "allowLocalBinding": true},
+    }}).to_string()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -300,6 +324,18 @@ pub async fn detect(program: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_adds_settings() {
+        let mut s = ClaudeSpec::new("sid".into(), false, String::new(), ".".into());
+        assert!(!s.args().contains(&"--settings".to_string()));
+        s.sandbox = Some(vec!["/repo/.git".into()]);
+        let a = s.args();
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        assert_eq!(v["sandbox"]["enabled"], true);
+        assert_eq!(v["sandbox"]["filesystem"]["allowWrite"][0], "/repo/.git");
+    }
 
     #[test]
     fn args_new_vs_resume() {

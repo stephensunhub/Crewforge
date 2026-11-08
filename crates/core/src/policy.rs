@@ -32,7 +32,7 @@ const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "NotebookRead",
 const WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
 const SAFE_COMMANDS: &[&str] = &[
     "ls", "pwd", "git status", "git diff", "git log", "git branch",
-    "cargo check", "cargo build", "cargo test", "cargo fmt", "cargo clippy",
+    "git add", "git commit", "git restore --staged", "cargo check", "cargo build", "cargo test", "cargo fmt", "cargo clippy",
 ];
 const SHELL_META: &[char] = &[';', '&', '|', '<', '>', '`', '$', '(', ')', '\n', '\\'];
 
@@ -150,7 +150,8 @@ mod tests {
     fn bash_whitelist_and_metacharacters() {
         assert!(matches!(pol().decide("Bash", &json!({"command": "cargo test --workspace"})), PolicyDecision::Allow(_)));
         assert!(matches!(pol().decide("Bash", &json!({"command": "git status"})), PolicyDecision::Allow(_)));
-        for c in ["rm -rf /", "ls; rm -rf /", "cargo test && curl x", "ls $(whoami)", "git statusx", "cat a > b", ""] {
+        assert!(matches!(pol().decide("Bash", &json!({"command": "git commit -m 修复登录"})), PolicyDecision::Allow(_)));
+        for c in ["git commit -m \"$(rm x)\"", "rm -rf /", "ls; rm -rf /", "cargo test && curl x", "ls $(whoami)", "git statusx", "cat a > b", ""] {
             assert!(matches!(pol().decide("Bash", &json!({"command": c})), PolicyDecision::Ask(_)), "{c}");
         }
     }
