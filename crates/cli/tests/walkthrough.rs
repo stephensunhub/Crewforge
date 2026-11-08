@@ -243,10 +243,14 @@ async fn full_walkthrough_with_real_claude() {
             Err(e) => r.check(false, "起草纪要", e),
         }
     }
-    // 评审里提出的问题不会自动拦住合并，所以任务卡必须能在合并前把评审和行动项摆出来
+    // 纪要里的行动项应当已自动同步成可跟踪的记录，并在任务卡上可见
+    let acts = db.actions_for_meeting(&m.id).unwrap();
+    for a in &acts { r.note(format!("行动项 [{}] {} · 负责人 {} · {}", if a.blocking { "合并前" } else { "之后" }, clip(&a.text, 60), a.assignee_name.clone().unwrap_or_else(|| if a.for_human { "人类".into() } else { "未指定".into() }), a.status)); }
+    r.check(!acts.is_empty() && acts.iter().all(|a| a.status == "open"), "纪要里的行动项自动同步成了待处理记录", format!("{} 条，其中 {} 条会拦住合并", acts.len(), acts.iter().filter(|a| a.blocking).count()));
+    r.check(acts.iter().any(|a| a.blocking), "模型按要求给了 [合并前] 标签", "");
+    r.check(acts.iter().any(|a| a.assignee_id.is_some()), "解析出了负责人", "");
     let rv = orch.task_views(&repo).await.unwrap().into_iter().find(|v| v.task.id == task1.id).map(|v| v.reviews).unwrap_or_default();
-    r.check(rv.len() == 1 && rv[0].status == "open" && !rv[0].action_items.is_empty(), "合并前任务卡能看到评审会议和它的行动项",
-        rv.first().map(|x| format!("{} 条行动项", x.action_items.len())).unwrap_or_default());
+    r.check(rv.len() == 1 && rv[0].status == "open" && rv[0].items.len() == acts.len(), "合并前任务卡能看到评审会议和它的行动项", "");
     let saved = db.save_meeting_lessons(&m.id);
     r.note(format!("纪要里的待验证经验 → 记忆：{}", match &saved { Ok(n) => format!("存入 {n} 条"), Err(e) => format!("未存入（{e}）") }));
     // 只看“有没有存进去”不够：存进去的必须是真正的经验，而不是“无。本次没有新增”这类空话
@@ -263,26 +267,70 @@ async fn full_walkthrough_with_real_claude() {
         Some(i) => { r.note(format!("采用 AI 提议的议题《{}》（状态 {}）", i.title, i.status)); r.check(i.status == "open", "AI 提议的议题进入“待讨论”，等人类确认", ""); i }
         None => { r.note("bob 没有提议议题，由人类创建一个来走完拍板流程"); db.create_issue(&pid, "金额要不要改用 Decimal", "目前用 i64 表示分，是否值得引入 Decimal 类型", "technical", false, None, None, None).unwrap() }
     };
-    db.add_option(&issue.id, "保持 i64（分）", "简单，无依赖", None).unwrap();
-    db.add_option(&issue.id, "引入 Decimal", "表达更直观，多一个依赖", None).unwrap();
+    // 人类自己建的议题才补方案；AI 提议的议题带着它自己的方案，不能往里塞不相干的选项
+    if issue.raised_by.is_none() {
+        db.add_option(&issue.id, "保持 i64（分）", "简单，无依赖", None).unwrap();
+        db.add_option(&issue.id, "引入 Decimal", "表达更直观，多一个依赖", None).unwrap();
+    }
     db.set_issue_status(&issue.id, "discussing").unwrap();
     db.set_issue_status(&issue.id, "pending_decision").unwrap();
     r.check(db.pending_decisions().unwrap().iter().any(|p| p.issue.id == issue.id), "待决策的议题出现在人类待办里", "");
     let opts = db.issue_options(&issue.id).unwrap();
-    let chosen = opts.iter().find(|o| o.title.starts_with("保持")).expect("找到“保持 i64”这个选项");
-    db.decide_issue(&issue.id, &Actor::Human, Some(&chosen.id), "保持 i64（分）", "目前没有小数需求，避免多余依赖", &Default::default()).unwrap();
+    let chosen = opts.iter().find(|o| o.title.starts_with("保持")).or(opts.first()).expect("议题至少有一个方案");
+    let decision = format!("采用「{}」", chosen.title);
+    db.decide_issue(&issue.id, &Actor::Human, Some(&chosen.id), &decision, "演练：人类拍板", &Default::default()).unwrap();
     let dm = db.list_memories(&MemoryFilter { project_id: Some(pid.clone()), ..Default::default() }).unwrap();
     r.check(dm.iter().any(|x| x.kind == "decision" && x.source_ref.as_deref() == Some(issue.id.as_str()) && x.status == "verified"), "决议自动沉淀为已验证的项目决策记忆", "");
-    r.check(dm.iter().filter(|x| x.kind == "decision").all(|x| !x.content.contains("未采纳「保持 i64（分）」")), "决策记忆没有自相矛盾（选中的方案不会同时出现在“未采纳”里）", "");
+    r.check(dm.iter().filter(|x| x.kind == "decision").all(|x| !x.content.contains(&format!("未采纳「{}」", chosen.title))), "决策记忆没有自相矛盾（选中的方案不会同时出现在“未采纳”里）", "");
 
     // ---------- 6. 合并 ----------
-    println!("\n【6】合并 alice 的任务");
+    println!("\n【6】行动项与合并");
+    // 6a. 评审里有“合并前”的问题时，合并必须被拦下，而不是像上一次演练那样悄悄带着 bug 合进去
+    let gate = orch.merge_task(&task1.id).await.unwrap();
+    r.check(matches!(&gate, MergeOutcome::OpenActionItems { items } if !items.is_empty()), "有未处理的合并前行动项时，合并被拦下", format!("{gate:?}").chars().take(160).collect::<String>());
+    r.check(!std::fs::read_to_string(repo.join("src/lib.rs")).unwrap().contains("fn transfer"), "被拦下时主分支没有被动", "");
+
+    // 6b. 把行动项真的派给负责人，在同一个任务里修（真实调用）
+    let acts = db.actions_for_meeting(&m.id).unwrap();
+    let fix = acts.iter().find(|a| a.blocking && a.assignee_id.as_deref() == Some(alice.id.as_str()) && (a.text.contains("checked_add") || a.text.contains("溢出")))
+        .or_else(|| acts.iter().find(|a| a.blocking && a.assignee_id.as_deref() == Some(alice.id.as_str()))).cloned();
+    if let Some(fix) = fix {
+        r.note(format!("派给 alice 的行动项：{}", clip(&fix.text, 100)));
+        if let Some(p) = permit(&sched, false, &mut r).await {
+            let before = orch.task_views(&repo).await.unwrap().len();
+            match orch.dispatch_action_item(&fix.id, None, &approver, &NoopObserver).await {
+                Ok(res) => r.check(!res.is_error, "alice 处理了这条行动项", clip(&res.text, 200)),
+                Err(e) => r.check(false, "派发行动项", e),
+            }
+            drop(p);
+            r.check(orch.task_views(&repo).await.unwrap().len() == before, "在同一个任务里继续修，没有另起任务", "");
+            let now = db.get_action(&fix.id).unwrap().unwrap();
+            r.check(now.status == "working" && now.work_task_id.as_deref() == Some(task1.id.as_str()), "行动项变为“处理中”并关联到这个任务", "");
+            let d = orch.task_diff(&task1.id).await.unwrap();
+            r.check(d.contains("checked_add") || d.contains("overflowing_add") || d.contains("checked_sub"), "diff 里真的出现了溢出的修复", "");
+            let ck = orch.check_task(&task1.id, Duration::from_secs(600)).await.unwrap();
+            r.check(ck.introduced == 0, "修复后没有引入新的失败", format!("引入 {} · 已存在 {} · 已修复 {}", ck.introduced, ck.pre_existing, ck.fixed));
+            r.check(matches!(orch.merge_task(&task1.id).await.unwrap(), MergeOutcome::OpenActionItems { .. }), "员工改完不等于解决：处理中的行动项仍然拦合并，要人确认", "");
+        }
+    } else {
+        r.note("没有找到派给 alice 的合并前行动项，跳过派发");
+    }
+
+    // 6c. 人类逐条确认：修好的标已处理，其余的写明原因后驳回，然后才能合并
+    for a in db.actions_for_meeting(&m.id).unwrap().into_iter().filter(|a| a.blocking && matches!(a.status.as_str(), "open" | "working")) {
+        if a.status == "working" { db.set_action_status(&a.id, "done", "").unwrap(); }
+        else { db.set_action_status(&a.id, "dismissed", "演练：本次不处理，已在评审中确认不影响合并").unwrap(); }
+    }
     let outcome = orch.merge_task(&task1.id).await.unwrap();
     let merged_ok = matches!(outcome, MergeOutcome::Merged { .. });
-    r.check(merged_ok, "squash 合并成功", format!("{outcome:?}"));
+    r.check(merged_ok, "全部处理后 squash 合并成功", format!("{outcome:?}"));
     r.check(std::fs::read_to_string(repo.join("src/lib.rs")).unwrap().contains("fn transfer"), "主分支上有了 transfer", "");
+    let lib = std::fs::read_to_string(repo.join("src/lib.rs")).unwrap();
+    r.check(lib.contains("checked_add") || lib.contains("overflowing_add"), "评审发现的溢出问题随合并一起被修好了（这回没有带着 bug 合并）", "");
+    r.check(db.actions_for_meeting(&m.id).unwrap().iter().filter(|a| !a.blocking).all(|a| a.status == "open"), "“之后”的行动项仍待跟进，不被合并吞掉", "");
     let after = db.list_memories(&MemoryFilter { project_id: Some(pid.clone()), status: Some("verified".into()), ..Default::default() }).unwrap();
-    r.check(pending.iter().filter(|x| x.task_id.is_some()).all(|x| after.iter().any(|a| a.id == x.id && a.verified_by.as_deref() == Some("merge"))), "关联该任务的经验在合并后自动验证", "");
+    let _ = &after;
+    r.check(db.list_memories(&MemoryFilter { project_id: Some(pid.clone()), status: Some("unverified".into()), ..Default::default() }).unwrap().len() == from_meeting.len(), "合并不会替模型写在纪要里的话背书：这些经验合并后仍是待验证，等人类确认", "");
 
     // ---------- 7. 带记忆的第二个任务 ----------
     println!("\n【7】bob 的第二个任务（带记忆注入）");

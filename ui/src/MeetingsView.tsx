@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { Avatar, Field, ISSUE_STATUS_LABEL, MEETING_KIND_LABEL, Modal, hhmm } from "./common";
-import type { EventRow, IssueView, Meeting, MeetingDetail, MeetingKind, Member, TaskView } from "./types";
+import type { ActionItem, EventRow, IssueView, Meeting, MeetingDetail, MeetingKind, Member, TaskView } from "./types";
 
 export function MeetingsView({ projectId, meetings, members, issues, tasks, events, running, focusId, onFocused, onChanged, onError }: {
   projectId: string;
@@ -41,7 +41,7 @@ export function MeetingsView({ projectId, meetings, members, issues, tasks, even
       </aside>
       <div className="split-main">
         {selected
-          ? <MeetingRoom key={selected} id={selected} members={members} issues={issues} events={events} running={running} onChanged={onChanged} onError={onError} />
+          ? <MeetingRoom key={selected} id={selected} members={members} issues={issues} tasks={tasks} events={events} running={running} onChanged={onChanged} onError={onError} />
           : <div className="empty"><img src="/logo.png" alt="" /><h2>会议室</h2><p>像真实公司一样：有问题就开会，大家一起听、一起讨论。没被 @ 的成员只旁听，不消耗额度。</p></div>}
       </div>
       {creating && (
@@ -111,8 +111,8 @@ function NewMeeting({ members, issues, tasks, preIssue, onCreate, onClose }: {
   );
 }
 
-function MeetingRoom({ id, members, issues, events, running, onChanged, onError }: {
-  id: string; members: Member[]; issues: IssueView[]; events: EventRow[]; running: string[];
+function MeetingRoom({ id, members, issues, tasks, events, running, onChanged, onError }: {
+  id: string; members: Member[]; issues: IssueView[]; tasks: TaskView[]; events: EventRow[]; running: string[];
   onChanged: () => void; onError: (m: string) => void;
 }) {
   const [d, setD] = useState<MeetingDetail | null>(null);
@@ -191,6 +191,8 @@ function MeetingRoom({ id, members, issues, events, running, onChanged, onError 
         {waiting.filter((n) => running.includes(n)).map((n) => <div className="line" key={n} style={{ paddingLeft: 0 }}><span>● {n} 正在回复…</span></div>)}
       </div>
 
+      <ActionPanel meeting={m} members={members} tasks={tasks} events={events} minutesKey={d.meeting.minutes} onError={onError} onChanged={onChanged} />
+
       <div className="minutes">
         <div className="minutes-head"><b>会议纪要</b>
           <span className="hint">决议、被否方案及原因、行动项、待验证经验。由 AI 起草，你可以修改。{dirty ? " · 有未保存的修改" : ""}{lessonNote ? ` · ${lessonNote}` : ""}</span>
@@ -220,6 +222,73 @@ function MeetingRoom({ id, members, issues, events, running, onChanged, onError 
           </div>
         </footer>
       ) : <div className="hint" style={{ padding: 14, textAlign: "center" }}>会议已结束</div>}
+    </div>
+  );
+}
+
+
+const ACTION_STATUS: Record<string, string> = { open: "待处理", working: "处理中", done: "已处理", dismissed: "已驳回", dropped: "已撤回" };
+
+/** 纪要里的行动项：可以派给负责人处理、标为已处理或驳回。只有人能关闭行动项，AI 员工没有这个权限。 */
+function ActionPanel({ meeting, members, tasks, events, minutesKey, onError, onChanged }: {
+  meeting: Meeting; members: Member[]; tasks: TaskView[]; events: EventRow[]; minutesKey: string; onError: (m: string) => void; onChanged: () => void;
+}) {
+  const [items, setItems] = useState<ActionItem[]>([]);
+  const [pick, setPick] = useState<Record<string, string>>({});
+  const load = useCallback(async () => {
+    try { setItems((await api.actionItems(meeting.id)).filter((a) => a.status !== "dropped")); } catch (e) { onError(String(e)); }
+  }, [meeting.id, onError]);
+  // 纪要改动（自动起草或手动保存）后行动项会重新同步；处理状态变化、任务结束时也刷新
+  const last = useMemo(() => events.reduce((m, e) => (["action_item_status", "meeting_minutes", "task_merged", "turn_result"].includes(e.kind) ? Math.max(m, e.id) : m), 0), [events]);
+  useEffect(() => { void load(); }, [load, minutesKey, last]);
+  if (items.length === 0) return null;
+  const owner = tasks.find((t) => t.task.id === meeting.task_id)?.task.employee_id ?? null;
+  const open = items.filter((a) => a.status === "open" || a.status === "working");
+  const blocking = open.filter((a) => a.blocking && meeting.task_id);
+
+  async function act(fn: () => Promise<unknown>) { try { await fn(); await load(); onChanged(); } catch (e) { onError(String(e)); } }
+
+  return (
+    <div className="actions">
+      <div className="minutes-head">
+        <b>行动项</b>
+        <span className="hint">{open.length === 0 ? "全部处理完了" : `${open.length} 条未处理`}{blocking.length > 0 ? `，其中 ${blocking.length} 条会拦住任务的合并` : ""}</span>
+      </div>
+      {items.map((a) => {
+        const target = pick[a.id] ?? a.assignee_id ?? owner ?? "";
+        const live = a.status === "open" || a.status === "working";
+        return (
+          <div className={`action ${a.status}`} key={a.id}>
+            <div className="action-top">
+              {meeting.task_id && <span className={`badge ${a.blocking ? "ab-block" : ""}`}>{a.blocking ? "合并前" : "之后"}</span>}
+              <span className={`badge as-${a.status}`}>{ACTION_STATUS[a.status]}</span>
+              <span className="hint">{a.assignee_name ? `负责人 ${a.assignee_name}` : a.for_human ? "需要你处理" : "未指定负责人"}</span>
+            </div>
+            <div>{a.text}</div>
+            {a.note && <div className="hint">备注：{a.note}</div>}
+            {live && (
+              <div className="action-btns">
+                {!a.for_human && (
+                  <>
+                    <select value={target} onChange={(e) => setPick({ ...pick, [a.id]: e.target.value })}>
+                      <option value="">选择负责人…</option>
+                      {members.map((m) => <option key={m.employee_id} value={m.employee_id}>{m.name}</option>)}
+                    </select>
+                    <button className="btn" disabled={!target} title="让 TA 处理这一项。对进行中任务的评审意见，只能交给该任务的员工，在同一个分支里改"
+                      onClick={() => void act(() => api.dispatchAction(a.id, target))}>{a.status === "working" ? "再派一次" : "交给 TA 处理"}</button>
+                  </>
+                )}
+                <button className="btn primary" onClick={() => void act(() => api.setActionStatus(a.id, "done"))}>已处理</button>
+                <button className="btn" onClick={() => {
+                  const why = window.prompt("为什么不处理这一项？（会记录下来）", "");
+                  if (why && why.trim()) void act(() => api.setActionStatus(a.id, "dismissed", why));
+                }}>驳回</button>
+              </div>
+            )}
+            {!live && <button className="link" onClick={() => void act(() => api.setActionStatus(a.id, "open"))}>重新打开</button>}
+          </div>
+        );
+      })}
     </div>
   );
 }

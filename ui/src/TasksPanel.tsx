@@ -92,15 +92,19 @@ export function TasksPanel({
   }
   async function merge(v: TaskView) {
     let warn = v.overlaps.length ? `\n\n注意：与其他进行中的任务同时修改了 ${v.overlaps.map((o) => o.path).join("、")}。` : "";
-    // 评审里提出的问题不会自动拦住合并，所以合并前把它们摆到你面前
     for (const rv of v.reviews) {
       if (rv.status === "open") warn += `\n\n⚠ 评审会议「${rv.title}」还没有结束。`;
-      if (rv.action_items.length > 0) warn += `\n\n评审纪要里有 ${rv.action_items.length} 条行动项，请确认都已处理：\n${rv.action_items.map((x) => `• ${x}`).join("\n")}`;
     }
     if (!(await api.confirm(`将「${v.task.title}」合并到 ${v.task.base_branch}？\n改动会压缩成一个提交。${warn}`, "确认合并"))) return;
     setWorking(v.task.id);
     try {
-      const r = await api.mergeTask(v.task.id);
+      let r = await api.mergeTask(v.task.id);
+      // 评审里还有“合并前”的行动项没处理：默认拦下；要带着它们合并，必须明确确认（会留下记录）
+      if (r.outcome === "open_action_items") {
+        const list = r.items.map((x) => `• ${x}`).join("\n");
+        if (!(await api.confirm(`评审里还有 ${r.items.length} 条标为“合并前”的行动项没有处理：\n\n${list}\n\n建议先到会议页处理完再合并。确定要带着它们合并吗？（会留下记录）`, "还有未处理的行动项"))) { setWorking(null); return; }
+        r = await api.mergeTask(v.task.id, true);
+      }
       if (r.outcome === "conflict") onError(`合并冲突，未做任何改动：${r.files.join("、")}。请让员工先处理冲突。`);
       else if (r.outcome === "blocked") onError(`无法合并：${r.reason}`);
       onChanged();
@@ -143,12 +147,16 @@ export function TasksPanel({
                   {v.files.length > 6 && <li className="hint">… 另有 {v.files.length - 6} 个</li>}
                 </ul>
               )}
-              {v.reviews.map((rv) => (
-                <div key={rv.meeting_id} className={`note ${rv.status === "open" || rv.action_items.length > 0 ? "warn" : "ok"}`}>
-                  💬 评审「{rv.title}」{rv.status === "open" ? "进行中" : "已结束"}
-                  {rv.action_items.length > 0 ? ` · ${rv.action_items.length} 条行动项待确认` : rv.status === "closed" ? " · 没有行动项" : ""}
-                </div>
-              ))}
+              {v.reviews.map((rv) => {
+                const live = rv.items.filter((a) => a.status === "open" || a.status === "working");
+                const block = live.filter((a) => a.blocking).length;
+                return (
+                  <div key={rv.meeting_id} className={`note ${rv.status === "open" || block > 0 ? "warn" : "ok"}`}>
+                    💬 评审「{rv.title}」{rv.status === "open" ? "进行中" : "已结束"}
+                    {block > 0 ? ` · ${block} 条合并前行动项未处理，会拦住合并` : live.length > 0 ? ` · ${live.length} 条后续行动项待跟进` : rv.items.length > 0 ? " · 行动项都已处理" : ""}
+                  </div>
+                );
+              })}
               {v.overlaps.length > 0 && (
                 <div className="note warn">⚠ 与 {others.join("、")} 同时修改：{v.overlaps.map((o) => o.path).join("、")}</div>
               )}

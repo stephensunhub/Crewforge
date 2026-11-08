@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind,
 } from "./types";
 
 export const api = {
@@ -72,6 +72,11 @@ export const api = {
   unverifiedCounts: () => invoke<[string, string, number][]>("unverified_counts"),
   previewRetrieval: (projectId: string | null, employeeId: string, text: string) =>
     invoke<Memory[]>("preview_retrieval", { projectId, employeeId, text }),
+  // 评审行动项
+  actionItems: (meetingId: string) => invoke<ActionItem[]>("list_action_items", { meetingId }),
+  setActionStatus: (id: string, status: "done" | "dismissed" | "open", note = "") => invoke<void>("set_action_status", { id, status, note }),
+  dispatchAction: (id: string, employeeId: string | null) => invoke<void>("dispatch_action_item", { id, employeeId }),
+  actionCounts: () => invoke<[string, string, number][]>("action_counts"),
   // 事件与执行
   recentEvents: (projectId: string | null, limit: number) => invoke<EventRow[]>("recent_events", { projectId, limit }),
   running: () => invoke<string[]>("running_employees"),
@@ -82,7 +87,7 @@ export const api = {
   repoStatus: (projectPath: string) => invoke<RepoStatus>("repo_status", { projectPath }),
   taskViews: (projectPath: string) => invoke<TaskView[]>("list_task_views", { projectPath }),
   taskDiff: (taskId: string) => invoke<string>("task_diff", { taskId }),
-  mergeTask: (taskId: string) => invoke<MergeOutcome>("merge_task", { taskId }),
+  mergeTask: (taskId: string, acknowledgeOpenItems = false) => invoke<MergeOutcome>("merge_task", { taskId, acknowledgeOpenItems }),
   abandonTask: (taskId: string) => invoke<void>("abandon_task", { taskId }),
   reveal: (taskId: string) => invoke<void>("reveal_in_finder", { taskId }),
   // 设置

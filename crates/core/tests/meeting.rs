@@ -200,8 +200,8 @@ async fn task_views_surface_linked_reviews_and_their_action_items() {
     e.db.set_minutes(&m.id, "## 决议\n- 需要修复溢出\n## 行动项\n- alice 把 to.balance += amount 改成 checked_add\n- bob 补溢出测试\n## 待验证的经验\n无").unwrap();
     let v = e.orch.task_views(&e.repo).await.unwrap().remove(0);
     assert_eq!(v.reviews.len(), 1);
-    assert_eq!((v.reviews[0].status.as_str(), v.reviews[0].action_items.len()), ("open", 2), "会议未结束，且有 2 条行动项");
-    assert!(v.reviews[0].action_items[0].contains("checked_add"));
+    assert_eq!((v.reviews[0].status.as_str(), v.reviews[0].items.len()), ("open", 2), "会议未结束，且有 2 条行动项");
+    assert!(v.reviews[0].items[0].text.contains("checked_add"));
     // 别的会议（没有关联这个任务）不会混进来
     e.db.create_meeting(&e.project_id, "design", "无关", None, None, &[], 5).unwrap();
     assert_eq!(e.orch.task_views(&e.repo).await.unwrap().remove(0).reviews.len(), 1);

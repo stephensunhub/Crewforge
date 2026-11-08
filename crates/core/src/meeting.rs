@@ -195,8 +195,14 @@ impl Orchestrator {
         let prompt = format!(
             "请为下面这场会议整理纪要。\n会议类型：{}；主题：{}\n{}\n会议记录：\n{}\n\n\
              请用 Markdown，严格包含这四节标题：\n## 决议\n## 被否决的方案及原因\n## 行动项\n## 待验证的经验\n\
-             只写会上实际出现过的内容，没有的小节写“无”，不要编造；不要修改任何文件。",
-            kind_label(&meeting.kind), meeting.title, self.issues_block(&meeting, false)?, transcript
+             “行动项”一节每条单独一行，格式固定为「- [合并前] 负责人：事项」或「- [之后] 负责人：事项」。\
+             [合并前]=不解决就不该合并的缺陷，或必须补上的测试；[之后]=可以另开任务跟进的事。\
+             “运行测试确认通过”这类例行验证不要列为行动项；需要人类拍板但不影响这个改动正确性的事写成 [之后]。\
+             负责人用项目成员的名字（{}），需要人类处理的写“人类”，没有就不写。\n\
+             “待验证的经验”只写以后能复用的做法或教训（一条一句，说明适用条件）；当前的状态、未解决的问题、待办事项不是经验，不要写在这里（待办写进行动项）。\n\
+             只写会上实际出现过的内容，没有的小节只写一个“无”字（不要再加解释），不要编造；不要修改任何文件。",
+            kind_label(&meeting.kind), meeting.title, self.issues_block(&meeting, false)?, transcript,
+            members.iter().map(|m| self.name_of(Some(&m.employee_id))).collect::<Vec<_>>().join("、")
         );
         let cfg = TurnConfig {
             project_path: Path::new(&project.path).to_path_buf(),

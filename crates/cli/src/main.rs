@@ -11,7 +11,7 @@
 //!   crewforge init-repo [目录]            初始化 Git 仓库（worktree 需要至少一个提交）
 //!   crewforge tasks [目录]                列出项目的任务、改动文件、冲突预检
 //!   crewforge diff <任务ID>               查看任务改动
-//!   crewforge merge <任务ID>              合并任务（squash）
+//!   crewforge merge <任务ID> [--ack]      合并任务（squash）；评审里还有未处理的“合并前”行动项时默认拦下，--ack 表示明知如此仍然合并
 //!   crewforge abandon <任务ID>            放弃任务（保留分支）
 //!   crewforge events [条数]
 //!
@@ -111,18 +111,8 @@ async fn main() -> Result<()> {
             orch.abandon_task(id).await?;
             println!("已放弃，分支保留");
         }
-        ["merge", id] => match orch.merge_task(id).await? {
-            MergeOutcome::Merged { commit } => println!("已合并: {commit}"),
-            MergeOutcome::Empty => println!("没有任何改动，无需合并"),
-            MergeOutcome::Conflict { files } => {
-                eprintln!("存在冲突，未合并: {}", files.join(", "));
-                std::process::exit(1);
-            }
-            MergeOutcome::Blocked { reason } => {
-                eprintln!("无法合并: {reason}");
-                std::process::exit(1);
-            }
-        },
+        ["merge", id] => merge_cmd(&orch, id, false).await?,
+        ["merge", id, "--ack"] => merge_cmd(&orch, id, true).await?,
         _ => {
             eprintln!("用法见 crates/cli/src/main.rs 顶部注释");
             std::process::exit(2);
@@ -157,6 +147,30 @@ fn cost(db: &Db, days: Option<i64>) -> Result<()> {
     let e = &r.efficiency;
     println!("效率：平均上下文 {:?} · 缓存命中 {:?} · 会话复用 {}/{} · 失败 {} · 恢复 {}",
         e.avg_context_per_turn.map(|v| v.round()), e.cache_hit_ratio.map(|v| (v * 100.0).round()), e.resumed_starts, e.total_starts, e.failed_runs, e.recovered_sessions);
+    Ok(())
+}
+
+async fn merge_cmd(orch: &Orchestrator, id: &str, ack: bool) -> Result<()> {
+    match orch.merge_task_ack(id, ack).await? {
+        MergeOutcome::Merged { commit } => println!("已合并: {commit}"),
+        MergeOutcome::Empty => println!("没有任何改动，无需合并"),
+        MergeOutcome::Conflict { files } => {
+            eprintln!("存在冲突，未合并: {}", files.join(", "));
+            std::process::exit(1);
+        }
+        MergeOutcome::Blocked { reason } => {
+            eprintln!("无法合并: {reason}");
+            std::process::exit(1);
+        }
+        MergeOutcome::OpenActionItems { items } => {
+            eprintln!("评审里还有 {} 条标为“合并前”的行动项没有处理，未合并：", items.len());
+            for i in items {
+                eprintln!("  • {i}");
+            }
+            eprintln!("处理完再合并；确认要带着它们合并的话，加 --ack。");
+            std::process::exit(1);
+        }
+    }
     Ok(())
 }
 

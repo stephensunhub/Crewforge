@@ -105,7 +105,11 @@ export function Chat({
       case "task_merged":
         return <div className="line ok" key={e.id}><span>🔀 已合并 {name} 的任务</span><span className="t">{p.title}</span>{p.commit && <code>{String(p.commit).slice(0, 8)}</code>}{t}</div>;
       case "task_merge_blocked":
-        return <div className="line bad" key={e.id}><span>⛔ {name} 的任务未能合并</span><span>{p.kind === "conflict" ? `冲突：${(p.files ?? []).join("、")}` : p.reason}</span>{t}</div>;
+        return <div className="line bad" key={e.id}><span>⛔ {name} 的任务未能合并</span><span>{p.kind === "conflict" ? `冲突：${(p.files ?? []).join("、")}` : p.kind === "action_items" ? `评审里还有 ${(p.items ?? []).length} 条合并前行动项没处理` : p.reason}</span>{t}</div>;
+      case "merged_with_open_items":
+        return <div className="line warn" key={e.id}><span>⚠ {name} 的任务在还有 {(p.items ?? []).length} 条未处理的行动项时被确认合并</span>{t}</div>;
+      case "action_item_status":
+        return <div className="line" key={e.id}><span>{p.to === "done" ? "✅ 行动项已处理" : p.to === "dismissed" ? "🚫 行动项已驳回" : "↩ 行动项重新打开"}</span><span className="t">{short(String(p.text ?? ""), 80)}</span>{t}</div>;
       case "task_abandoned":
         return <div className="line" key={e.id}><span>🗑 {name} 的任务已放弃（分支 {p.branch} 保留）</span>{t}</div>;
       case "agent_text":

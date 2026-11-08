@@ -466,7 +466,8 @@ impl Db {
         })
     }
 
-    /// 任务合并后，关联该任务的待验证经验自动转为已验证，并记下合并提交。
+    /// 任务合并后，**显式关联到该任务**的待验证记忆自动转为已验证，并记下合并提交。
+    /// 注意：纪要里的经验、AI 提议的记忆都不会关联任务，所以不会走这条路，必须人类验证。
     pub fn verify_task_memories(&self, task_id: &str, commit: Option<&str>) -> Result<usize> {
         let now = now_ms();
         let ids: Vec<(String, Option<String>)> = {
@@ -529,7 +530,9 @@ impl Db {
                 continue;
             }
             self.add_memory(NewMemory {
-                layer: "project".into(), project_id: Some(m.project_id.clone()), task_id: m.task_id.clone(), kind: "lesson".into(),
+                // 不关联任务：任务合并只能证明代码通过了评审和测试，证明不了模型写在纪要里的这句话，
+                // 所以必须由人类验证；否则“目前没有运行结果”这类当时的状态会在合并后被当成已验证的事实
+                layer: "project".into(), project_id: Some(m.project_id.clone()), task_id: None, kind: "lesson".into(),
                 content: l, source_kind: "meeting".into(), source_ref: Some(meeting_id.into()), created_by: "meeting".into(),
                 scope: format!("来自会议《{}》", m.title), ..Default::default()
             })?;

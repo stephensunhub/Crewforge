@@ -93,7 +93,13 @@ export interface Task {
   created_at: number;
   updated_at: number;
 }
-export interface ReviewInfo { meeting_id: string; title: string; status: "open" | "closed"; action_items: string[]; agent_replies: number }
+export type ActionStatus = "open" | "working" | "done" | "dismissed" | "dropped";
+export interface ActionItem {
+  id: string; project_id: string; meeting_id: string; meeting_title: string; task_id: string | null; text: string;
+  assignee_id: string | null; assignee_name: string | null; for_human: boolean; blocking: boolean; status: ActionStatus;
+  work_task_id: string | null; note: string; created_at: number; resolved_at: number | null;
+}
+export interface ReviewInfo { meeting_id: string; title: string; status: "open" | "closed"; items: ActionItem[]; agent_replies: number }
 export interface TaskView {
   task: Task;
   employee_name: string;
@@ -106,7 +112,8 @@ export type MergeOutcome =
   | { outcome: "merged"; commit: string }
   | { outcome: "empty" }
   | { outcome: "conflict"; files: string[] }
-  | { outcome: "blocked"; reason: string };
+  | { outcome: "blocked"; reason: string }
+  | { outcome: "open_action_items"; items: string[] };
 
 export type IssueKind = "technical" | "requirement" | "bug" | "risk" | "process" | "implementation";
 export type IssueStatus = "open" | "discussing" | "pending_decision" | "decided" | "implementing" | "closed" | "shelved" | "cancelled";

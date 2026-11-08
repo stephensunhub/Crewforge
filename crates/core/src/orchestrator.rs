@@ -30,8 +30,8 @@ pub struct ReviewInfo {
     pub meeting_id: String,
     pub title: String,
     pub status: String,
-    /// 纪要“行动项”一节的条目（没有纪要或写着“无”时为空）
-    pub action_items: Vec<String>,
+    /// 这场评审产生的行动项（含状态）
+    pub items: Vec<crate::actions::ActionItem>,
     pub agent_replies: i64,
 }
 
@@ -68,6 +68,19 @@ impl Orchestrator {
         approver: &A,
         observer: &O,
     ) -> Result<TurnResult> {
+        self.assign_linked(employee, project_path, prompt, None, approver, observer).await
+    }
+
+    /// 同 `assign`；`action_item` 不为空时，把这条评审行动项标为“处理中”并关联到所在的任务。
+    pub(crate) async fn assign_linked<A: Approver, O: Observer>(
+        &self,
+        employee: &Employee,
+        project_path: &Path,
+        prompt: &str,
+        action_item: Option<&str>,
+        approver: &A,
+        observer: &O,
+    ) -> Result<TurnResult> {
         let repo = self.ws.repo_info(project_path).await?;
         let repo_key = repo.root.to_string_lossy().into_owned();
 
@@ -81,6 +94,9 @@ impl Orchestrator {
             Some(t) => (t, false),
             None => (self.start_task(employee, &repo.root, &repo.branch, prompt).await?, true),
         };
+        if let Some(a) = action_item {
+            self.db.mark_action_working(a, &task.id)?;
+        }
         let block = if fresh {
             self.memory_block(project_id.as_deref(), employee, Some(&task.id), prompt, "task", &task.id)
         } else {
@@ -172,11 +188,24 @@ impl Orchestrator {
 
     /// 合并任务（人类确认后调用）。先保存检查点，再 squash 合入基础分支。
     pub async fn merge_task(&self, task_id: &str) -> Result<MergeOutcome> {
+        self.merge_task_ack(task_id, false).await
+    }
+
+    /// 合并任务。评审里还有标为“合并前”、没处理完的行动项时，默认不合并并返回这些条目；
+    /// `acknowledge_open_items` 为 true 表示人类明知如此仍然合并，会留下记录。
+    pub async fn merge_task_ack(&self, task_id: &str, acknowledge_open_items: bool) -> Result<MergeOutcome> {
         let (task, emp) = self.task_and_employee(task_id)?;
         if task.status != "active" {
             bail!("任务已经是 {} 状态，不能合并", task.status);
         }
         let eid = Some(emp.id.as_str());
+        let open_items = self.db.blocking_actions_for_task(task_id)?;
+        if !open_items.is_empty() && !acknowledge_open_items {
+            let items: Vec<String> = open_items.iter().map(|a| a.text.clone()).collect();
+            self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_merge_blocked", eid, None,
+                &json!({"task_id": task.id, "kind": "action_items", "items": items}))?;
+            return Ok(MergeOutcome::OpenActionItems { items });
+        }
         self.checkpoint_task(&task, &emp, &format!("[crewforge] {}: {} (合并前保存)\n\nCrewforge-Task: {}", emp.name, task.title, task.id)).await;
 
         let message = format!(
@@ -187,6 +216,10 @@ impl Orchestrator {
         let outcome = self.ws.merge(repo, &task.base_branch, &task.branch, &emp.name, &message).await?;
         match &outcome {
             MergeOutcome::Merged { commit } => {
+                if !open_items.is_empty() {
+                    self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "merged_with_open_items", eid, None,
+                        &json!({"task_id": task.id, "commit": commit, "items": open_items.iter().map(|a| a.text.clone()).collect::<Vec<_>>()}))?;
+                }
                 self.db.set_task_status(&task.id, "merged", Some(commit))?;
                 // 合并即视为验证：关联该任务的待验证经验转为已验证
                 self.db.verify_task_memories(&task.id, Some(commit))?;
@@ -202,6 +235,7 @@ impl Orchestrator {
             MergeOutcome::Blocked { reason } => {
                 self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_merge_blocked", eid, None, &json!({"task_id": task.id, "kind": "blocked", "reason": reason}))?;
             }
+            MergeOutcome::OpenActionItems { .. } => {}
         }
         Ok(outcome)
     }
@@ -248,7 +282,7 @@ impl Orchestrator {
             if task.status == "active" {
                 for m in self.db.meetings_for_task(&task.id)? {
                     reviews.push(ReviewInfo {
-                        action_items: crate::memory::extract_section_items(&m.minutes, "行动项"),
+                        items: self.db.actions_for_meeting(&m.id)?.into_iter().filter(|a| a.status != "dropped").collect(),
                         agent_replies: self.db.agent_reply_count(&m.id)?, meeting_id: m.id, title: m.title, status: m.status,
                     });
                 }

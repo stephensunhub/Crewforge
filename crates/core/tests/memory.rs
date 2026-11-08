@@ -103,7 +103,7 @@ async fn no_relevant_memory_means_no_injection() {
 }
 
 #[tokio::test]
-async fn merging_a_task_verifies_its_linked_lessons() {
+async fn merging_verifies_only_memories_explicitly_linked_to_the_task_never_minutes_lessons() {
     let mut e = setup().await;
     let alice = e.db.add_employee("alice", "全栈", "p").unwrap();
     let (program, _log) = cli(&e.tools, "c");
@@ -111,20 +111,24 @@ async fn merging_a_task_verifies_its_linked_lessons() {
     e.orch.assign(&alice, &e.repo, "实现功能", &Deny, &NoopObserver).await.unwrap();
     let task = e.orch.task_views(&e.repo).await.unwrap().remove(0).task;
 
-    // 一场 Code Review 会议产出的经验，关联到这个任务，初始为待验证
+    // 评审会议纪要里的经验：保存为待验证，且不关联任务
     let m = e.db.create_meeting(&e.pid, "code_review", "评审", None, Some(&task.id), &[], 5).unwrap();
     e.db.set_minutes(&m.id, "## 待验证的经验\n- 订单号生成必须保证全局唯一").unwrap();
     assert_eq!(e.db.save_meeting_lessons(&m.id).unwrap(), 1);
-    let before = e.db.list_memories(&MemoryFilter { project_id: Some(e.pid.clone()), ..Default::default() }).unwrap();
-    assert_eq!(before[0].status, "unverified");
-    assert_eq!(before[0].task_id.as_deref(), Some(task.id.as_str()));
+    let lesson = e.db.list_memories(&MemoryFilter { project_id: Some(e.pid.clone()), ..Default::default() }).unwrap().remove(0);
+    assert_eq!((lesson.status.as_str(), lesson.task_id.clone()), ("unverified", None), "纪要里的经验不关联任务");
+    // 另有一条被明确关联到这个任务的待验证记忆（比如人为指定），它才会随合并验证
+    let linked = e.db.add_memory(NewMemory { layer: "project".into(), project_id: Some(e.pid.clone()), task_id: Some(task.id.clone()), kind: "fact".into(),
+        content: "这个任务引入的接口必须幂等".into(), source_kind: "meeting".into(), created_by: "meeting".into(), ..Default::default() }).unwrap();
+    assert_eq!(linked.status, "unverified");
 
     let MergeOutcome::Merged { commit } = e.orch.merge_task(&task.id).await.unwrap() else { panic!() };
-    let after = e.db.get_memory(&before[0].id).unwrap().unwrap();
-    assert_eq!(after.status, "verified");
-    assert_eq!(after.verified_by.as_deref(), Some("merge"));
-    assert_eq!(after.related_commit.as_deref(), Some(commit.as_str()), "记下是哪次提交验证了它");
-    // 验证之后才会被检索到
-    let got = e.db.retrieve_memories(Some(&e.pid), &alice.id, None, "订单号生成要唯一", 5, 2000).unwrap();
-    assert_eq!(got.len(), 1);
+    let lesson_after = e.db.get_memory(&lesson.id).unwrap().unwrap();
+    assert_eq!(lesson_after.status, "unverified", "合并证明不了模型写的这句话，仍需人类验证");
+    let after = e.db.get_memory(&linked.id).unwrap().unwrap();
+    assert_eq!((after.status.as_str(), after.verified_by.as_deref(), after.related_commit.as_deref()), ("verified", Some("merge"), Some(commit.as_str())));
+    // 没验证的经验不会被检索到；人类验证之后才会
+    assert!(e.db.retrieve_memories(Some(&e.pid), &alice.id, None, "订单号生成要唯一", 5, 2000).unwrap().is_empty());
+    e.db.verify_memory(&lesson.id, "human").unwrap();
+    assert_eq!(e.db.retrieve_memories(Some(&e.pid), &alice.id, None, "订单号生成要唯一", 5, 2000).unwrap().len(), 1);
 }

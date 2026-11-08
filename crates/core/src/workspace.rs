@@ -64,6 +64,8 @@ pub enum MergeOutcome {
     Empty,
     Conflict { files: Vec<String> },
     Blocked { reason: String },
+    /// 评审会议里还有标为“合并前”、没处理完的行动项；明确确认后才会合并
+    OpenActionItems { items: Vec<String> },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

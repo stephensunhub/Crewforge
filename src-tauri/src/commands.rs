@@ -1,6 +1,7 @@
 use crate::approval::UiApprover;
 use crate::state::AppState;
 use crewforge_core::onboarding::{OnboardingState, StoredCheck, DEFAULT_COMMAND_TIMEOUT, baseline::CheckReport, scan::{BaselineCommand, ScanReport}};
+use crewforge_core::actions::ActionItem;
 use crewforge_core::cost::CostReport;
 use crewforge_core::scheduler::{SchedStatus, SchedulerConfig};
 use crewforge_core::memory::{DEFAULT_MAX_CHARS, DEFAULT_MAX_ITEMS, Memory, MemoryFilter, NewMemory};
@@ -219,8 +220,8 @@ pub async fn task_diff(state: State<'_, AppState>, task_id: String) -> CmdResult
 
 /// 合并由人类在界面上点击确认后触发。
 #[tauri::command]
-pub async fn merge_task(state: State<'_, AppState>, task_id: String) -> CmdResult<MergeOutcome> {
-    state.orch.merge_task(&task_id).await.map_err(err)
+pub async fn merge_task(state: State<'_, AppState>, task_id: String, acknowledge_open_items: Option<bool>) -> CmdResult<MergeOutcome> {
+    state.orch.merge_task_ack(&task_id, acknowledge_open_items.unwrap_or(false)).await.map_err(err)
 }
 
 #[tauri::command]
@@ -269,16 +270,24 @@ pub fn run_task(
     if !state.db.is_member(&project.id, &emp.id).map_err(err)? {
         return Err(format!("{} 不是项目「{}」的成员，请先在成员页添加", emp.name, project.name));
     }
+    start_assignment(app, &state, emp, project.id, path, prompt, None)
+}
+
+/// 把一次派活放进调度队列并在后台执行：占用员工、必要时排队并记录原因、结束后释放。
+/// `action_item` 不为空时，这次派活是为了处理某条评审行动项。
+fn start_assignment(
+    app: AppHandle, state: &AppState, emp: Employee, project_id: String, path: PathBuf, prompt: String, action_item: Option<String>,
+) -> CmdResult<()> {
     if !state.running.lock().unwrap().insert(emp.name.clone()) {
         return Err(format!("{} 正在执行任务，请等待完成", emp.name));
     }
-    emit_running(&app, &state);
+    emit_running(&app, state);
 
     let db = state.db.clone();
     let orch = state.orch.clone();
     let sched = state.sched.clone();
     let running = state.running.clone();
-    let approver = UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: Some(project.id.clone()) };
+    let approver = UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: Some(project_id) };
     tauri::async_runtime::spawn(async move {
         let result = async {
             // 现在不能立刻开始（并发已满，或额度紧张/暂停）：先记录排队和原因，界面据此区分"排队中"与"工作中"
@@ -292,7 +301,10 @@ pub fn run_task(
                 let _ = db.append_event("task_queued", Some(&emp.id), None, &serde_json::json!({"prompt": prompt, "reason": reason, "level": st.level}));
             }
             let _permit = sched.acquire().await;
-            orch.assign(&emp, &path, &prompt, &approver, &NoopObserver).await
+            match &action_item {
+                Some(id) => orch.assign_for_action(&emp, &path, &prompt, id, &approver, &NoopObserver).await,
+                None => orch.assign(&emp, &path, &prompt, &approver, &NoopObserver).await,
+            }
         }
         .await;
         if let Err(e) = result {
@@ -625,4 +637,31 @@ pub fn latest_task_check(state: State<'_, AppState>, task_id: String) -> CmdResu
 pub fn cost_report(state: State<'_, AppState>, days: Option<i64>, tz_offset_minutes: i64) -> CmdResult<CostReport> {
     let since = days.filter(|d| *d > 0).map(|d| crewforge_core::db::now_ms() - d * 86_400_000);
     state.db.cost_report(since, tz_offset_minutes).map_err(err)
+}
+
+
+// ================= 评审行动项 =================
+#[tauri::command]
+pub fn list_action_items(state: State<'_, AppState>, meeting_id: String) -> CmdResult<Vec<ActionItem>> {
+    state.db.actions_for_meeting(&meeting_id).map_err(err)
+}
+
+/// 只有人类能处理行动项：done（已处理）、dismissed（驳回，必须写原因）、open（重新打开）。
+#[tauri::command]
+pub fn set_action_status(state: State<'_, AppState>, id: String, status: String, note: String) -> CmdResult<()> {
+    state.db.set_action_status(&id, &status, &note).map_err(err)
+}
+
+#[tauri::command]
+pub fn action_counts(state: State<'_, AppState>) -> CmdResult<Vec<(String, String, i64)>> {
+    state.db.open_action_counts().map_err(err)
+}
+
+/// 把行动项派给员工：对进行中任务的评审意见只能交给该任务的员工，在同一个任务里继续修。
+#[tauri::command]
+pub fn dispatch_action_item(app: AppHandle, state: State<'_, AppState>, id: String, employee_id: Option<String>) -> CmdResult<()> {
+    let (emp, path, prompt) = state.orch.prepare_action_dispatch(&id, employee_id.as_deref()).map_err(err)?;
+    let item = state.db.get_action(&id).map_err(err)?.ok_or("行动项不存在")?;
+    let path = path.canonicalize().map_err(|_| format!("项目目录不存在: {}", path.display()))?;
+    start_assignment(app, &state, emp, item.project_id, path, prompt, Some(id))
 }

@@ -579,6 +579,8 @@ impl Db {
 
     pub fn set_minutes(&self, meeting_id: &str, minutes: &str) -> Result<()> {
         self.conn.lock().unwrap().execute("UPDATE meetings SET minutes = ?2 WHERE id = ?1", params![meeting_id, minutes])?;
+        // 纪要里的行动项同步成可跟踪的记录（自动起草和手动修改走同一条路）
+        self.sync_action_items(meeting_id)?;
         Ok(())
     }
 
