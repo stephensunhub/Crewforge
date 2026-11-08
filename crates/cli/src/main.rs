@@ -59,16 +59,10 @@ impl Observer for Printer {
     }
 }
 
-fn home() -> PathBuf {
-    std::env::var_os("CREWFORGE_HOME").map(PathBuf::from).unwrap_or_else(|| {
-        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("Crewforge")
-    })
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let db = Arc::new(Db::open(&home())?);
+    let db = Arc::new(Db::open(&crewforge_core::db::default_data_dir())?);
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["employee", "add", name, role, persona] => {
             let e = db.add_employee(name, role, persona)?;

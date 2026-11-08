@@ -9,8 +9,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SCHEMA_VERSION: i64 = 1;
@@ -72,9 +72,23 @@ pub struct EventRow {
     pub payload: Value,
 }
 
+type EventHook = Arc<dyn Fn(&EventRow) + Send + Sync>;
+
 pub struct Db {
     conn: Mutex<Connection>,
     jsonl: Mutex<Option<File>>,
+    hook: Mutex<Option<EventHook>>,
+}
+
+/// 默认数据目录：环境变量 CREWFORGE_HOME，否则系统数据目录下的 Crewforge。
+/// 命令行与桌面应用共用同一目录。
+pub fn default_data_dir() -> PathBuf {
+    std::env::var_os("CREWFORGE_HOME").map(PathBuf::from).unwrap_or_else(|| {
+        let base = std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join("Library").join("Application Support"))
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join("Crewforge")
+    })
 }
 
 pub fn now_ms() -> i64 {
@@ -110,7 +124,12 @@ impl Db {
         } else if version != SCHEMA_VERSION {
             anyhow::bail!("数据库版本 {version} 与程序版本 {SCHEMA_VERSION} 不一致，尚未实现迁移");
         }
-        Ok(Self { conn: Mutex::new(conn), jsonl: Mutex::new(jsonl) })
+        Ok(Self { conn: Mutex::new(conn), jsonl: Mutex::new(jsonl), hook: Mutex::new(None) })
+    }
+
+    /// 注册事件钩子：每条事件落库后同步调用，用于向界面实时推送。钩子内不要做耗时操作。
+    pub fn set_event_hook(&self, f: impl Fn(&EventRow) + Send + Sync + 'static) {
+        *self.hook.lock().unwrap() = Some(Arc::new(f));
     }
 
     pub fn add_employee(&self, name: &str, role: &str, persona: &str) -> Result<Employee> {
@@ -228,6 +247,17 @@ impl Db {
                               "session_id": session_id, "payload": payload});
             writeln!(f, "{line}")?;
         }
+        let hook = self.hook.lock().unwrap().clone();
+        if let Some(h) = hook {
+            h(&EventRow {
+                id,
+                ts,
+                kind: kind.into(),
+                employee_id: employee_id.map(Into::into),
+                session_id: session_id.map(Into::into),
+                payload: payload.clone(),
+            });
+        }
         Ok(id)
     }
 
@@ -298,6 +328,17 @@ mod tests {
         assert_eq!(v.len(), 3);
         assert_eq!(v[0].payload["i"], 2);
         assert_eq!(v[2].payload["i"], 4);
+    }
+
+    #[test]
+    fn event_hook_receives_events() {
+        let db = Db::open_memory().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        db.set_event_hook(move |e| s2.lock().unwrap().push(e.kind.clone()));
+        db.append_event("a", None, None, &json!({})).unwrap();
+        db.append_event("b", None, None, &json!({})).unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec!["a", "b"]);
     }
 
     #[test]

@@ -17,6 +17,12 @@ pub trait Observer: Send + Sync {
     fn on_event(&self, employee: &str, event: &AgentEvent);
 }
 
+/// 不需要实时回调时使用（事件已通过 Db 钩子推送）。
+pub struct NoopObserver;
+impl Observer for NoopObserver {
+    fn on_event(&self, _employee: &str, _event: &AgentEvent) {}
+}
+
 pub struct TurnConfig {
     pub project_path: PathBuf,
     /// 测试时可替换为假的 CLI

@@ -12,4 +12,3 @@ crewforge-core = { path = "../core" }
 anyhow.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-dirs.workspace = true
