@@ -77,7 +77,7 @@ async fn dispatch_respects_dependencies_one_task_per_employee_and_completes_on_m
     // 派给 alice：新建任务，条目进行中并关联任务；提示里有说明、验收标准，并带上项目目标
     e.orch.dispatch_plan_item(&a, Some(&alice.id), &Deny, &NoopObserver).await.unwrap();
     let prompt = std::fs::read_to_string(&log).unwrap();
-    for needle in ["[项目目标与硬性约束]", "业务行为必须保持不变", "[计划条目] 引擎", "引擎的说明", "引擎的验收：cargo test 通过", "所属模块：engine"] {
+    for needle in ["[项目目标与硬性约束]", "业务行为必须保持不变", "[计划条目]", "引擎的说明", "引擎的验收：cargo test 通过", "所属模块：engine"] {
         assert!(prompt.contains(needle), "提示里缺少 {needle}");
     }
     let it = e.db.get_plan_item(&a).unwrap().unwrap();

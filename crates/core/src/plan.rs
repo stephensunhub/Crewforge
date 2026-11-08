@@ -381,7 +381,8 @@ impl Orchestrator {
         if let Some(t) = self.db.active_task(&emp.id, &project.path)? {
             bail!("{} 还有进行中的任务《{}》，请先合并或放弃它，再开始新条目", emp.name, t.title);
         }
-        let mut p = format!("[计划条目] {}\n", item.title);
+        // 第一行就是条目标题：它会成为任务标题和合并提交的标题
+        let mut p = format!("{}\n[计划条目]\n", item.title);
         if !item.description.is_empty() {
             p.push_str(&format!("{}\n", item.description));
         }
