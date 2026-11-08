@@ -25,6 +25,9 @@ pub struct CommandResult {
     pub failed_tests: Vec<String>,
     /// 是否解析出了逐项的测试结果；false 时只能做到命令级的比较
     pub parsed: bool,
+    /// 对照检查（parity）通过运行时记下的标准输出（已规范化）：基线里就是“标准答案”，检查时是新实现的输出
+    #[serde(default)]
+    pub golden: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,16 +153,21 @@ pub enum Progress<'a> {
 }
 
 /// 依次运行命令。setup 失败则其余命令标记为跳过（依赖没装好，结果没有意义）。
-pub async fn run_commands(dir: &Path, cmds: &[BaselineCommand], timeout: Duration, mut on: impl FnMut(Progress)) -> Vec<CommandResult> {
+pub async fn run_commands(dir: &Path, cmds: &[BaselineCommand], timeout: Duration, on: impl FnMut(Progress)) -> Vec<CommandResult> {
+    run_commands_mode(dir, cmds, timeout, false, on).await
+}
+
+/// `candidate` 为 true 时，对照检查（parity）命令运行它的 `candidate`（新实现）而不是 `command`（旧实现）。
+pub async fn run_commands_mode(dir: &Path, cmds: &[BaselineCommand], timeout: Duration, candidate: bool, mut on: impl FnMut(Progress)) -> Vec<CommandResult> {
     let mut results = Vec::new();
     let mut setup_failed = false;
     for bc in cmds {
         on(Progress::Started(bc));
         let r = if setup_failed && bc.kind != "setup" {
             CommandResult { id: bc.id.clone(), label: bc.label.clone(), kind: bc.kind.clone(), command: bc.command.clone(),
-                status: "skipped".into(), exit_code: None, duration_ms: 0, output_tail: "依赖安装失败，已跳过".into(), failed_tests: vec![], parsed: false }
+                status: "skipped".into(), exit_code: None, duration_ms: 0, output_tail: "依赖安装失败，已跳过".into(), failed_tests: vec![], parsed: false, golden: None }
         } else {
-            run_one(dir, bc, timeout).await
+            run_one(dir, bc, timeout, candidate).await
         };
         if bc.kind == "setup" && r.status != "passed" {
             setup_failed = true;
@@ -170,17 +178,18 @@ pub async fn run_commands(dir: &Path, cmds: &[BaselineCommand], timeout: Duratio
     results
 }
 
-async fn run_one(dir: &Path, bc: &BaselineCommand, timeout: Duration) -> CommandResult {
+async fn run_one(dir: &Path, bc: &BaselineCommand, timeout: Duration, candidate: bool) -> CommandResult {
     let started = Instant::now();
-    let mut c = shell(&bc.command);
+    let command = if candidate && bc.kind == "parity" { bc.candidate.clone().unwrap_or_else(|| bc.command.clone()) } else { bc.command.clone() };
+    let mut c = shell(&command);
     c.current_dir(dir)
         .env("CI", "true").env("GIT_TERMINAL_PROMPT", "0").env("NO_COLOR", "1").env("TERM", "dumb")
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     #[cfg(unix)]
     c.process_group(0);
     let mut base = CommandResult {
-        id: bc.id.clone(), label: bc.label.clone(), kind: bc.kind.clone(), command: bc.command.clone(),
-        status: "error".into(), exit_code: None, duration_ms: 0, output_tail: String::new(), failed_tests: vec![], parsed: false,
+        id: bc.id.clone(), label: bc.label.clone(), kind: bc.kind.clone(), command: command.clone(),
+        status: "error".into(), exit_code: None, duration_ms: 0, output_tail: String::new(), failed_tests: vec![], parsed: false, golden: None,
     };
     let child = match c.spawn() {
         Ok(ch) => ch,
@@ -191,7 +200,11 @@ async fn run_one(dir: &Path, bc: &BaselineCommand, timeout: Duration) -> Command
         Ok(Ok(out)) => {
             let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
             let ok = out.status.success();
-            let parsed = parse_failures(&bc.command, &text);
+            let parsed = parse_failures(&command, &text);
+            // 对照检查只比较标准输出（编译提示等写在 stderr 里，不属于“行为”）
+            if bc.kind == "parity" && ok {
+                base.golden = Some(normalize_output(&String::from_utf8_lossy(&out.stdout)));
+            }
             let failed_tests = parsed.clone().unwrap_or_default();
             base.status = if ok { "passed" } else { "failed" }.into();
             base.exit_code = out.status.code();
@@ -213,6 +226,54 @@ async fn run_one(dir: &Path, bc: &BaselineCommand, timeout: Duration) -> Command
     }
     base.duration_ms = started.elapsed().as_millis() as u64;
     base
+}
+
+/// 规范化输出再比较：去掉颜色转义，统一换行，去掉每行行尾空白和结尾的空行；过长时截断。
+pub fn normalize_output(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            for n in chars.by_ref() {
+                if n.is_ascii_alphabetic() { break; }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    let joined = out.replace("\r\n", "\n").replace('\r', "\n").lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
+    let t = joined.trim_end_matches('\n').to_string();
+    if t.chars().count() > 200_000 { t.chars().take(200_000).collect() } else { t }
+}
+
+/// 第一处不一致的位置和上下文，写进失败说明里让员工能直接定位。
+pub fn first_diff(expected: &str, actual: &str) -> String {
+    let (e, a): (Vec<&str>, Vec<&str>) = (expected.lines().collect(), actual.lines().collect());
+    let n = e.len().max(a.len());
+    for i in 0..n {
+        if e.get(i) != a.get(i) {
+            let show = |v: &Vec<&str>, i: usize| v.get(i).map(|l| format!("{l:?}")).unwrap_or_else(|| "（没有这一行）".into());
+            return format!("第 {} 行开始不一致：\n  期望（旧实现）：{}\n  实际（新实现）：{}\n（期望共 {} 行，实际共 {} 行）", i + 1, show(&e, i), show(&a, i), e.len(), a.len());
+        }
+    }
+    "（没有发现差异）".into()
+}
+
+/// 对照检查：把新实现的输出与基线里记下的标准答案比较，一致为通过，不一致标为失败并说明第一处差异。
+/// 基线里没有标准答案的（旧实现当时就失败了）保持原样，由后面的判定标为“无法确认”。
+pub fn apply_parity(baseline: &[CommandResult], results: &mut [CommandResult]) {
+    for r in results.iter_mut().filter(|r| r.kind == "parity") {
+        let Some(base) = baseline.iter().find(|b| b.id == r.id) else { continue };
+        let Some(expected) = &base.golden else { continue };
+        if r.status != "passed" { continue; } // 新实现没跑成功，按普通失败处理
+        let actual = r.golden.clone().unwrap_or_default();
+        if &actual != expected {
+            r.status = "failed".into();
+            r.failed_tests = vec!["输出与基线不一致".into()];
+            r.parsed = true;
+            r.output_tail = first_diff(expected, &actual);
+        }
+    }
 }
 
 /// 把当前结果与基线逐命令、逐项对比，判定每个失败的来源。
@@ -281,7 +342,7 @@ mod tests {
 
     fn res(id: &str, status: &str, failed: &[&str], parsed: bool) -> CommandResult {
         CommandResult { id: id.into(), label: id.into(), kind: "test".into(), command: "x".into(), status: status.into(), exit_code: Some(0),
-            duration_ms: 1, output_tail: String::new(), failed_tests: failed.iter().map(|s| s.to_string()).collect(), parsed }
+            duration_ms: 1, output_tail: String::new(), failed_tests: failed.iter().map(|s| s.to_string()).collect(), parsed, golden: None }
     }
     fn origins(r: &CheckReport) -> Vec<(String, Origin)> { r.findings.iter().map(|f| (f.item.clone(), f.origin)).collect() }
 
@@ -334,7 +395,7 @@ mod tests {
     }
 
     fn bc(id: &str, kind: &str, command: &str) -> BaselineCommand {
-        BaselineCommand { id: id.into(), label: id.into(), kind: kind.into(), command: command.into(), reason: String::new(), default_on: true }
+        BaselineCommand { id: id.into(), label: id.into(), kind: kind.into(), command: command.into(), reason: String::new(), default_on: true, candidate: None }
     }
 
     #[tokio::test]
@@ -360,6 +421,76 @@ mod tests {
         let c = bc("ct", "test", "printf 'test x::y ... FAILED\\n'; exit 101 # cargo test");
         let r = run_commands(d.path(), &[c], Duration::from_secs(5), |_| {}).await;
         assert!(r[0].parsed && r[0].failed_tests == vec!["x::y"], "{:?}", r[0]);
+    }
+
+    fn parity_cmd(id: &str, reference: &str, candidate: Option<&str>) -> BaselineCommand {
+        BaselineCommand { id: id.into(), label: id.into(), kind: "parity".into(), command: reference.into(), reason: String::new(), default_on: true, candidate: candidate.map(String::from) }
+    }
+
+    #[test]
+    fn output_is_normalized_before_comparison_and_diffs_are_located() {
+        assert_eq!(normalize_output("\u{1b}[32mok\u{1b}[0m  \r\nline2\t\n\n\n"), "ok\nline2", "去颜色、统一换行、去行尾空白和结尾空行");
+        assert_eq!(normalize_output(""), "");
+        assert_eq!(normalize_output("a\n  b"), "a\n  b", "行首缩进是内容，要保留");
+        let d = first_diff("a\nb\nc", "a\nB\nc");
+        assert!(d.contains("第 2 行") && d.contains("\"b\"") && d.contains("\"B\""), "{d}");
+        assert!(first_diff("a", "a\nb").contains("（没有这一行）"), "长度不同也能指出");
+        assert_eq!(first_diff("same", "same"), "（没有发现差异）");
+    }
+
+    #[tokio::test]
+    async fn parity_records_golden_stdout_only_and_candidate_mode_runs_the_new_command() {
+        let d = tempfile::tempdir().unwrap();
+        let cmd = parity_cmd("p", "echo total=42; echo 编译提示 >&2", Some("echo total=42"));
+        let base = run_commands(d.path(), &[cmd.clone()], Duration::from_secs(5), |_| {}).await;
+        assert_eq!(base[0].golden.as_deref(), Some("total=42"), "只记标准输出；写在 stderr 的提示不属于行为");
+        let mut cur = run_commands_mode(d.path(), &[cmd.clone()], Duration::from_secs(5), true, |_| {}).await;
+        assert_eq!(cur[0].command, "echo total=42", "检查时运行的是新实现的命令");
+        apply_parity(&base, &mut cur);
+        assert_eq!((cur[0].status.as_str(), cur[0].failed_tests.len()), ("passed", 0), "输出一致");
+        // 没有 candidate 时两边运行同一条命令
+        let same = parity_cmd("q", "echo hi", None);
+        assert_eq!(run_commands_mode(d.path(), &[same], Duration::from_secs(5), true, |_| {}).await[0].command, "echo hi");
+        // 非 parity 命令不受 candidate 影响，也不产生 golden
+        let t = run_commands_mode(d.path(), &[bc("t", "test", "echo x")], Duration::from_secs(5), true, |_| {}).await;
+        assert_eq!(t[0].golden, None);
+    }
+
+    #[tokio::test]
+    async fn a_behaviour_change_is_caught_as_introduced_and_the_golden_outlives_the_old_code() {
+        let d = tempfile::tempdir().unwrap();
+        let base = run_commands(d.path(), &[parity_cmd("p", "printf 'a\\nb\\nc\\n'", Some("printf 'a\\nB\\nc\\n'"))], Duration::from_secs(5), |_| {}).await;
+        assert_eq!(base[0].golden.as_deref(), Some("a\nb\nc"));
+        // 新实现在第 2 行不同
+        let mut cur = run_commands_mode(d.path(), &[parity_cmd("p", "printf 'a\\nb\\nc\\n'", Some("printf 'a\\nB\\nc\\n'"))], Duration::from_secs(5), true, |_| {}).await;
+        apply_parity(&base, &mut cur);
+        assert_eq!((cur[0].status.as_str(), cur[0].parsed, cur[0].failed_tests.clone()), ("failed", true, vec!["输出与基线不一致".to_string()]));
+        assert!(cur[0].output_tail.contains("第 2 行"), "{}", cur[0].output_tail);
+        let report = classify(&base, &cur);
+        assert_eq!(origins(&report), vec![("输出与基线不一致".into(), Origin::Introduced)], "行为变了：算作新引入的问题");
+        // 新实现在旧代码被完全删掉之后仍然能对照：标准答案存在基线里
+        let mut ok = run_commands_mode(d.path(), &[parity_cmd("p", "false", Some("printf 'a\\nb\\nc\\n'"))], Duration::from_secs(5), true, |_| {}).await;
+        apply_parity(&base, &mut ok);
+        assert_eq!(ok[0].status, "passed", "旧命令（reference）已经不存在也没关系");
+        assert_eq!(classify(&base, &ok).findings.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn parity_edge_cases_never_pretend_to_know() {
+        let d = tempfile::tempdir().unwrap();
+        // 旧实现当时就失败了：没有标准答案，之后的比较只能是“无法确认”
+        let base = run_commands(d.path(), &[parity_cmd("p", "echo broken; exit 3", None)], Duration::from_secs(5), |_| {}).await;
+        assert_eq!((base[0].status.as_str(), base[0].golden.clone()), ("failed", None));
+        let mut cur = run_commands_mode(d.path(), &[parity_cmd("p", "echo broken; exit 3", Some("echo whatever"))], Duration::from_secs(5), true, |_| {}).await;
+        apply_parity(&base, &mut cur);
+        assert_eq!(cur[0].status, "passed", "没有标准答案就不判定一致与否，保持新实现自己的结果");
+        assert!(cur[0].failed_tests.is_empty());
+        // 新实现跑不起来：按普通失败处理，不会被当成“一致”
+        let base_ok = run_commands(d.path(), &[parity_cmd("p", "echo ok", None)], Duration::from_secs(5), |_| {}).await;
+        let mut broken = run_commands_mode(d.path(), &[parity_cmd("p", "echo ok", Some("echo ok; exit 1"))], Duration::from_secs(5), true, |_| {}).await;
+        apply_parity(&base_ok, &mut broken);
+        assert_eq!(broken[0].status, "failed");
+        assert_eq!(classify(&base_ok, &broken).introduced, 1);
     }
 
     #[tokio::test]

@@ -10,7 +10,7 @@ use crate::orchestrator::Orchestrator;
 use crate::runner::{Approver, NoopObserver, TurnConfig, run_turn};
 use crate::workspace::git_output;
 use anyhow::{Context, Result, bail};
-use baseline::{CheckReport, CommandResult, Progress, classify, run_commands};
+use baseline::{CheckReport, CommandResult, Progress, apply_parity, classify, run_commands, run_commands_mode};
 use rusqlite::{OptionalExtension, params};
 use scan::{BaselineCommand, ScanReport};
 use serde::Serialize;
@@ -301,8 +301,10 @@ impl Orchestrator {
         let dest = self.ws.scratch_dir("checks").join(&task.id);
         self.ws.remove_checkout(repo, &dest).await;
         self.ws.add_detached(repo, &dest, &task.branch).await?;
-        let results = run_commands(&dest, &base.commands, timeout, |_| {}).await;
+        // 对照检查在这里运行新实现的 candidate 命令，输出与基线里的标准答案逐字比较
+        let mut results = run_commands_mode(&dest, &base.commands, timeout, true, |_| {}).await;
         self.ws.remove_checkout(repo, &dest).await;
+        apply_parity(&base.results, &mut results);
         let report = classify(&base.results, &results);
         self.db.save_task_check(task_id, &base.id, &report)?;
         self.db.append_event_for(Some(&project.id), "task_checked", Some(&emp.id), None, &json!({

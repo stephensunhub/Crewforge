@@ -29,12 +29,16 @@ pub struct Module {
 pub struct BaselineCommand {
     pub id: String,
     pub label: String,
-    /// setup | build | test | lint
+    /// setup | build | test | lint | parity（对照检查）
     pub kind: String,
     pub command: String,
     pub reason: String,
     /// 建议默认勾选
     pub default_on: bool,
+    /// 仅对照检查（kind = parity）使用：基线时运行 `command`（旧实现）并记下输出作为“标准答案”；
+    /// 之后检查任务时运行 `candidate`（新实现）并要求输出与标准答案逐字一致。没有时两边都运行 `command`。
+    #[serde(default)]
+    pub candidate: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -207,7 +211,7 @@ fn node_pm(root: &Path, dir: &str) -> (&'static str, &'static str) {
 }
 
 fn cmd(id: &str, label: &str, kind: &str, command: &str, reason: &str, on: bool) -> BaselineCommand {
-    BaselineCommand { id: id.into(), label: label.into(), kind: kind.into(), command: command.into(), reason: reason.into(), default_on: on }
+    BaselineCommand { id: id.into(), label: label.into(), kind: kind.into(), command: command.into(), reason: reason.into(), default_on: on, candidate: None }
 }
 
 /// 扫描目录（同步部分）。`git` 信息由调用方另行填充。

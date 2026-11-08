@@ -25,7 +25,7 @@ fn sh(dir: &Path, args: &[&str]) -> String {
 }
 
 fn bc(id: &str, kind: &str, command: &str) -> BaselineCommand {
-    BaselineCommand { id: id.into(), label: id.into(), kind: kind.into(), command: command.into(), reason: String::new(), default_on: true }
+    BaselineCommand { id: id.into(), label: id.into(), kind: kind.into(), command: command.into(), reason: String::new(), default_on: true, candidate: None }
 }
 
 /// 假的"测试脚本"：每个 t_*.fail 文件代表一个失败的测试，按 cargo 的输出格式打印。

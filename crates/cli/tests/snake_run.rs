@@ -382,7 +382,7 @@ async fn build_snake_with_a_real_team() {
     let st = git(&repo, &["status", "--porcelain"]);
     ctl.say(format!("  主分支工作区状态：{}", if st.is_empty() { "干净".to_string() } else { format!("有未提交内容：{}", clip(&st, 200)) }));
     let final_cmds: Vec<crewforge_core::onboarding::scan::BaselineCommand> = [("install", "setup", "npm install"), ("build", "build", "npm run build"), ("test", "test", "npm test")].iter()
-        .map(|(id, k, c)| crewforge_core::onboarding::scan::BaselineCommand { id: (*id).into(), label: (*c).into(), kind: (*k).into(), command: (*c).into(), reason: String::new(), default_on: true }).collect();
+        .map(|(id, k, c)| crewforge_core::onboarding::scan::BaselineCommand { id: (*id).into(), label: (*c).into(), kind: (*k).into(), command: (*c).into(), reason: String::new(), default_on: true, candidate: None }).collect();
     let results = if repo.join("package.json").exists() { run_commands(&repo, &final_cmds, Duration::from_secs(1200), |_| {}).await } else { vec![] };
     for r in &results { ctl.say(format!("  {} → {} ({}s)", r.command, r.status, r.duration_ms / 1000)); }
     let mut dev_ok = false;

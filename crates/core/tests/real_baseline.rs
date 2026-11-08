@@ -19,7 +19,7 @@ async fn real_cargo_baseline_on_this_repository() {
     let project = db.create_project("self", "", repo.to_str().unwrap()).unwrap();
     let cmd = BaselineCommand {
         id: "t".into(), label: "core 单元测试".into(), kind: "test".into(), command: "cargo test -p crewforge-core --lib".into(),
-        reason: String::new(), default_on: true,
+        reason: String::new(), default_on: true, candidate: None,
     };
     let run = orch.run_baseline(&project.id, vec![cmd], Duration::from_secs(900)).await.unwrap();
     let r = &run.results[0];
