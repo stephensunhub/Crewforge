@@ -22,6 +22,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         "code_review" => "Code Review",
         "qa_case" => "QA Case 评审",
         "retro" => "复盘",
+        "planning" => "迁移规划",
         _ => "会议",
     }
 }
@@ -96,6 +97,26 @@ impl Orchestrator {
             let conv = self.db.company()?.conventions;
             if !conv.trim().is_empty() {
                 p.push_str(&format!("\n公司工程规范：\n{}\n", clip(&conv, 1500)));
+            }
+            if !project.goal.trim().is_empty() {
+                p.push_str(&format!("\n项目目标与硬性约束：\n{}\n", clip(project.goal.trim(), 1500)));
+            }
+            // 规划会议需要事实依据：扫描结果、导入时的基线、两份评估报告，以及现有计划
+            if meeting.kind == "planning" {
+                p.push_str("\n这是一场规划会议：你的任务是制定计划。先用 list_plan 看现有计划，再用 propose_plan 一次性提交整份计划（条目写清说明和验收标准，用 depends_on 标明先后依赖）。提交后条目会等人类确认。\n");
+                if let Some(scan) = self.db.latest_scan(&project.id)? {
+                    p.push_str(&format!("\n项目扫描结果：\n{}", crate::onboarding::summarize_scan(&scan)));
+                }
+                if let Some(b) = self.db.current_baseline(&project.id)? {
+                    p.push_str(&format!("\n测试基线：\n{}", crate::onboarding::summarize_baseline(&b)));
+                }
+                for r in self.db.latest_reports(&project.id)? {
+                    p.push_str(&format!("\n{}评估报告（节选）：\n{}\n", if r.kind == "architect" { "全栈" } else { "QA" }, clip(&r.content, 1800)));
+                }
+                let plan = self.db.plan_view(&project.id)?;
+                if !plan.items.is_empty() {
+                    p.push_str(&format!("\n现有计划（{} 条）：\n{}", plan.items.len(), plan.items.iter().filter(|i| i.status != "cancelled").map(|i| format!("- [{}] {}\n", crate::plan::status_label(&i.status), i.title)).collect::<String>()));
+                }
             }
             let issues = self.issues_block(meeting, true)?;
             if !issues.is_empty() {

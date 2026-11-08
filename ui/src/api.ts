@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind,
 } from "./types";
 
 export const api = {
@@ -72,6 +72,17 @@ export const api = {
   unverifiedCounts: () => invoke<[string, string, number][]>("unverified_counts"),
   previewRetrieval: (projectId: string | null, employeeId: string, text: string) =>
     invoke<Memory[]>("preview_retrieval", { projectId, employeeId, text }),
+  // 计划
+  planView: (projectId: string) => invoke<PlanViewData>("plan_view", { projectId }),
+  createPlanItem: (projectId: string, item: PlanItemInput) => invoke<string>("create_plan_item", { projectId, item }),
+  updatePlanItem: (id: string, item: PlanItemInput) => invoke<void>("update_plan_item", { id, item }),
+  movePlanItem: (id: string, delta: number) => invoke<void>("move_plan_item", { id, delta }),
+  setPlanStatus: (id: string, status: string, note = "") => invoke<void>("set_plan_status", { id, status, note }),
+  approvePlan: (projectId: string) => invoke<number>("approve_plan", { projectId }),
+  planProposedCounts: () => invoke<[string, string, number][]>("plan_proposed_counts"),
+  setProjectGoal: (id: string, goal: string) => invoke<void>("set_project_goal", { id, goal }),
+  dispatchPlanItem: (id: string, employeeId: string | null) => invoke<void>("dispatch_plan_item", { id, employeeId }),
+  startPlanning: (projectId: string, employeeId: string, brief: string) => invoke<string>("start_planning", { projectId, employeeId, brief }),
   // 评审行动项
   actionItems: (meetingId: string) => invoke<ActionItem[]>("list_action_items", { meetingId }),
   setActionStatus: (id: string, status: "done" | "dismissed" | "open", note = "") => invoke<void>("set_action_status", { id, status, note }),

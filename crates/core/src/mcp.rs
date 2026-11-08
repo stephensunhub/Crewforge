@@ -9,6 +9,7 @@
 use crate::board::ISSUE_KINDS;
 use crate::db::Db;
 use crate::memory::{KINDS, NewMemory};
+use crate::plan::{NewPlanItem, PLAN_KINDS};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -21,6 +22,7 @@ pub const TEAM_TOOLS_HINT: &str = "[团队协作工具] 你可以使用名字以
 遇到需要团队讨论并决定、而你无权单独决定的事（例如有多个可行方案的技术取舍、需求不明确），先用 list_issues 看看是否已有相关议题，\
 没有再用 propose_issue 提议；已有议题就用 add_option 补充你的方案；讨论充分后用 request_decision 请求拍板。\
 你亲自验证过、值得长期保留的经验，用 propose_memory 提议（需要人类验证后才会生效）。\
+当被要求制定计划（比如把一次大的重构或新项目拆成步骤）时，先用 list_plan 看现有计划，再用 propose_plan 一次提交整份计划：每个条目写清说明和验收标准，用 depends_on 标明先后依赖；人类批准后才会生效。\
 不要为琐碎的事提议题，每次任务或会议最多提 3 个。你只能提议，不能拍板。";
 
 const MAX_TITLE: usize = 80;
@@ -35,6 +37,10 @@ const MAX_PENDING_MEMORIES: i64 = 5;
 /// 每次任务/会议里最多提议的条数
 const MAX_PER_ORIGIN: i64 = 3;
 const DUP_THRESHOLD: f64 = 0.7;
+const PLAN_DUP_THRESHOLD: f64 = 0.8;
+const MAX_PLAN_ITEMS: usize = 30;
+const MAX_PLAN_CALLS_PER_ORIGIN: i64 = 2;
+const MAX_PENDING_PLAN_ITEMS: usize = 60;
 
 #[derive(Debug, Clone)]
 pub struct McpContext {
@@ -95,6 +101,19 @@ fn tools() -> Value {
         {"name": "request_decision", "description": "讨论充分后，请求有权限的人拍板：把“讨论中”的议题推进到“待决策”。你不能自己拍板。",
          "inputSchema": {"type": "object", "required": ["issue_id"], "properties": {
             "issue_id": str_prop("议题 ID"), "note": str_prop("给拍板人的一句话：你的倾向和理由")}}},
+        {"name": "list_plan", "description": "列出本项目的计划条目（含 ID、状态、依赖）。制定或补充计划之前先用它，避免重复。",
+         "inputSchema": {"type": "object", "properties": {}}},
+        {"name": "propose_plan",
+         "description": "一次提交整份计划：把大目标拆成有顺序、有依赖的小步骤。条目先是“待确认”，人类批准后才进入计划。每个条目只做一件事，粒度以一名员工一次任务能完成为宜。",
+         "inputSchema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "minItems": 1, "maxItems": 30, "items": {
+            "type": "object", "required": ["title"], "properties": {
+              "title": str_prop("条目标题，不超过 80 字"),
+              "description": str_prop("要做什么、范围和注意事项，不超过 600 字"),
+              "acceptance": str_prop("验收标准：做到什么算完成，最好能用命令验证，不超过 400 字"),
+              "kind": {"type": "string", "enum": PLAN_KINDS, "description": "characterize=补特征测试；migrate=迁移/实现；cleanup=清理；other=其他，默认 migrate"},
+              "module": str_prop("所属模块或目录，可选"),
+              "assignee": str_prop("建议的负责人（项目成员的名字），可选"),
+              "depends_on": {"type": "array", "description": "依赖：本次提交里排在前面的条目的序号（从 0 开始），或已有条目的 ID", "items": {}}}}}}}},
         {"name": "propose_memory",
          "description": "提议一条值得长期保留的经验。它会先成为“待验证”的候选，人类验证后才会被注入给员工；不要提议未经你验证的猜测。",
          "inputSchema": {"type": "object", "required": ["content"], "properties": {
@@ -161,6 +180,8 @@ impl McpServer {
             "add_option" => self.add_option(a),
             "request_decision" => self.request_decision(a),
             "propose_memory" => self.propose_memory(a),
+            "list_plan" => self.list_plan(),
+            "propose_plan" => self.propose_plan(a),
             other => bail!("未知工具: {other}"),
         }
     }
@@ -295,6 +316,86 @@ impl McpServer {
         Ok(format!("已请求拍板《{}》。有权限的人会收到待办；你不能替他们决定。", issue.title))
     }
 
+    fn list_plan(&self) -> Result<String> {
+        let view = self.db.plan_view(&self.ctx.project_id)?;
+        if view.items.is_empty() {
+            return Ok("目前还没有计划条目。".into());
+        }
+        let mut out = format!("进度 {}%（完成 {} / 进行中 {} / 待开始 {} / 待确认 {}）\n", view.percent_done, view.counts.done, view.counts.in_progress, view.counts.planned, view.counts.proposed);
+        for i in view.items.iter().filter(|i| i.status != "cancelled") {
+            out.push_str(&format!("- id={} [{}] 《{}》", i.id, crate::plan::status_label(&i.status), i.title));
+            if !i.module.is_empty() { out.push_str(&format!("｜模块 {}", i.module)); }
+            if !i.waiting_for.is_empty() { out.push_str(&format!("｜等待：{}", i.waiting_for.join("、"))); }
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    fn propose_plan(&self, a: &Value) -> Result<String> {
+        let raw = a.get("items").and_then(Value::as_array).context("缺少 items")?;
+        if raw.is_empty() || raw.len() > MAX_PLAN_ITEMS {
+            bail!("一次提交 1 到 {MAX_PLAN_ITEMS} 个条目");
+        }
+        if self.proposals_from_origin("plan")? >= MAX_PLAN_CALLS_PER_ORIGIN {
+            bail!("这次任务/会议里你已经提交过计划了。要调整请告诉人类，或等人类处理后再补充");
+        }
+        let existing = self.db.plan_view(&self.ctx.project_id)?;
+        if existing.counts.proposed + raw.len() > MAX_PENDING_PLAN_ITEMS {
+            bail!("已经有 {} 个条目在等人类确认，请等它们被处理后再提交", existing.counts.proposed);
+        }
+        let members = self.db.list_members(&self.ctx.project_id)?;
+        // 先全部校验并解析，确保要么全部创建、要么一个都不创建
+        let mut parsed: Vec<(NewPlanItem, Vec<serde_json::Value>)> = Vec::new();
+        for (i, it) in raw.iter().enumerate() {
+            let title = arg_str(it, "title").with_context(|| format!("第 {i} 个条目缺少 title"))?;
+            let (desc, acc) = (arg_str(it, "description").unwrap_or(""), arg_str(it, "acceptance").unwrap_or(""));
+            let module = arg_str(it, "module").unwrap_or("");
+            if chars(title) > MAX_TITLE || chars(desc) > MAX_SUMMARY || chars(acc) > MAX_OPTION_TEXT + 100 || chars(module) > 60 {
+                bail!("第 {i} 个条目的标题、说明、验收标准或模块太长，请精简");
+            }
+            let kind = arg_str(it, "kind").unwrap_or("migrate");
+            if !PLAN_KINDS.contains(&kind) {
+                bail!("第 {i} 个条目的类型 {kind} 未知，可选：{}", PLAN_KINDS.join("、"));
+            }
+            let assignee_id = arg_str(it, "assignee").and_then(|n| members.iter().find(|m| m.name == n)).map(|m| m.employee_id.clone());
+            let deps = it.get("depends_on").and_then(Value::as_array).cloned().unwrap_or_default();
+            for d in &deps {
+                match d {
+                    Value::Number(n) if n.as_u64().is_some_and(|x| (x as usize) < i) => {}
+                    Value::Number(_) => bail!("第 {i} 个条目的依赖序号必须指向排在它前面的条目"),
+                    Value::String(id) if existing.items.iter().any(|x| &x.id == id) => {}
+                    _ => bail!("第 {i} 个条目的依赖 {d} 无效：用本次提交里排在前面的序号，或已有条目的 ID"),
+                }
+            }
+            parsed.push((NewPlanItem { title: title.into(), description: desc.into(), acceptance: acc.into(), kind: kind.into(), module: module.into(), assignee_id, deps: vec![] }, deps));
+        }
+        // 与已有的（未取消的）条目查重：重复的跳过，依赖它的条目改为依赖那个已有条目
+        let mut ids: Vec<Option<String>> = Vec::new();
+        let (mut created, mut skipped) = (0, Vec::new());
+        for (n, deps) in parsed {
+            let mut item = n;
+            if let Some(dup) = existing.items.iter().find(|x| x.status != "cancelled" && similarity(&x.title, &item.title) >= PLAN_DUP_THRESHOLD) {
+                skipped.push(format!("《{}》与已有的《{}》重复", item.title, dup.title));
+                ids.push(Some(dup.id.clone()));
+                continue;
+            }
+            for d in deps {
+                match d {
+                    Value::Number(k) => { if let Some(Some(id)) = ids.get(k.as_u64().unwrap_or(0) as usize) { item.deps.push(id.clone()); } }
+                    Value::String(id) => item.deps.push(id),
+                    _ => {}
+                }
+            }
+            item.deps.sort();
+            item.deps.dedup();
+            let id = self.db.create_plan_item(&self.ctx.project_id, &item, Some(&self.ctx.employee_id))?;
+            ids.push(Some(id));
+            created += 1;
+        }
+        self.record("plan", json!({"count": created, "skipped": skipped.len()}));
+        Ok(format!("已提交 {created} 个计划条目，它们现在是“待确认”，人类批准后才会进入计划。{}", if skipped.is_empty() { String::new() } else { format!("跳过了 {} 个重复条目：{}", skipped.len(), skipped.join("；")) }))
+    }
+
     fn propose_memory(&self, a: &Value) -> Result<String> {
         let content = arg_str(a, "content").context("缺少 content")?;
         if chars(content) > MAX_MEMORY {
@@ -414,7 +515,7 @@ mod tests {
         assert!(s.handle(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"})).unwrap()["result"].is_object());
         let list = s.handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["list_issues", "propose_issue", "add_option", "request_decision", "propose_memory"]);
+        assert_eq!(names, vec!["list_issues", "propose_issue", "add_option", "request_decision", "list_plan", "propose_plan", "propose_memory"]);
         assert!(!names.contains(&"decide_issue"), "AI 没有拍板工具");
         for t in list["result"]["tools"].as_array().unwrap() {
             assert_eq!(t["inputSchema"]["type"], "object", "每个工具都有合法的 schema");
@@ -571,6 +672,63 @@ mod tests {
         assert!(call(&s, "propose_memory", json!({"content": "集成测试前必须先启动 Redis 缓存服务"})).1.contains("完全相同"));
         assert!(call(&s, "propose_memory", json!({"content": "字".repeat(601)})).1.contains("太长"));
         assert!(call(&s, "propose_memory", json!({"content": "y", "kind": "rumor"})).1.contains("未知的记忆类型"));
+    }
+
+    #[test]
+    fn propose_plan_creates_pending_items_with_dependencies_by_index_and_is_atomic() {
+        let (db, a, b, p) = setup();
+        let s = server(&db, &a, &p, "meeting:m1");
+        let (err, text) = call(&s, "propose_plan", json!({"items": [
+            {"title": "定义引擎接口", "description": "d", "acceptance": "cargo test 通过", "kind": "characterize", "module": "engine", "assignee": "alice"},
+            {"title": "实现渲染", "depends_on": [0], "assignee": "bob"},
+            {"title": "联调", "depends_on": [0, 1], "assignee": "nobody"}]}));
+        assert!(!err, "{text}");
+        let v = db.plan_view(&p).unwrap();
+        assert_eq!((v.items.len(), v.counts.proposed), (3, 3), "全部是待确认，等人类批准");
+        let by = |t: &str| v.items.iter().find(|i| i.title == t).unwrap();
+        assert_eq!((by("定义引擎接口").kind.as_str(), by("定义引擎接口").assignee_id.as_deref(), by("定义引擎接口").proposed_by.as_deref()), ("characterize", Some(a.as_str()), Some(a.as_str())));
+        assert_eq!(by("实现渲染").assignee_id.as_deref(), Some(b.as_str()));
+        assert_eq!(by("实现渲染").deps, vec![by("定义引擎接口").id.clone()]);
+        assert_eq!(by("联调").deps.len(), 2);
+        assert!(by("联调").assignee_id.is_none(), "不存在的名字被忽略");
+        assert!(db.recent_events_for_project(&p, 50).unwrap().iter().any(|e| e.kind == "agent_proposed" && e.payload["type"] == "plan" && e.payload["count"] == 3));
+
+        // 校验失败时一个条目都不会创建
+        let s2 = server(&db, &b, &p, "meeting:m2");
+        for (args, needle) in [
+            (json!({"items": []}), "1 到"),
+            (json!({"items": [{"title": "x", "depends_on": [0]}]}), "排在它前面"),
+            (json!({"items": [{"title": "ok1"}, {"title": "x", "depends_on": ["不存在的id"]}]}), "无效"),
+            (json!({"items": [{"title": "ok2"}, {"title": "y".repeat(81)}]}), "太长"),
+            (json!({"items": [{"title": "ok3"}, {"title": "z", "kind": "weird"}]}), "未知"),
+            (json!({"items": [{"title": "ok4"}, {"description": "没有标题"}]}), "缺少 title"),
+        ] {
+            let (err, text) = call(&s2, "propose_plan", args);
+            assert!(err && text.contains(needle), "{text}");
+        }
+        assert_eq!(db.plan_view(&p).unwrap().items.len(), 3, "被拒绝的提交不留任何记录");
+        // list_plan 能看到现有计划和依赖，帮助模型补充而不是重复
+        let (_, listing) = call(&s2, "list_plan", json!({}));
+        assert!(listing.contains("《实现渲染》") && listing.contains("等待：定义引擎接口") && listing.contains("待确认 3"), "{listing}");
+    }
+
+    #[test]
+    fn propose_plan_skips_duplicates_remaps_dependencies_and_limits_calls() {
+        let (db, a, b, p) = setup();
+        let existing = db.create_plan_item(&p, &crate::plan::NewPlanItem { title: "实现游戏引擎".into(), ..Default::default() }, None).unwrap();
+        let s = server(&db, &a, &p, "meeting:m1");
+        let (err, text) = call(&s, "propose_plan", json!({"items": [
+            {"title": "实现游戏引擎！"}, {"title": "做界面", "depends_on": [0]}]}));
+        assert!(!err && text.contains("跳过了 1 个重复"), "{text}");
+        let v = db.plan_view(&p).unwrap();
+        assert_eq!(v.items.len(), 2, "重复的被跳过");
+        assert_eq!(v.items.iter().find(|i| i.title == "做界面").unwrap().deps, vec![existing], "依赖被改指向已有的那个条目");
+        // 同一次会议最多提交两次计划
+        let (e2, _) = call(&s, "propose_plan", json!({"items": [{"title": "第二份里的新条目"}]}));
+        assert!(!e2);
+        let (e3, t3) = call(&s, "propose_plan", json!({"items": [{"title": "第三份"}]}));
+        assert!(e3 && t3.contains("已经提交过计划"), "{t3}");
+        let _ = b;
     }
 
     #[test]

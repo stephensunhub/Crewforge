@@ -315,3 +315,20 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .badge.ab-block { color: var(--bad); border-color: var(--bad); }
 .badge.as-working { color: var(--accent); border-color: var(--accent); }
 .badge.as-done { color: var(--ok); border-color: var(--ok); }
+
+/* 计划 */
+.plan-progress { display: flex; align-items: center; gap: 12px; }
+.plan-progress .meter { flex: 1; }
+.plan-list { display: grid; gap: 10px; }
+.plan-item { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; background: var(--panel); display: grid; gap: 6px; }
+.plan-item.st-done { opacity: .65; }
+.plan-item.st-in_progress { border-color: var(--accent); }
+.plan-top { display: flex; align-items: center; gap: 10px; }
+.plan-n { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; font-size: 12px; color: var(--muted); flex: none; }
+.plan-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.plan-detail { display: grid; gap: 4px; font-size: 13px; }
+.deps-pick { display: grid; gap: 4px; max-height: 160px; overflow: auto; }
+.badge.ps-in_progress { color: var(--accent); border-color: var(--accent); }
+.badge.ps-done { color: var(--ok); border-color: var(--ok); }
+.badge.ps-blocked { color: var(--bad); border-color: var(--bad); }
+.badge.ps-proposed { color: var(--warn); border-color: var(--warn); }

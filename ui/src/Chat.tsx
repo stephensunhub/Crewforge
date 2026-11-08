@@ -143,11 +143,15 @@ export function Chat({
       case "task_failed":
       case "task_error":
         return <div className="line bad" key={e.id}><span>✗ {name} 任务失败：{short(String(p.error ?? ""), 200)}</span>{t}</div>;
+      case "plan_item_status":
+        return <div className="line" key={e.id}><span>{p.to === "done" ? "✅" : p.to === "in_progress" ? "▶" : "📋"} 计划条目《{short(String(p.title ?? ""), 40)}》→ {({ planned: "待开始", in_progress: "进行中", done: "已完成", blocked: "已阻塞", cancelled: "已取消" } as Record<string, string>)[p.to] ?? p.to}</span>{t}</div>;
+      case "plan_approved":
+        return <div className="line ok" key={e.id}><span>📋 已批准 {p.count} 个计划条目</span>{t}</div>;
       case "agent_proposed": {
-        const icons: Record<string, string> = { issue: "💡", option: "➕", request_decision: "🗳", memory: "🧠" };
+        const icons: Record<string, string> = { issue: "💡", option: "➕", request_decision: "🗳", memory: "🧠", plan: "📋" };
         const text: Record<string, string> = {
           issue: `提议了议题《${p.title}》，等你确认`, option: `给《${p.issue_title}》补充了方案《${p.title}》`,
-          request_decision: `请求拍板《${p.title}》${p.note ? `：${p.note}` : ""}`, memory: `提议了一条经验《${p.title}》，等你验证`,
+          request_decision: `请求拍板《${p.title}》${p.note ? `：${p.note}` : ""}`, memory: `提议了一条经验《${p.title}》，等你验证`, plan: `起草了 ${p.count} 个计划条目，等你确认`,
         };
         return <div className="line warn" key={e.id}><span>{icons[p.type] ?? "•"} {name} {text[p.type] ?? "提出了建议"}</span>{t}</div>;
       }

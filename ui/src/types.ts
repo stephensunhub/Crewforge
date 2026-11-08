@@ -18,6 +18,7 @@ export interface Project {
   path: string;
   status: string;
   onboarding: "none" | "in_progress" | "confirmed";
+  goal: string;
   created_at: number;
   updated_at: number;
 }
@@ -267,3 +268,16 @@ export interface SchedStatus {
   level: SchedLevel; reason: string; resume_at: number | null; manual_pause: boolean; override_until: number | null;
   quota: QuotaNow | null;
 }
+
+export type PlanStatus = "proposed" | "planned" | "in_progress" | "done" | "blocked" | "cancelled";
+export interface PlanItem {
+  id: string; project_id: string; title: string; description: string; acceptance: string; kind: string; module: string; position: number;
+  assignee_id: string | null; assignee_name: string | null; status: PlanStatus; task_id: string | null; proposed_by: string | null;
+  proposed_by_name: string | null; note: string; deps: string[]; waiting_for: string[]; ready: boolean;
+}
+export interface PlanViewData {
+  items: PlanItem[];
+  counts: { proposed: number; planned: number; in_progress: number; done: number; blocked: number; cancelled: number };
+  percent_done: number;
+}
+export interface PlanItemInput { title: string; description: string; acceptance: string; kind: string; module: string; assignee_id: string | null; deps: string[] }

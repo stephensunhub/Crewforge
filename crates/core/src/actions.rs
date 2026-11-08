@@ -247,7 +247,7 @@ impl Orchestrator {
     pub async fn assign_for_action<A: Approver, O: Observer>(
         &self, employee: &Employee, project_path: &std::path::Path, prompt: &str, item_id: &str, approver: &A, observer: &O,
     ) -> Result<TurnResult> {
-        self.assign_linked(employee, project_path, prompt, Some(item_id), approver, observer).await
+        self.assign_linked(employee, project_path, prompt, Some(crate::orchestrator::TaskLink::Action(item_id)), approver, observer).await
     }
 
     pub async fn dispatch_action_item<A: Approver, O: Observer>(

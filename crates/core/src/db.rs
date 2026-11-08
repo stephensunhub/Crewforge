@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 迁移列表：下标 + 1 即版本号。只能追加，不能修改已发布的迁移。
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8];
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9];
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE employees (
@@ -131,6 +131,8 @@ pub struct Project {
     pub status: String,
     /// none（新建项目）| in_progress（导入中，不能派任务）| confirmed（已确认导入）
     pub onboarding: String,
+    /// 重构目标与硬性约束：每个新任务开始时都会带上
+    pub goal: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -615,6 +617,7 @@ impl Db {
             path: path.into(),
             status: "active".into(),
             onboarding: "none".into(),
+            goal: String::new(),
             created_at: now,
             updated_at: now,
         };
@@ -790,11 +793,11 @@ fn row_to_employee(r: &rusqlite::Row<'_>) -> rusqlite::Result<Employee> {
 fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
         id: r.get(0)?, name: r.get(1)?, description: r.get(2)?, path: r.get(3)?,
-        status: r.get(4)?, created_at: r.get(5)?, updated_at: r.get(6)?, onboarding: r.get(7)?,
+        status: r.get(4)?, created_at: r.get(5)?, updated_at: r.get(6)?, onboarding: r.get(7)?, goal: r.get(8)?,
     })
 }
 
-const PROJECT_SELECT: &str = "SELECT id, name, description, path, status, created_at, updated_at, onboarding FROM projects";
+const PROJECT_SELECT: &str = "SELECT id, name, description, path, status, created_at, updated_at, onboarding, goal FROM projects";
 
 fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
     Ok(Session {

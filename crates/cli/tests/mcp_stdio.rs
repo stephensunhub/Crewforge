@@ -53,7 +53,7 @@ fn a_real_server_process_speaks_mcp_and_writes_to_the_shared_database() {
     let init = s.rpc("initialize", json!({"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}));
     assert_eq!(init["result"]["serverInfo"]["name"], "crewforge");
     s.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})); // 通知不应产生回复
-    assert_eq!(s.rpc("tools/list", json!({}))["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(s.rpc("tools/list", json!({}))["result"]["tools"].as_array().unwrap().len(), 7);
 
     let (err, text) = s.call("propose_issue", json!({"title": "推送方案", "summary": "WebSocket 还是 SSE", "options": [{"title": "SSE"}]}));
     assert!(!err, "{text}");

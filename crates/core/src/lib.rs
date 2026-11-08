@@ -9,6 +9,7 @@ pub mod meeting;
 pub mod onboarding;
 pub mod memory;
 pub mod orchestrator;
+pub mod plan;
 pub mod policy;
 pub mod provider;
 pub mod runner;

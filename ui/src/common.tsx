@@ -81,7 +81,7 @@ export const ISSUE_STATUS_LABEL: Record<string, string> = {
   implementing: "实施中", closed: "已关闭", shelved: "搁置", cancelled: "已取消",
 };
 export const MEETING_KIND_LABEL: Record<string, string> = {
-  requirements: "需求评审", design: "方案评审", code_review: "Code Review", qa_case: "QA Case 评审", retro: "复盘",
+  requirements: "需求评审", design: "方案评审", code_review: "Code Review", qa_case: "QA Case 评审", retro: "复盘", planning: "制定计划",
 };
 
 export const MEMORY_KIND_LABEL: Record<string, string> = { lesson: "经验", decision: "决策", fact: "事实", convention: "规范", pitfall: "踩过的坑" };

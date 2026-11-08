@@ -51,6 +51,7 @@ export default function App() {
   const [unverified, setUnverified] = useState<[string, string, number][]>([]);
   const [proposals, setProposals] = useState<PendingDecision[]>([]);
   const [actionCounts, setActionCounts] = useState<[string, string, number][]>([]);
+  const [planCounts, setPlanCounts] = useState<[string, string, number][]>([]);
   const [meetingFocus, setMeetingFocus] = useState<string | null>(null);
 
   const employees = useMemo(() => cards.map((c) => c.employee), [cards]);
@@ -72,6 +73,7 @@ export default function App() {
         setPending(await api.pendingDecisions());
         setProposals(await api.pendingProposals());
         setActionCounts(await api.actionCounts());
+        setPlanCounts(await api.planProposedCounts());
         setUnverified(await api.unverifiedCounts());
         setSched(await api.schedulerStatus());
       } catch (e) { setError(String(e)); }
@@ -89,6 +91,7 @@ export default function App() {
           void api.pendingDecisions().then(setPending).catch(() => undefined);
           void api.pendingProposals().then(setProposals).catch(() => undefined);
         }
+        if (e.kind.startsWith("plan_") || e.kind === "agent_proposed") void api.planProposedCounts().then(setPlanCounts).catch(() => undefined);
         if (e.kind.startsWith("action_") || ["meeting_minutes", "task_merged", "task_abandoned", "turn_result"].includes(e.kind)) void api.actionCounts().then(setActionCounts).catch(() => undefined);
         if (e.kind.startsWith("memory_") && e.kind !== "memory_injected") void api.unverifiedCounts().then(setUnverified).catch(() => undefined);
         if (["task_created", "task_merged", "task_abandoned", "task_started", "turn_result", "task_failed"].includes(e.kind)) void api.projects().then(setProjects).catch(() => undefined);
@@ -162,7 +165,7 @@ export default function App() {
             </div>
           )}
           <button className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
-            🔔{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length > 0 && <span className="count">{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length}</span>}
+            🔔{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length > 0 && <span className="count">{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length}</span>}
           </button>
           <button className={`icon-btn text ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>成本</button>
           <button className={`icon-btn ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })} title="设置">⚙</button>
@@ -170,7 +173,13 @@ export default function App() {
         {inbox && (
           <div className="inbox">
             <b>待你处理</b>
-            {approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
+            {approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
+            {planCounts.map(([pid, pname, n]) => (
+              <div className="inbox-item" key={`plan-${pid}`}>
+                <div>AI 起草了 <b>{n}</b> 个计划条目，等你确认<span className="hint"> · {pname}</span></div>
+                <div className="btns"><button className="btn primary" onClick={() => { openProject(pid, "plan"); setInbox(false); }}>去确认</button></div>
+              </div>
+            ))}
             {actionCounts.map(([pid, pname, n]) => (
               <div className="inbox-item" key={`act-${pid}`}>
                 <div><b>{n}</b> 条评审行动项还没处理完<span className="hint"> · {pname}</span></div>

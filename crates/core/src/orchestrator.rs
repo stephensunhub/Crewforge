@@ -15,6 +15,13 @@ use std::sync::Arc;
 
 const MAX_DIFF_BYTES: usize = 400_000;
 
+/// 这次派活是为了处理哪个评审行动项、或哪个计划条目。
+#[derive(Debug, Clone, Copy)]
+pub enum TaskLink<'a> {
+    Action(&'a str),
+    Plan(&'a str),
+}
+
 pub struct Orchestrator {
     pub db: Arc<Db>,
     pub ws: Arc<WorkspaceManager>,
@@ -77,7 +84,7 @@ impl Orchestrator {
         employee: &Employee,
         project_path: &Path,
         prompt: &str,
-        action_item: Option<&str>,
+        link: Option<TaskLink<'_>>,
         approver: &A,
         observer: &O,
     ) -> Result<TurnResult> {
@@ -88,22 +95,27 @@ impl Orchestrator {
         if project.as_ref().is_some_and(|p| p.onboarding == "in_progress") {
             bail!("项目还在导入阶段：请先完成扫描、测试基线和评估，并确认导入，之后才能给员工派任务");
         }
+        let goal = project.as_ref().map(|p| p.goal.trim().to_string()).unwrap_or_default();
         let project_id = project.map(|p| p.id);
         // 只在新任务开始时注入记忆：继续同一任务时，会话里已经有这些内容，不重复传递
         let (task, fresh) = match self.db.active_task(&employee.id, &repo_key)? {
             Some(t) => (t, false),
             None => (self.start_task(employee, &repo.root, &repo.branch, prompt).await?, true),
         };
-        if let Some(a) = action_item {
-            self.db.mark_action_working(a, &task.id)?;
+        match link {
+            Some(TaskLink::Action(a)) => self.db.mark_action_working(a, &task.id)?,
+            Some(TaskLink::Plan(p)) => self.db.mark_plan_started(p, &task.id)?,
+            None => {}
         }
         let block = if fresh {
             self.memory_block(project_id.as_deref(), employee, Some(&task.id), prompt, "task", &task.id)
         } else {
             String::new()
         };
-        let injected = !block.is_empty();
-        let full_prompt = if injected { format!("{block}\n{prompt}") } else { prompt.to_string() };
+        // 项目的目标与硬性约束（比如“技术栈升级、业务行为不变”）：每个新任务开始时都带上
+        let goal_block = if fresh && !goal.is_empty() { format!("[项目目标与硬性约束]\n{goal}\n\n") } else { String::new() };
+        let injected = !block.is_empty() || !goal_block.is_empty();
+        let full_prompt = if injected { format!("{goal_block}{block}\n{prompt}") } else { prompt.to_string() };
 
         let cfg = TurnConfig {
             project_path: PathBuf::from(&task.worktree_path),
@@ -221,12 +233,14 @@ impl Orchestrator {
                         &json!({"task_id": task.id, "commit": commit, "items": open_items.iter().map(|a| a.text.clone()).collect::<Vec<_>>()}))?;
                 }
                 self.db.set_task_status(&task.id, "merged", Some(commit))?;
+                self.db.complete_plan_for_task(&task.id)?;
                 // 合并即视为验证：关联该任务的待验证经验转为已验证
                 self.db.verify_task_memories(&task.id, Some(commit))?;
                 self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_merged", eid, None, &json!({"task_id": task.id, "commit": commit, "title": task.title}))?;
             }
             MergeOutcome::Empty => {
                 self.db.set_task_status(&task.id, "merged", None)?;
+                self.db.complete_plan_for_task(&task.id)?;
                 self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_merged", eid, None, &json!({"task_id": task.id, "commit": null, "title": task.title, "empty": true}))?;
             }
             MergeOutcome::Conflict { files } => {
@@ -248,6 +262,8 @@ impl Orchestrator {
         }
         self.checkpoint_task(&task, &emp, &format!("[crewforge] {}: {} (已放弃，保留为 WIP)\n\nCrewforge-Task: {}", emp.name, task.title, task.id)).await;
         self.db.set_task_status(&task.id, "abandoned", None)?;
+        // 对应的计划条目回到“待开始”，可以重新派
+        self.db.release_plan_for_task(&task.id)?;
         self.db.append_event_for(self.project_of(&task.repo_path).as_deref(), "task_abandoned", Some(&emp.id), None,
             &json!({"task_id": task.id, "branch": task.branch, "title": task.title}))?;
         Ok(())

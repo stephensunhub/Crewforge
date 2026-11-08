@@ -2,6 +2,7 @@ use crate::approval::UiApprover;
 use crate::state::AppState;
 use crewforge_core::onboarding::{OnboardingState, StoredCheck, DEFAULT_COMMAND_TIMEOUT, baseline::CheckReport, scan::{BaselineCommand, ScanReport}};
 use crewforge_core::actions::ActionItem;
+use crewforge_core::plan::{NewPlanItem, PlanView};
 use crewforge_core::cost::CostReport;
 use crewforge_core::scheduler::{SchedStatus, SchedulerConfig};
 use crewforge_core::memory::{DEFAULT_MAX_CHARS, DEFAULT_MAX_ITEMS, Memory, MemoryFilter, NewMemory};
@@ -273,10 +274,16 @@ pub fn run_task(
     start_assignment(app, &state, emp, project.id, path, prompt, None)
 }
 
+/// 这次派活是为了处理哪个评审行动项、或哪个计划条目。
+enum WorkLink {
+    Action(String),
+    Plan(String),
+}
+
 /// 把一次派活放进调度队列并在后台执行：占用员工、必要时排队并记录原因、结束后释放。
 /// `action_item` 不为空时，这次派活是为了处理某条评审行动项。
 fn start_assignment(
-    app: AppHandle, state: &AppState, emp: Employee, project_id: String, path: PathBuf, prompt: String, action_item: Option<String>,
+    app: AppHandle, state: &AppState, emp: Employee, project_id: String, path: PathBuf, prompt: String, link: Option<WorkLink>,
 ) -> CmdResult<()> {
     if !state.running.lock().unwrap().insert(emp.name.clone()) {
         return Err(format!("{} 正在执行任务，请等待完成", emp.name));
@@ -301,8 +308,9 @@ fn start_assignment(
                 let _ = db.append_event("task_queued", Some(&emp.id), None, &serde_json::json!({"prompt": prompt, "reason": reason, "level": st.level}));
             }
             let _permit = sched.acquire().await;
-            match &action_item {
-                Some(id) => orch.assign_for_action(&emp, &path, &prompt, id, &approver, &NoopObserver).await,
+            match &link {
+                Some(WorkLink::Action(id)) => orch.assign_for_action(&emp, &path, &prompt, id, &approver, &NoopObserver).await,
+                Some(WorkLink::Plan(id)) => orch.assign_for_plan(&emp, &path, &prompt, id, &approver, &NoopObserver).await,
                 None => orch.assign(&emp, &path, &prompt, &approver, &NoopObserver).await,
             }
         }
@@ -425,8 +433,12 @@ pub fn close_meeting(state: State<'_, AppState>, id: String) -> CmdResult<()> {
 /// 人类在会议里发言。发言本身只是记录；只有被 @ 的成员才会被唤醒（各自并行、受并发上限约束）。
 #[tauri::command]
 pub fn post_meeting_message(app: AppHandle, state: State<'_, AppState>, meeting_id: String, content: String) -> CmdResult<Vec<String>> {
-    let meeting = state.db.get_meeting(&meeting_id).map_err(err)?.ok_or("会议不存在")?;
-    state.db.post_message(&meeting_id, "human", None, &content).map_err(err)?;
+    post_and_wake(&app, &state, &meeting_id, &content)
+}
+
+fn post_and_wake(app: &AppHandle, state: &AppState, meeting_id: &str, content: &str) -> CmdResult<Vec<String>> {
+    let meeting = state.db.get_meeting(meeting_id).map_err(err)?.ok_or("会议不存在")?;
+    state.db.post_message(meeting_id, "human", None, content).map_err(err)?;
     let members = state.db.list_members(&meeting.project_id).map_err(err)?;
     let mut woken = Vec::new();
     for cap in content.split('@').skip(1) {
@@ -438,7 +450,7 @@ pub fn post_meeting_message(app: AppHandle, state: State<'_, AppState>, meeting_
         }
     }
     for name in &woken {
-        spawn_meeting_turn(&app, &state, &meeting_id, name, false);
+        spawn_meeting_turn(app, state, meeting_id, name, false);
     }
     Ok(woken)
 }
@@ -663,5 +675,88 @@ pub fn dispatch_action_item(app: AppHandle, state: State<'_, AppState>, id: Stri
     let (emp, path, prompt) = state.orch.prepare_action_dispatch(&id, employee_id.as_deref()).map_err(err)?;
     let item = state.db.get_action(&id).map_err(err)?.ok_or("行动项不存在")?;
     let path = path.canonicalize().map_err(|_| format!("项目目录不存在: {}", path.display()))?;
-    start_assignment(app, &state, emp, item.project_id, path, prompt, Some(id))
+    start_assignment(app, &state, emp, item.project_id, path, prompt, Some(WorkLink::Action(id)))
+}
+
+
+// ================= 计划 =================
+#[derive(serde::Deserialize)]
+pub struct PlanItemInput {
+    title: String,
+    description: String,
+    acceptance: String,
+    kind: String,
+    module: String,
+    assignee_id: Option<String>,
+    deps: Vec<String>,
+}
+impl From<PlanItemInput> for NewPlanItem {
+    fn from(i: PlanItemInput) -> Self {
+        NewPlanItem { title: i.title, description: i.description, acceptance: i.acceptance, kind: i.kind, module: i.module, assignee_id: i.assignee_id, deps: i.deps }
+    }
+}
+
+#[tauri::command]
+pub fn plan_view(state: State<'_, AppState>, project_id: String) -> CmdResult<PlanView> {
+    state.db.plan_view(&project_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn create_plan_item(state: State<'_, AppState>, project_id: String, item: PlanItemInput) -> CmdResult<String> {
+    state.db.create_plan_item(&project_id, &item.into(), None).map_err(err)
+}
+
+#[tauri::command]
+pub fn update_plan_item(state: State<'_, AppState>, id: String, item: PlanItemInput) -> CmdResult<()> {
+    let deps = item.deps.clone();
+    state.db.update_plan_item(&id, &item.into()).map_err(err)?;
+    state.db.set_plan_deps(&id, &deps).map_err(err)
+}
+
+#[tauri::command]
+pub fn move_plan_item(state: State<'_, AppState>, id: String, delta: i64) -> CmdResult<()> {
+    state.db.move_plan_item(&id, delta).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_plan_status(state: State<'_, AppState>, id: String, status: String, note: String) -> CmdResult<()> {
+    state.db.set_plan_status(&id, &status, &note).map_err(err)
+}
+
+/// 批准 AI 起草的计划：该项目所有“待确认”的条目进入“待开始”。
+#[tauri::command]
+pub fn approve_plan(state: State<'_, AppState>, project_id: String) -> CmdResult<usize> {
+    state.db.approve_proposed_plan(&project_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn plan_proposed_counts(state: State<'_, AppState>) -> CmdResult<Vec<(String, String, i64)>> {
+    state.db.proposed_plan_counts().map_err(err)
+}
+
+#[tauri::command]
+pub fn set_project_goal(state: State<'_, AppState>, id: String, goal: String) -> CmdResult<()> {
+    state.db.set_project_goal(&id, &goal).map_err(err)
+}
+
+/// 把计划条目派给员工：为它新开一个任务（带项目目标、说明、验收标准）。
+#[tauri::command]
+pub fn dispatch_plan_item(app: AppHandle, state: State<'_, AppState>, id: String, employee_id: Option<String>) -> CmdResult<()> {
+    let (emp, path, prompt) = state.orch.prepare_plan_dispatch(&id, employee_id.as_deref()).map_err(err)?;
+    let item = state.db.get_plan_item(&id).map_err(err)?.ok_or("条目不存在")?;
+    let path = path.canonicalize().map_err(|_| format!("项目目录不存在: {}", path.display()))?;
+    start_assignment(app, &state, emp, item.project_id, path, prompt, Some(WorkLink::Plan(id)))
+}
+
+/// 让某位员工制定计划：开一场只读的“迁移规划”会议，把事实交给 TA，TA 用 propose_plan 提交，条目先是“待确认”。
+#[tauri::command]
+pub fn start_planning(app: AppHandle, state: State<'_, AppState>, project_id: String, employee_id: String, brief: String) -> CmdResult<String> {
+    let emp = state.db.employee_by_id(&employee_id).map_err(err)?.ok_or("员工不存在")?;
+    let m = state.db.create_meeting(&project_id, "planning", "制定计划", None, None, &[], 12).map_err(err)?;
+    let ask = format!(
+        "@{} 请为这个项目制定一份计划，并用 propose_plan 一次性提交（先用 list_plan 看看已有的）。\n{}\n要求：每个条目一名员工一次任务能做完，写清楚说明和验收标准（最好能用命令验证），用 depends_on 标明先后顺序，用 assignee 建议谁来做。",
+        emp.name, brief.trim()
+    );
+    post_and_wake(&app, &state, &m.id, &ask)?;
+    Ok(m.id)
 }

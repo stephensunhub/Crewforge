@@ -7,11 +7,12 @@ import { IssuesView } from "./IssuesView";
 import { MeetingsView } from "./MeetingsView";
 import { MemoryView } from "./MemoryView";
 import { OnboardingView } from "./OnboardingView";
+import { PlanPanel } from "./PlanPanel";
 import type { ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
 
-export type ProjectTab = "onboarding" | "chat" | "tasks" | "issues" | "meetings" | "members" | "memory" | "docs";
+export type ProjectTab = "onboarding" | "chat" | "plan" | "tasks" | "issues" | "meetings" | "members" | "memory" | "docs";
 export const PROJECT_TABS: [ProjectTab, string][] = [
-  ["onboarding", "导入"], ["chat", "群聊"], ["tasks", "任务"], ["issues", "议题"], ["meetings", "会议"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
+  ["onboarding", "导入"], ["chat", "群聊"], ["plan", "计划"], ["tasks", "任务"], ["issues", "议题"], ["meetings", "会议"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
 ];
 const TASK_EVENTS = ["task_created", "checkpoint_committed", "checkpoint_failed", "task_merged", "task_merge_blocked", "task_abandoned", "turn_result", "task_failed", "task_error"];
 
@@ -87,6 +88,8 @@ export function ProjectView({
 
   if (tab === "onboarding")
     return <OnboardingView projectId={project.id} members={members} events={events} running={running} onError={onError} onChanged={onChanged} />;
+  if (tab === "plan")
+    return <PlanPanel project={project} members={members} events={events} onError={onError} onChanged={onChanged} onOpenMeeting={onOpenMeeting} />;
   if (tab === "chat")
     return (
       <Chat project={project} members={members} events={events} nameById={nameById} running={running} approvals={mine}
