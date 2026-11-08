@@ -79,7 +79,9 @@ pub async fn run_turn<A: Approver, O: Observer>(
     if !cfg.read_only && db.get_setting("sandbox")?.as_deref() != Some("off") {
         spec.sandbox = Some(sandbox_writable_dirs(&cfg.project_path));
     }
-    let policy = if cfg.read_only { Policy::read_only(&cfg.project_path) } else { Policy::new(&cfg.project_path) };
+    let policy = if cfg.read_only { Policy::read_only(&cfg.project_path) }
+    else if spec.sandbox.is_some() { Policy::new(&cfg.project_path).sandboxed() }
+    else { Policy::new(&cfg.project_path) };
 
     db.set_session_status(&session.id, "running")?;
     db.append_event_for(pid, "task_started", eid, sid, &json!({

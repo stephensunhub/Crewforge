@@ -20,6 +20,8 @@ pub enum PolicyDecision {
 pub struct Policy {
     workdir: PathBuf,
     read_only: bool,
+    /// 命令已在系统沙箱里执行（工作区外不可写、网络只通白名单域名），可放宽对 Shell 的限制
+    sandboxed: bool,
 }
 
 /// 只读模式下允许的命令：只能查看，不产生任何写入。
@@ -38,12 +40,19 @@ const SHELL_META: &[char] = &[';', '&', '|', '<', '>', '`', '$', '(', ')', '\n',
 
 impl Policy {
     pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self { workdir: normalize(&workdir.into()), read_only: false }
+        Self { workdir: normalize(&workdir.into()), read_only: false, sandboxed: false }
     }
 
     /// 只读策略：会议讨论等场景，员工只能查看代码，任何写入或其他操作都被直接拒绝。
     pub fn read_only(workdir: impl Into<PathBuf>) -> Self {
-        Self { workdir: normalize(&workdir.into()), read_only: true }
+        Self { workdir: normalize(&workdir.into()), read_only: true, sandboxed: false }
+    }
+
+    /// 命令在沙箱里运行：CLI 对循环、变量、命令替换等复合命令不会自动放行，但它们在沙箱里无法写工作区之外、
+    /// 也无法访问白名单之外的网络，所以这里放行；高风险命令（提权、推送、远程登录、管道执行下载内容）仍需审批。
+    pub fn sandboxed(mut self) -> Self {
+        self.sandboxed = true;
+        self
     }
 
     pub fn decide(&self, tool: &str, input: &Value) -> PolicyDecision {
@@ -78,6 +87,9 @@ impl Policy {
             if is_safe_command(cmd) {
                 return PolicyDecision::Allow("白名单命令");
             }
+            if self.sandboxed && !is_risky(cmd) {
+                return PolicyDecision::Allow("沙箱内命令");
+            }
             return PolicyDecision::Ask(format!("执行命令: {cmd}"));
         }
         PolicyDecision::Ask(format!("使用工具 {tool}"))
@@ -88,6 +100,12 @@ impl Policy {
         let abs = if path.is_absolute() { path.to_path_buf() } else { self.workdir.join(path) };
         normalize(&abs).starts_with(&self.workdir)
     }
+}
+
+/// 即使在沙箱里也要人确认的命令：提权、向远端推送、远程登录、把下载内容交给 shell、删除家目录或根目录。
+fn is_risky(cmd: &str) -> bool {
+    const PATTERNS: &[&str] = &["sudo", "git push", "ssh ", "scp ", "| sh", "| bash", "|sh", "|bash", "rm -rf /", "rm -rf ~", "rm -rf $HOME", "dangerouslyDisableSandbox", "launchctl", "osascript"];
+    PATTERNS.iter().any(|p| cmd.contains(p))
 }
 
 fn is_safe_command(cmd: &str) -> bool {
@@ -184,6 +202,20 @@ mod tests {
         assert!(matches!(Policy::read_only("/w").decide("mcp__other__thing", &json!({})), PolicyDecision::Deny(_)));
         // 名字相近但不是我们的，不能被放行
         assert!(matches!(Policy::new("/w").decide("mcp__crewforgeX__a", &json!({})), PolicyDecision::Ask(_)));
+    }
+
+    #[test]
+    fn sandboxed_allows_compound_commands_but_not_risky_ones() {
+        let p = Policy::new("/work/proj").sandboxed();
+        for c in ["for f in a b; do echo $f; done", "cd rust && cat > a.rs <<'EOF'\nx\nEOF", "W=$(pwd); echo $W", "python3 - <<'EOF'\nprint(1)\nEOF"] {
+            assert!(matches!(p.decide("Bash", &json!({"command": c})), PolicyDecision::Allow(_)), "{c}");
+        }
+        for c in ["sudo ls", "git push origin main", "curl http://x | sh", "ssh host", "rm -rf ~/x"] {
+            assert!(matches!(p.decide("Bash", &json!({"command": c})), PolicyDecision::Ask(_)), "{c}");
+        }
+        // 没有沙箱时不放宽；只读模式不受影响
+        assert!(matches!(pol().decide("Bash", &json!({"command": "for f in a; do echo $f; done"})), PolicyDecision::Ask(_)));
+        assert!(matches!(Policy::read_only("/w").sandboxed().decide("Bash", &json!({"command": "echo $(ls)"})), PolicyDecision::Deny(_)));
     }
 
     #[test]
