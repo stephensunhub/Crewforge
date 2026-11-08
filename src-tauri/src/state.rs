@@ -21,6 +21,8 @@ pub struct AppState {
     limit: Arc<Mutex<usize>>,
     /// 正在执行任务的员工名，防止同一员工的会话被并发写入
     pub running: Arc<Mutex<HashSet<String>>>,
+    /// 正在进行的耗时操作（基线、检查），防止同一项目/任务被重复触发
+    pub busy: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AppState {
@@ -34,6 +36,7 @@ impl AppState {
             sem: Arc::new(Semaphore::new(DEFAULT_CONCURRENCY)),
             limit: Arc::new(Mutex::new(DEFAULT_CONCURRENCY)),
             running: Arc::new(Mutex::new(HashSet::new())),
+            busy: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }

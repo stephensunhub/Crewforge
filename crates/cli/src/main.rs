@@ -5,6 +5,7 @@
 //!   crewforge employee list
 //!   crewforge run [--cwd 目录] [--max 并发数] <员工> <任务> [<员工> <任务> ...]
 //!   crewforge sessions
+//!   crewforge scan [目录]                 只读扫描项目（技术栈、结构、Git 历史、建议的基线命令）
 //!   crewforge init-repo [目录]            初始化 Git 仓库（worktree 需要至少一个提交）
 //!   crewforge tasks [目录]                列出项目的任务、改动文件、冲突预检
 //!   crewforge diff <任务ID>               查看任务改动
@@ -90,6 +91,8 @@ async fn main() -> Result<()> {
         ["events"] => print_events(&db, 20)?,
         ["events", n] => print_events(&db, n.parse()?)?,
         ["run", rest @ ..] => run(db, orch, rest).await?,
+        ["scan"] => scan(&std::env::current_dir()?).await?,
+        ["scan", dir] => scan(&PathBuf::from(dir)).await?,
         ["init-repo"] => init_repo(&orch, &std::env::current_dir()?).await?,
         ["init-repo", dir] => init_repo(&orch, &PathBuf::from(dir)).await?,
         ["tasks"] => tasks(&orch, &std::env::current_dir()?).await?,
@@ -122,6 +125,19 @@ async fn main() -> Result<()> {
 fn print_events(db: &Db, n: usize) -> Result<()> {
     for e in db.recent_events(n)? {
         println!("#{} {} {} {}", e.id, e.kind, e.employee_id.unwrap_or_default(), e.payload);
+    }
+    Ok(())
+}
+
+async fn scan(dir: &PathBuf) -> Result<()> {
+    let r = crewforge_core::onboarding::scan::scan_project(&dir.canonicalize()?).await?;
+    print!("{}", crewforge_core::onboarding::summarize_scan(&r));
+    println!("扫描了 {} 个文件{}", r.total_files, if r.truncated { "（已截断）" } else { "" });
+    for c in &r.commands {
+        println!("建议命令 [{}] {}{}", c.kind, c.command, if c.default_on { "" } else { "（默认不勾选）" });
+    }
+    for n in &r.notes {
+        println!("注意：{n}");
     }
     Ok(())
 }

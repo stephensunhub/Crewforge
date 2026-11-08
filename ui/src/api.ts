@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, Meeting, MeetingDetail, MeetingKind,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, ScanReport, BaselineCommand, CheckReport, StoredCheck, Meeting, MeetingDetail, MeetingKind,
 } from "./types";
 
 export const api = {
@@ -19,8 +19,8 @@ export const api = {
   archiveEmployee: (id: string) => invoke<void>("archive_employee", { id }),
   // 项目
   projects: () => invoke<ProjectSummary[]>("list_projects"),
-  createProject: (name: string, description: string, path: string, initGit: boolean) =>
-    invoke<Project>("create_project", { name, description, path, initGit }),
+  createProject: (name: string, description: string, path: string, initGit: boolean, importExisting: boolean) =>
+    invoke<Project>("create_project", { name, description, path, initGit, importExisting }),
   updateProject: (id: string, name: string, description: string) => invoke<void>("update_project", { id, name, description }),
   archiveProject: (id: string) => invoke<void>("archive_project", { id }),
   // 项目成员
@@ -28,6 +28,14 @@ export const api = {
   addMember: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("add_member", { projectId, employeeId, role }),
   setMemberRole: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("set_member_role", { projectId, employeeId, role }),
   removeMember: (projectId: string, employeeId: string) => invoke<void>("remove_member", { projectId, employeeId }),
+  // 旧项目导入
+  onboardingState: (projectId: string) => invoke<OnboardingState>("onboarding_state", { projectId }),
+  runScan: (projectId: string) => invoke<ScanReport>("run_scan", { projectId }),
+  runBaseline: (projectId: string, commands: BaselineCommand[]) => invoke<void>("run_baseline", { projectId, commands }),
+  evaluateProject: (projectId: string, kind: "architect" | "qa", employeeId: string) => invoke<void>("evaluate_project", { projectId, kind, employeeId }),
+  confirmOnboarding: (projectId: string, skipBaseline: boolean) => invoke<void>("confirm_onboarding", { projectId, skipBaseline }),
+  checkTask: (taskId: string) => invoke<CheckReport>("check_task", { taskId }),
+  latestTaskCheck: (taskId: string) => invoke<StoredCheck | null>("latest_task_check", { taskId }),
   // 议题
   issues: (projectId: string) => invoke<IssueView[]>("list_issues", { projectId }),
   pendingDecisions: () => invoke<PendingDecision[]>("pending_decisions"),

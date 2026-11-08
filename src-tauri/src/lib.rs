@@ -23,6 +23,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::onboarding_state,
+            commands::run_scan,
+            commands::run_baseline,
+            commands::evaluate_project,
+            commands::confirm_onboarding,
+            commands::check_task,
+            commands::latest_task_check,
             commands::list_issues,
             commands::pending_decisions,
             commands::create_issue,

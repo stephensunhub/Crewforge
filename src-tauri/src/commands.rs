@@ -1,5 +1,6 @@
 use crate::approval::UiApprover;
 use crate::state::AppState;
+use crewforge_core::onboarding::{OnboardingState, StoredCheck, DEFAULT_COMMAND_TIMEOUT, baseline::CheckReport, scan::{BaselineCommand, ScanReport}};
 use crewforge_core::memory::{DEFAULT_MAX_CHARS, DEFAULT_MAX_ITEMS, Memory, MemoryFilter, NewMemory};
 use crewforge_core::board::{Actor, IssueView, Meeting, MeetingMessage, PendingDecision};
 use crewforge_core::db::{Company, Employee, EmployeeCard, EventRow, Member, Project, ProjectSummary, Session, default_data_dir};
@@ -91,13 +92,20 @@ pub async fn create_project(
     description: String,
     path: String,
     init_git: bool,
+    import_existing: bool,
 ) -> CmdResult<Project> {
     let p = PathBuf::from(&path);
     if !p.is_dir() {
         return Err(format!("目录不存在: {path}"));
     }
     let info = state.ws.ensure_ready(&p.canonicalize().map_err(err)?, init_git).await.map_err(err)?;
-    state.db.create_project(&name, &description, &info.root.to_string_lossy()).map_err(err)
+    let project = state.db.create_project(&name, &description, &info.root.to_string_lossy()).map_err(err)?;
+    if import_existing {
+        // 导入的既有项目先进入"导入中"：完成扫描、基线、评估并由人类确认后，才能派任务
+        state.db.set_onboarding(&project.id, "in_progress").map_err(err)?;
+        return state.db.get_project(&project.id).map_err(err)?.ok_or_else(|| "项目创建失败".to_string());
+    }
+    Ok(project)
 }
 
 #[tauri::command]
@@ -497,4 +505,75 @@ pub fn unverified_counts(state: State<'_, AppState>) -> CmdResult<Vec<(String, S
 #[tauri::command]
 pub fn preview_retrieval(state: State<'_, AppState>, project_id: Option<String>, employee_id: String, text: String) -> CmdResult<Vec<Memory>> {
     state.db.retrieve_memories(project_id.as_deref(), &employee_id, None, &text, DEFAULT_MAX_ITEMS, DEFAULT_MAX_CHARS).map_err(err)
+}
+
+
+// ================= 旧项目导入 =================
+#[tauri::command]
+pub fn onboarding_state(state: State<'_, AppState>, project_id: String) -> CmdResult<OnboardingState> {
+    state.db.onboarding_state(&project_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn run_scan(state: State<'_, AppState>, project_id: String) -> CmdResult<ScanReport> {
+    state.orch.scan_project(&project_id).await.map_err(err)
+}
+
+/// 释放"忙碌"标记，即使命令中途出错或被取消。
+struct BusyGuard { set: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>, key: String }
+impl Drop for BusyGuard {
+    fn drop(&mut self) { self.set.lock().unwrap().remove(&self.key); }
+}
+fn acquire(state: &AppState, key: String, busy_msg: &str) -> CmdResult<BusyGuard> {
+    if !state.busy.lock().unwrap().insert(key.clone()) {
+        return Err(busy_msg.to_string());
+    }
+    Ok(BusyGuard { set: state.busy.clone(), key })
+}
+
+/// 运行基线。耗时较长，进度通过事件流实时推送；命令由人类在界面上确认过。
+#[tauri::command]
+pub async fn run_baseline(state: State<'_, AppState>, project_id: String, commands: Vec<BaselineCommand>) -> CmdResult<()> {
+    let _g = acquire(&state, format!("baseline:{project_id}"), "这个项目的基线正在运行")?;
+    state.orch.run_baseline(&project_id, commands, DEFAULT_COMMAND_TIMEOUT).await.map(|_| ()).map_err(err)
+}
+
+/// 让员工做导入评估（architect = 全栈视角，qa = QA 视角）。只读，占用并发许可。
+#[tauri::command]
+pub async fn evaluate_project(app: AppHandle, state: State<'_, AppState>, project_id: String, kind: String, employee_id: String) -> CmdResult<()> {
+    let emp = state.db.employee_by_id(&employee_id).map_err(err)?.ok_or("员工不存在")?;
+    if !state.running.lock().unwrap().insert(emp.name.clone()) {
+        return Err(format!("{} 正在执行其他任务，请稍后再试", emp.name));
+    }
+    let _ = app.emit("crewforge://running", state.running.lock().unwrap().iter().cloned().collect::<Vec<_>>());
+    let result = async {
+        let _permit = state.sem.clone().acquire_owned().await.map_err(err)?;
+        let approver = UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: None };
+        state.orch.evaluate_project(&project_id, &kind, &emp, &approver).await.map(|_| ()).map_err(err)
+    }.await;
+    state.running.lock().unwrap().remove(&emp.name);
+    let _ = app.emit("crewforge://running", state.running.lock().unwrap().iter().cloned().collect::<Vec<_>>());
+    result
+}
+
+#[tauri::command]
+pub fn confirm_onboarding(state: State<'_, AppState>, project_id: String, skip_baseline: bool) -> CmdResult<()> {
+    state.orch.confirm_onboarding(&project_id, skip_baseline).map_err(err)
+}
+
+/// 用基线的命令检查某个任务，逐项判定失败来源。
+#[tauri::command]
+pub async fn check_task(state: State<'_, AppState>, task_id: String) -> CmdResult<CheckReport> {
+    let task = state.db.get_task(&task_id).map_err(err)?.ok_or("任务不存在")?;
+    let emp = state.db.employee_by_id(&task.employee_id).map_err(err)?.ok_or("员工不存在")?;
+    if state.running.lock().unwrap().contains(&emp.name) {
+        return Err(format!("{} 正在执行任务，请等 TA 完成后再检查", emp.name));
+    }
+    let _g = acquire(&state, format!("check:{task_id}"), "这个任务正在检查")?;
+    state.orch.check_task(&task_id, DEFAULT_COMMAND_TIMEOUT).await.map_err(err)
+}
+
+#[tauri::command]
+pub fn latest_task_check(state: State<'_, AppState>, task_id: String) -> CmdResult<Option<StoredCheck>> {
+    state.db.latest_task_check(&task_id).map_err(err)
 }

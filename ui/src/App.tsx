@@ -96,10 +96,14 @@ export default function App() {
     try { localStorage.setItem(CONCURRENCY_KEY, String(n)); } catch { /* 忽略 */ }
     try { setConcurrency(await api.setConcurrency(n)); } catch (e) { setError(String(e)); }
   }
-  const openProject = (id: string, tab: ProjectTab = "chat") => { setProjectTab(tab); setScope({ kind: "project", id }); };
+  const openProject = (id: string, tab?: ProjectTab) => {
+    const importing = projects.find((p) => p.project.id === id)?.project.onboarding === "in_progress";
+    setProjectTab(tab ?? (importing ? "onboarding" : "chat"));
+    setScope({ kind: "project", id });
+  };
   const projectName = (id: string | null) => projects.find((p) => p.project.id === id)?.project.name ?? "";
 
-  const tabs = scope.kind === "company" ? COMPANY_TABS : scope.kind === "project" ? PROJECT_TABS : null;
+  const tabs = scope.kind === "company" ? COMPANY_TABS : scope.kind === "project" ? PROJECT_TABS.filter(([k]) => k !== "onboarding" || (currentProject?.project.onboarding ?? "none") !== "none") : null;
   const activeTab = scope.kind === "company" ? companyTab : projectTab;
   const setTab = (t: string) => (scope.kind === "company" ? setCompanyTab(t as CompanyTab) : setProjectTab(t as ProjectTab));
 
@@ -183,7 +187,7 @@ export default function App() {
         {scope.kind === "project" && currentProject && (
           <ProjectView key={currentProject.project.id} tab={projectTab} summary={currentProject} employees={employees} events={events}
             nameById={nameById} running={running} approvals={approvals} concurrency={concurrency}
-            meetingFocus={meetingFocus} onFocusHandled={() => setMeetingFocus(null)} onOpenMeeting={(id) => { setProjectTab("meetings"); setMeetingFocus(id); }}
+            meetingFocus={meetingFocus} onFocusHandled={() => setMeetingFocus(null)} onOpenMeeting={(id) => { setProjectTab("meetings"); setMeetingFocus(id); }} onGoOnboarding={() => setProjectTab("onboarding")}
             onDecide={(a, allow) => void decide(a, allow)} onChanged={() => void reloadStatic()} onError={setError}
             onLeave={() => setScope({ kind: "company" })} />
         )}

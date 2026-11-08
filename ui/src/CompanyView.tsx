@@ -46,11 +46,12 @@ function EmployeeForm({ initial, onSubmit, onClose }: {
   );
 }
 
-function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: string, path: string, init: boolean) => Promise<void>; onClose: () => void }) {
+function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: string, path: string, init: boolean, imp: boolean) => Promise<void>; onClose: () => void }) {
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [init, setInit] = useState(true);
+  const [imp, setImp] = useState(true);
   const [busy, setBusy] = useState(false);
   async function pick() {
     const p = await api.pickDirectory();
@@ -67,12 +68,14 @@ function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: str
         </Field>
         <Field label="项目名称"><input value={name} onChange={(e) => setName(e.target.value)} /></Field>
         <Field label="描述（可选）"><textarea rows={3} value={desc} onChange={(e) => setDesc(e.target.value)} /></Field>
+        <label className="tog"><input type="checkbox" checked={imp} onChange={(e) => setImp(e.target.checked)} />
+          这是已有的项目：先做只读扫描和测试基线，确认后再让员工开发（推荐）</label>
         <label className="tog"><input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} />
           目录还不是 Git 仓库时，自动初始化（员工需要在 Git 工作区里工作）</label>
         <div className="form-btns">
           <button className="btn primary" disabled={!path || !name.trim() || busy} onClick={async () => {
             setBusy(true);
-            try { await onSubmit(name, desc, path, init); } finally { setBusy(false); }
+            try { await onSubmit(name, desc, path, init, imp); } finally { setBusy(false); }
           }}>创建项目</button>
         </div>
       </div>
@@ -193,8 +196,8 @@ export function CompanyView({
           ))}
         </div>
         {modal === "new-proj" && (
-          <ProjectForm onClose={() => setModal(null)} onSubmit={async (n, d, p, i) => {
-            const ok = await guard(() => api.createProject(n, d, p, i));
+          <ProjectForm onClose={() => setModal(null)} onSubmit={async (n, d, p, i, imp) => {
+            const ok = await guard(() => api.createProject(n, d, p, i, imp));
             if (ok) setModal(null);
           }} />
         )}

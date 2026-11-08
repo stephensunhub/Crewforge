@@ -6,16 +6,17 @@ import { TasksPanel } from "./TasksPanel";
 import { IssuesView } from "./IssuesView";
 import { MeetingsView } from "./MeetingsView";
 import { MemoryView } from "./MemoryView";
+import { OnboardingView } from "./OnboardingView";
 import type { ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
 
-export type ProjectTab = "chat" | "tasks" | "issues" | "meetings" | "members" | "memory" | "docs";
+export type ProjectTab = "onboarding" | "chat" | "tasks" | "issues" | "meetings" | "members" | "memory" | "docs";
 export const PROJECT_TABS: [ProjectTab, string][] = [
-  ["chat", "群聊"], ["tasks", "任务"], ["issues", "议题"], ["meetings", "会议"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
+  ["onboarding", "导入"], ["chat", "群聊"], ["tasks", "任务"], ["issues", "议题"], ["meetings", "会议"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
 ];
 const TASK_EVENTS = ["task_created", "checkpoint_committed", "checkpoint_failed", "task_merged", "task_merge_blocked", "task_abandoned", "turn_result", "task_failed", "task_error"];
 
 export function ProjectView({
-  tab, summary, employees, events, nameById, running, approvals, concurrency, meetingFocus, onFocusHandled, onOpenMeeting, onDecide, onChanged, onError, onLeave,
+  tab, summary, employees, events, nameById, running, approvals, concurrency, meetingFocus, onFocusHandled, onOpenMeeting, onGoOnboarding, onDecide, onChanged, onError, onLeave,
 }: {
   tab: ProjectTab;
   summary: ProjectSummary;
@@ -28,6 +29,7 @@ export function ProjectView({
   meetingFocus: string | null;
   onFocusHandled: () => void;
   onOpenMeeting: (id: string) => void;
+  onGoOnboarding: () => void;
   onDecide: (a: ApprovalReq, allow: boolean) => void;
   onChanged: () => void;
   onError: (m: string) => void;
@@ -83,15 +85,17 @@ export function ProjectView({
     try { await api.initRepo(project.path); await refreshRepo(); } catch (e) { onError(String(e)); }
   }
 
+  if (tab === "onboarding")
+    return <OnboardingView projectId={project.id} members={members} events={events} running={running} onError={onError} onChanged={onChanged} />;
   if (tab === "chat")
     return (
       <Chat project={project} members={members} events={events} nameById={nameById} running={running} approvals={mine}
-        concurrency={concurrency} repo={repo} taskViews={taskViews} onDecide={onDecide} onError={onError} onInitGit={initGit} />
+        concurrency={concurrency} repo={repo} taskViews={taskViews} onboarding={project.onboarding} onGoOnboarding={onGoOnboarding} onDecide={onDecide} onError={onError} onInitGit={initGit} />
     );
   if (tab === "tasks")
     return (
       <div className="tasks-page">
-        <TasksPanel views={taskViews} busy={running} onChanged={() => { void refreshRepo(); onChanged(); }} onError={onError} />
+        <TasksPanel views={taskViews} busy={running} hasBaseline={project.onboarding !== "none"} onChanged={() => { void refreshRepo(); onChanged(); }} onError={onError} />
       </div>
     );
   if (tab === "members")

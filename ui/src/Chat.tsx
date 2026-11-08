@@ -10,7 +10,7 @@ function toolSummary(input: Record<string, unknown> | undefined): string {
 }
 
 export function Chat({
-  project, members, events, nameById, running, approvals, concurrency, repo, taskViews, onDecide, onError, onInitGit,
+  project, members, events, nameById, running, approvals, concurrency, repo, taskViews, onboarding, onGoOnboarding, onDecide, onError, onInitGit,
 }: {
   project: Project;
   members: Member[];
@@ -21,6 +21,8 @@ export function Chat({
   concurrency: number;
   repo: RepoStatus | null;
   taskViews: TaskView[];
+  onboarding: string;
+  onGoOnboarding: () => void;
   onDecide: (a: ApprovalReq, allow: boolean) => void;
   onError: (m: string) => void;
   onInitGit: () => void;
@@ -62,6 +64,7 @@ export function Chat({
   async function send() {
     const body = text.trim();
     if (!body) return;
+    if (onboarding === "in_progress") { onError("项目还在导入阶段，请先到“导入”页完成扫描、基线和确认，之后才能派任务"); return; }
     if (problem) { onError("这个项目的 Git 仓库还不能用，请先处理上方提示"); return; }
     const targets = [...new Set([...body.matchAll(/@([^\s@]+)/g)].map((m) => m[1]).filter((n) => names.includes(n)))];
     if (targets.length === 0) {
@@ -148,6 +151,9 @@ export function Chat({
 
   return (
     <div className="col">
+      {onboarding === "in_progress" && (
+        <div className="banner info"><span>项目还在导入阶段：完成扫描、测试基线并确认后，才能给员工派开发任务。</span><button className="btn" onClick={onGoOnboarding}>去导入</button></div>
+      )}
       {problem === "not_repo" && (
         <div className="banner info"><span>这个目录还不是 Git 仓库。员工需要在隔离的 Git 工作区里工作。</span><button className="btn" onClick={onInitGit}>初始化 Git 仓库</button></div>
       )}

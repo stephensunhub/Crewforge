@@ -17,6 +17,7 @@ export interface Project {
   description: string;
   path: string;
   status: string;
+  onboarding: "none" | "in_progress" | "confirmed";
   created_at: number;
   updated_at: number;
 }
@@ -202,3 +203,31 @@ export interface Memory {
   updated_at: number;
   uses: number;
 }
+
+export interface BaselineCommand { id: string; label: string; kind: string; command: string; reason: string; default_on: boolean }
+export interface ScanModule { name: string; path: string; files: number; kind: string }
+export interface GitInfo {
+  is_repo: boolean; branch: string | null; head: string | null; commit_count: number | null; branch_count: number | null;
+  tag_count: number | null; first_commit_date: string | null; last_commit: string | null; recent: string[];
+  authors: [string, number][]; remotes: string[]; dirty: boolean;
+}
+export interface ScanReport {
+  root: string; scanned_at: number; total_files: number; truncated: boolean; languages: [string, number][];
+  package_managers: string[]; build_tools: string[]; frameworks: string[]; databases: string[]; test_frameworks: string[];
+  ci: string[]; api_definitions: string[]; db_schemas: string[]; docs: string[]; top_dirs: [string, number][];
+  modules: ScanModule[]; git: GitInfo; commands: BaselineCommand[]; notes: string[];
+}
+export interface CommandResult {
+  id: string; label: string; kind: string; command: string; status: "passed" | "failed" | "timeout" | "skipped" | "error";
+  exit_code: number | null; duration_ms: number; output_tail: string; failed_tests: string[]; parsed: boolean;
+}
+export interface BaselineRun {
+  id: string; project_id: string; commit_sha: string; status: "running" | "done" | "failed";
+  started_at: number; finished_at: number | null; commands: BaselineCommand[]; results: CommandResult[];
+}
+export interface OnboardingReport { id: string; kind: "architect" | "qa"; employee_id: string | null; content: string; commit_sha: string | null; created_at: number }
+export interface OnboardingState { status: "none" | "in_progress" | "confirmed"; scan: ScanReport | null; baseline: BaselineRun | null; reports: OnboardingReport[] }
+export type Origin = "pre_existing" | "introduced" | "fixed" | "unknown";
+export interface Finding { command_id: string; command_label: string; item: string; origin: Origin; note: string }
+export interface CheckReport { findings: Finding[]; results: CommandResult[]; pre_existing: number; introduced: number; fixed: number; unknown: number }
+export interface StoredCheck { created_at: number; report: CheckReport }

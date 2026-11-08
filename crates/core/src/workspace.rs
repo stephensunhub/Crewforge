@@ -134,6 +134,15 @@ async fn git_as(dir: &Path, who: &str, args: &[&str]) -> Result<String> {
     git(dir, &all).await
 }
 
+/// 供其他模块使用：运行 git，成功返回 stdout。
+pub async fn git_output(dir: &Path, args: &[&str]) -> Result<String> {
+    let o = run_git(dir, args).await?;
+    if !o.ok {
+        bail!("git {} 失败: {}", args.join(" "), o.stderr);
+    }
+    Ok(o.stdout)
+}
+
 /// 把员工名转成可用于目录和分支名的片段；含特殊字符（如中文名）时退回到 id 前缀。
 pub fn safe_slug(name: &str, id: &str) -> String {
     let ok = !name.is_empty()
@@ -200,6 +209,29 @@ impl WorkspaceManager {
         git(path, &["init", "-b", "main"]).await?;
         git_as(path, "Crewforge", &["commit", "--allow-empty", "-m", "Initial commit"]).await?;
         Ok(())
+    }
+
+    /// 临时目录（基线、检查用的干净检出）放在数据目录下，与 worktrees 同级。
+    pub fn scratch_dir(&self, kind: &str) -> PathBuf {
+        self.root.parent().map(|p| p.join(kind)).unwrap_or_else(|| self.root.join(kind))
+    }
+
+    /// 在 `dest` 创建某个提交/分支的干净、分离 HEAD 的检出，不影响用户的工作目录。
+    pub async fn add_detached(&self, repo: &Path, dest: &Path, rev: &str) -> Result<()> {
+        let lock = self.lock_for(repo);
+        let _g = lock.lock().await;
+        std::fs::create_dir_all(dest.parent().context("无效的目录")?)?;
+        git(repo, &["worktree", "add", "--detach", &dest.to_string_lossy(), rev]).await?;
+        Ok(())
+    }
+
+    /// 移除临时检出；失败时忽略（残留的登记会在下次 `worktree prune` 时清理）。
+    pub async fn remove_checkout(&self, repo: &Path, dest: &Path) {
+        let lock = self.lock_for(repo);
+        let _g = lock.lock().await;
+        let _ = run_git(repo, &["worktree", "remove", "--force", &dest.to_string_lossy()]).await;
+        let _ = std::fs::remove_dir_all(dest);
+        let _ = run_git(repo, &["worktree", "prune"]).await;
     }
 
     /// 让目录成为可用的项目仓库：`init` 为 true 时，缺少 Git 仓库就初始化，

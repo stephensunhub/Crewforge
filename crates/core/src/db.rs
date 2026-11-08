@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 迁移列表：下标 + 1 即版本号。只能追加，不能修改已发布的迁移。
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5];
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6];
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE employees (
@@ -129,6 +129,8 @@ pub struct Project {
     pub description: String,
     pub path: String,
     pub status: String,
+    /// none（新建项目）| in_progress（导入中，不能派任务）| confirmed（已确认导入）
+    pub onboarding: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -598,6 +600,7 @@ impl Db {
             description: description.into(),
             path: path.into(),
             status: "active".into(),
+            onboarding: "none".into(),
             created_at: now,
             updated_at: now,
         };
@@ -648,6 +651,14 @@ impl Db {
             });
         }
         Ok(out)
+    }
+
+    pub fn set_onboarding(&self, id: &str, state: &str) -> Result<()> {
+        if !matches!(state, "none" | "in_progress" | "confirmed") {
+            anyhow::bail!("未知的导入状态: {state}");
+        }
+        self.conn.lock().unwrap().execute("UPDATE projects SET onboarding = ?2, updated_at = ?3 WHERE id = ?1", params![id, state, now_ms()])?;
+        Ok(())
     }
 
     /// 修改名称与描述。路径不可改：任务与工作区都按它定位。
@@ -765,11 +776,11 @@ fn row_to_employee(r: &rusqlite::Row<'_>) -> rusqlite::Result<Employee> {
 fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
         id: r.get(0)?, name: r.get(1)?, description: r.get(2)?, path: r.get(3)?,
-        status: r.get(4)?, created_at: r.get(5)?, updated_at: r.get(6)?,
+        status: r.get(4)?, created_at: r.get(5)?, updated_at: r.get(6)?, onboarding: r.get(7)?,
     })
 }
 
-const PROJECT_SELECT: &str = "SELECT id, name, description, path, status, created_at, updated_at FROM projects";
+const PROJECT_SELECT: &str = "SELECT id, name, description, path, status, created_at, updated_at, onboarding FROM projects";
 
 fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
     Ok(Session {

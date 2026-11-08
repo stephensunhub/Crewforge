@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "./api";
-import type { TaskView } from "./types";
+import type { CheckReport, Origin, TaskView } from "./types";
 
 const STATUS_LABEL: Record<string, string> = { active: "进行中", merged: "已合并", abandoned: "已放弃" };
 
@@ -24,16 +24,53 @@ function DiffModal({ title, diff, onClose }: { title: string; diff: string; onCl
   );
 }
 
+const ORIGIN: Record<Origin, { label: string; cls: string; help: string }> = {
+  introduced: { label: "AI 引入的新问题", cls: "bad", help: "基线时没有的失败，需要员工修复" },
+  pre_existing: { label: "导入前就存在", cls: "warn", help: "项目原本就有的问题，不是这次修改造成的" },
+  fixed: { label: "已修复", cls: "ok", help: "基线时失败，现在通过了" },
+  unknown: { label: "无法确认来源", cls: "", help: "无法逐项比较，不能判断是谁造成的" },
+};
+
+function CheckModal({ title, report, onClose }: { title: string; report: CheckReport; onClose: () => void }) {
+  const order: Origin[] = ["introduced", "unknown", "pre_existing", "fixed"];
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><b>{title}</b><button className="btn" onClick={onClose}>关闭</button></div>
+        <div className="modal-body">
+          <div className="card-meta" style={{ marginBottom: 10 }}>
+            {order.map((o) => <span key={o} className={`note ${ORIGIN[o].cls}`}>{ORIGIN[o].label}：{report[o]}</span>)}
+          </div>
+          {report.findings.length === 0 && <div className="note ok">与基线相比没有任何失败。</div>}
+          {order.map((o) => {
+            const list = report.findings.filter((f) => f.origin === o);
+            if (list.length === 0) return null;
+            return (
+              <div key={o} style={{ marginBottom: 12 }}>
+                <h4 className="group-title">{ORIGIN[o].label} · {ORIGIN[o].help}</h4>
+                {list.map((f, i) => <div key={i} className={`note ${ORIGIN[o].cls}`} style={{ marginBottom: 4 }}><b>{f.command_label}</b> · <code>{f.item}</code><div className="hint">{f.note}</div></div>)}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TasksPanel({
-  views, busy, onChanged, onError,
+  views, busy, hasBaseline, onChanged, onError,
 }: {
   views: TaskView[];
   busy: string[];
+  hasBaseline: boolean;
   onChanged: () => void;
   onError: (m: string) => void;
 }) {
   const [diff, setDiff] = useState<{ title: string; text: string } | null>(null);
   const [working, setWorking] = useState<string | null>(null);
+  const [checking, setChecking] = useState<string | null>(null);
+  const [check, setCheck] = useState<{ title: string; report: CheckReport } | null>(null);
   const nameOf = new Map(views.map((v) => [v.task.id, v.employee_name]));
   const active = views.filter((v) => v.task.status === "active");
   const done = views.filter((v) => v.task.status !== "active");
@@ -41,6 +78,17 @@ export function TasksPanel({
   async function showDiff(v: TaskView) {
     try { setDiff({ title: `${v.employee_name} · ${v.task.title}`, text: await api.taskDiff(v.task.id) }); }
     catch (e) { onError(String(e)); }
+  }
+  async function runCheck(v: TaskView) {
+    setChecking(v.task.id);
+    try { setCheck({ title: `${v.employee_name} · ${v.task.title}：对比基线`, report: await api.checkTask(v.task.id) }); }
+    catch (e) { onError(String(e)); } finally { setChecking(null); }
+  }
+  async function lastCheck(v: TaskView) {
+    try {
+      const c = await api.latestTaskCheck(v.task.id);
+      if (c) setCheck({ title: `${v.employee_name} · ${v.task.title}：上次检查`, report: c.report }); else onError("这个任务还没有检查过");
+    } catch (e) { onError(String(e)); }
   }
   async function merge(v: TaskView) {
     const warn = v.overlaps.length ? `\n\n注意：与其他进行中的任务同时修改了 ${v.overlaps.map((o) => o.path).join("、")}。` : "";
@@ -100,6 +148,12 @@ export function TasksPanel({
                 <button className="btn" onClick={() => showDiff(v)}>查看改动</button>
                 <button className="btn primary" disabled={isBusy || working === v.task.id || (v.merge != null && !v.merge.clean)} onClick={() => merge(v)}>合并</button>
                 <button className="btn" disabled={isBusy || working === v.task.id} onClick={() => abandon(v)}>放弃</button>
+                {hasBaseline && (
+                  <>
+                    <button className="btn" disabled={isBusy || checking === v.task.id} title="在干净检出里运行基线同样的命令，判断失败来源" onClick={() => void runCheck(v)}>{checking === v.task.id ? "检查中…" : "对比基线检查"}</button>
+                    <button className="link" onClick={() => void lastCheck(v)}>上次结果</button>
+                  </>
+                )}
                 <button className="btn" onClick={() => api.reveal(v.task.id).catch((e) => onError(String(e)))}>在访达显示</button>
               </div>
             </div>
@@ -118,6 +172,7 @@ export function TasksPanel({
           </div>
         ))}
       </div>
+      {check && <CheckModal title={check.title} report={check.report} onClose={() => setCheck(null)} />}
       {diff && <DiffModal title={diff.title} diff={diff.text} onClose={() => setDiff(null)} />}
     </aside>
   );

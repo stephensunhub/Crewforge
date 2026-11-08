@@ -56,7 +56,11 @@ impl Orchestrator {
         let repo = self.ws.repo_info(project_path).await?;
         let repo_key = repo.root.to_string_lossy().into_owned();
 
-        let project_id = self.db.project_by_path(&repo_key)?.map(|p| p.id);
+        let project = self.db.project_by_path(&repo_key)?;
+        if project.as_ref().is_some_and(|p| p.onboarding == "in_progress") {
+            bail!("项目还在导入阶段：请先完成扫描、测试基线和评估，并确认导入，之后才能给员工派任务");
+        }
+        let project_id = project.map(|p| p.id);
         // 只在新任务开始时注入记忆：继续同一任务时，会话里已经有这些内容，不重复传递
         let (task, fresh) = match self.db.active_task(&employee.id, &repo_key)? {
             Some(t) => (t, false),
