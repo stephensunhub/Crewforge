@@ -281,8 +281,10 @@ esac
 #[ignore]
 async fn build_snake_with_a_real_team() {
     let dry = std::env::var("SNAKE_DRYRUN").is_ok();
+    // 续跑模式：项目已经存在，读取已有项目，从 SNAKE_FOLLOWUP 指定的 JSON 文件里追加条目，走同样的流水线
+    let resume = std::env::var("SNAKE_RESUME").is_ok();
     let dir = PathBuf::from(std::env::var("SNAKE_DIR").unwrap_or_else(|_| "/Users/stephen/Documents/workspace/snake".into()));
-    if dir.exists() && std::fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
+    if !resume && dir.exists() && std::fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
         panic!("{} 已存在且不为空，请先处理（本演练只在全新的目录里创建项目）", dir.display());
     }
     std::fs::create_dir_all(&dir).unwrap();
@@ -295,24 +297,42 @@ async fn build_snake_with_a_real_team() {
     if dry { orch.program = write_fake_cli(&data); }
     else if let Ok(p) = std::env::var("SNAKE_PROGRAM") { orch.program = p; }
     let sched = Scheduler::new(db.clone(), 2);
-    let report_path = dir.parent().unwrap().join("snake-REPORT.md");
+    let report_path = dir.parent().unwrap().join(if resume { "snake-REPORT-followup.md" } else { "snake-REPORT.md" });
 
     ws.ensure_ready(&dir, true).await.unwrap();
     let repo = ws.repo_info(&dir).await.unwrap().root;
-    let _ = db.update_company("贪吃蛇工作室", "一个 2 全栈 + 1 质检的小团队", "代码要有测试；提交信息说明做了什么；不提交构建产物。");
+    if !resume { let _ = db.update_company("贪吃蛇工作室", "一个 2 全栈 + 1 质检的小团队", "代码要有测试；提交信息说明做了什么；不提交构建产物."); }
     let mk = |n: &str, role: &str, persona: &str| db.employee_by_name(n).unwrap().unwrap_or_else(|| db.add_employee(n, role, persona).unwrap());
     let alice = mk("alice", "全栈工程师", "你是 Alice，资深全栈工程师，偏 Rust 与 WebAssembly：游戏逻辑与 wasm 绑定。先写测试，函数小而纯，沟通简洁，先给结论再给理由。");
     let bob = mk("bob", "全栈工程师", "你是 Bob，全栈工程师，偏 TypeScript 与前端：Vite、canvas 渲染、键盘输入、界面与手感。沟通简洁，改动小步提交。");
     let carol = mk("carol", "QA 测试工程师", "你是 Carol，AI 质检员（QA）：独立审查代码，设计并补充测试，寻找边界情况和 bug。不迁就开发者的结论，指出具体文件、行和复现方式。");
-    let project = db.create_project("贪吃蛇", "Rust(WebAssembly) + TypeScript 的贪吃蛇小游戏", repo.to_str().unwrap()).unwrap();
-    for (e, r) in [(&alice, "developer"), (&bob, "developer"), (&carol, "qa")] { db.add_member(&project.id, &e.id, r).unwrap(); }
-    db.set_project_goal(&project.id, GOAL).unwrap();
+    let project = if resume { db.project_by_path(repo.to_str().unwrap()).unwrap().expect("续跑需要项目已经存在") } else {
+        let p = db.create_project("贪吃蛇", "Rust(WebAssembly) + TypeScript 的贪吃蛇小游戏", repo.to_str().unwrap()).unwrap();
+        for (e, r) in [(&alice, "developer"), (&bob, "developer"), (&carol, "qa")] { db.add_member(&p.id, &e.id, r).unwrap(); }
+        db.set_project_goal(&p.id, GOAL).unwrap();
+        p
+    };
 
     let ctl = Arc::new(Ctl { orch: Arc::new(orch), db: db.clone(), sched, approver: LoggingApprover(Mutex::new(vec![])), repo: repo.clone(), pid: project.id.clone(),
         merge_lock: tokio::sync::Mutex::new(()), calls: AtomicUsize::new(0), started: Instant::now(), report: Mutex::new(vec![]), report_path });
     ctl.say(format!("项目目录 {} · 数据目录 {} · {}", repo.display(), data.display(), if dry { "空跑" } else { "真实调用" }));
 
+    if resume {
+        // 跟进条目：人类 CTO 验收时发现的问题，直接加入计划
+        let file = std::env::var("SNAKE_FOLLOWUP").expect("续跑需要 SNAKE_FOLLOWUP 指向一份 JSON");
+        let items: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        let mut ids: Vec<String> = vec![];
+        for it in &items {
+            let deps = it["deps"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(|i| ids[i as usize].clone()).collect()).unwrap_or_default();
+            let aid = it["assignee"].as_str().and_then(|n| db.employee_by_name(n).unwrap()).map(|e| e.id);
+            ids.push(db.create_plan_item(&ctl.pid, &NewPlanItem { title: it["title"].as_str().unwrap().into(), description: it["description"].as_str().unwrap_or("").into(),
+                acceptance: it["acceptance"].as_str().unwrap_or("").into(), kind: "migrate".into(), module: "".into(), assignee_id: aid, deps }, None).unwrap());
+            ctl.say(format!("  + 跟进条目：{}", it["title"].as_str().unwrap()));
+        }
+    }
+
     // ---------- 1. 制定计划（AI 起草，CTO 批准）----------
+    if !resume {
     ctl.say("📋 让 alice 制定计划");
     let m = db.create_meeting(&ctl.pid, "planning", "制定计划", None, None, &[], 12).unwrap();
     db.post_message(&m.id, "human", None, "@alice 请为贪吃蛇项目制定一份计划，并用 propose_plan 一次性提交（先 list_plan 看看）。团队：alice（全栈，偏 Rust/wasm）、bob（全栈，偏 TypeScript/界面）、carol（QA）。\n\
@@ -343,6 +363,7 @@ async fn build_snake_with_a_real_team() {
     }
     for i in db.plan_view(&ctl.pid).unwrap().items { ctl.say(format!("  · [{}] {} → {}{}", i.kind, i.title, i.assignee_name.clone().unwrap_or_else(|| "未指定".into()), if i.deps.is_empty() { String::new() } else { format!("（依赖 {} 项）", i.deps.len()) })); }
 
+    }
     // ---------- 2. 按依赖并行推进 ----------
     let mut set: tokio::task::JoinSet<(String, anyhow::Result<()>)> = tokio::task::JoinSet::new();
     let (mut running, mut busy, mut failed): (HashSet<String>, HashSet<String>, HashSet<String>) = Default::default();
