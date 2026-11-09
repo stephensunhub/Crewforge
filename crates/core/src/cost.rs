@@ -174,6 +174,7 @@ pub struct CallFilter {
     pub employee_id: Option<String>,
     pub project_id: Option<String>,
     pub purpose: Option<String>,
+    pub provider: Option<String>,
     pub only_errors: bool,
 }
 
@@ -191,6 +192,8 @@ pub struct CostReport {
     pub by_project: Vec<Group>,
     pub by_purpose: Vec<Group>,
     pub by_model: Vec<Group>,
+    /// 按执行引擎（Claude Code / Copilot）
+    pub by_provider: Vec<Group>,
     pub by_day: Vec<DayPoint>,
     /// 最近 48 小时内的范围才有：按小时汇总（标签为“月-日 时”）
     pub by_hour: Vec<DayPoint>,
@@ -315,6 +318,7 @@ impl Db {
             if filter.employee_id.as_ref().is_some_and(|f| eid.as_deref() != Some(f.as_str())) { continue; }
             if filter.project_id.as_ref().is_some_and(|f| project_id.as_deref() != Some(f.as_str())) { continue; }
             if filter.purpose.as_ref().is_some_and(|f| &purpose != f) { continue; }
+            if filter.provider.as_ref().is_some_and(|f| provider.as_deref().unwrap_or("claude") != f.as_str()) { continue; }
             if filter.only_errors && !is_error { continue; }
             let subject = task.as_ref().and_then(|t| tasks.get(t)).or_else(|| meeting.as_ref().and_then(|m| meetings.get(m))).cloned().unwrap_or_default();
             all.push(CallRow {
@@ -389,6 +393,7 @@ impl Db {
         let mut by_day: BTreeMap<String, Totals> = BTreeMap::new();
         let mut by_hour: BTreeMap<String, Totals> = BTreeMap::new();
         let mut by_model: HashMap<String, (String, Totals)> = HashMap::new();
+        let mut by_provider: HashMap<String, (String, Totals)> = HashMap::new();
         let mut durations: Vec<u64> = Vec::new();
         let (mut ttft_sum, mut ttft_n) = (0u64, 0u64);
         let want_hours = since.map(|s| now_ms() - s <= 2 * 86_400_000).unwrap_or(false);
@@ -412,6 +417,11 @@ impl Db {
                 let local = r.ts + tz_offset_minutes * 60_000;
                 let hour = format!("{} {:02}", &days_to_ymd(local.div_euclid(86_400_000))[5..], local.rem_euclid(86_400_000) / 3_600_000);
                 by_hour.entry(hour).or_default().add(r);
+            }
+            {
+                let prov = r.provider.clone().unwrap_or_else(|| "claude".into());
+                let label = if prov == "copilot" { "GitHub Copilot" } else { "Claude Code" };
+                by_provider.entry(prov).or_insert_with(|| (label.to_string(), Totals::default())).1.add(r);
             }
             if r.models.is_empty() && r.model.is_some() {
                 // 没有按模型拆分的数据（如 Copilot）：按单个模型归类，token 与费用保持未知
@@ -495,6 +505,7 @@ impl Db {
         Ok(CostReport {
             since, totals, by_employee: sorted(by_emp), by_project: sorted(by_proj), by_purpose: sorted(by_purpose),
             by_model: sorted(by_model),
+            by_provider: sorted(by_provider),
             by_day: by_day.into_iter().map(|(day, totals)| DayPoint { day, totals }).collect(),
             by_hour: by_hour.into_iter().map(|(day, totals)| DayPoint { day, totals }).collect(),
             latency: {

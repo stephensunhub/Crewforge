@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import { Avatar, Field, Modal, Placeholder, basename } from "./common";
 import { MemoryView } from "./MemoryView";
-import type { Company, EmployeeCard, EventRow, ProjectSummary } from "./types";
+import type { Company, EmployeeCard, EventRow, ModelsOverview, ProjectSummary } from "./types";
 
 export type CompanyTab = "employees" | "projects" | "memory" | "docs" | "manage";
 export const COMPANY_TABS: [CompanyTab, string][] = [
@@ -22,6 +22,9 @@ function EmployeeForm({ initial, onSubmit, onClose }: {
   const [provider, setProvider] = useState(initial?.provider ?? "claude");
   const [model, setModel] = useState(initial?.model ?? "");
   const [busy, setBusy] = useState(false);
+  const [cat, setCat] = useState<ModelsOverview | null>(null);
+  useEffect(() => { void api.modelsOverview().then(setCat).catch(() => setCat(null)); }, []);
+  const enabledProv = (p: string) => !cat || (cat.providers.find((x) => x.provider === p)?.enabled ?? true) || initial?.provider === p;
   const valid = name.trim() !== "" && !/[\s@]/.test(name);
   return (
     <Modal title={initial ? `编辑 ${initial.name}` : "新员工"} onClose={onClose}>
@@ -38,13 +41,12 @@ function EmployeeForm({ initial, onSubmit, onClose }: {
           ? (provider !== initial.provider ? "⚠ 切换后 TA 之前的对话上下文不会带过去（任务分支、工作区、历史记录和记忆都保留）；TA 正在工作时不能切换。" : "可以随时切换，下次执行时生效。")
           : "Claude：可以边做边向你请求权限，按订阅额度计量。Copilot：权限在启动时一次定好（没有列入的命令会被直接拒绝，不会来问你），按 Copilot 高级请求计量。"}>
           <select value={provider} onChange={(e) => { setProvider(e.target.value); setModel(""); }}>
-            <option value="claude">Claude Code</option><option value="copilot">GitHub Copilot CLI</option>
+            <option value="claude" disabled={!enabledProv("claude")}>Claude Code{enabledProv("claude") ? "" : "（已停用）"}</option><option value="copilot" disabled={!enabledProv("copilot")}>GitHub Copilot CLI{enabledProv("copilot") ? "" : "（已停用）"}</option>
           </select>
         </Field>
         <Field label="模型" hint="留空使用引擎默认。可填别名或完整模型名；名称不对时 TA 会在下次执行时报错，改回即可。">
-          <input list={`models-${provider}`} value={model} placeholder="默认" onChange={(e) => setModel(e.target.value.trim())} />
-          <datalist id="models-claude"><option value="sonnet" /><option value="opus" /><option value="haiku" /></datalist>
-          <datalist id="models-copilot"><option value="auto" /><option value="claude-sonnet-5.5" /></datalist>
+          <input list={`models-${provider}`} value={model} placeholder="默认（可在“模型”页按用途设置默认模型）" onChange={(e) => setModel(e.target.value.trim())} />
+          <datalist id={`models-${provider}`}>{(cat?.models ?? []).filter((m) => m.provider === provider && m.enabled).map((m) => <option key={m.model_id} value={m.model_id}>{m.label}</option>)}</datalist>
         </Field>
         <Field label="身份说明" hint="告诉 TA 是谁、怎么沟通、擅长什么。留空会使用默认说明。">
           <textarea rows={5} value={persona} onChange={(e) => setPersona(e.target.value)} />

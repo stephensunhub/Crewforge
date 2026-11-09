@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type { CallRow, CostGroup, CostReport, EventRow, Totals } from "./types";
 
+const SECTIONS: [string, string][] = [
+  ["overview", "概览"], ["quota", "额度"], ["provider", "按引擎"], ["model", "按模型"], ["employee", "按员工"], ["project", "按项目"],
+  ["purpose", "按用途"], ["calls", "调用明细"], ["tasks", "花费最多的任务"], ["efficiency", "省 token 效率"],
+];
+
 const RANGES: [string, number | null][] = [["今天", 1], ["近 7 天", 7], ["近 30 天", 30], ["全部", null]];
 
 const fmtNum = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(1)}k` : n.toLocaleString("zh-CN"));
@@ -122,15 +127,16 @@ function CallLog({ days, employees, onError, refreshKey }: { days: number | null
   const [total, setTotal] = useState(0);
   const [emp, setEmp] = useState("");
   const [purpose, setPurpose] = useState("");
+  const [prov, setProv] = useState("");
   const [errs, setErrs] = useState(false);
   const PAGE = 30;
   const fetchPage = useCallback(async (offset: number) => {
     try {
-      const p = await api.costCalls({ days, employeeId: emp || null, projectId: null, purpose: purpose || null, onlyErrors: errs, limit: PAGE, offset });
+      const p = await api.costCalls({ days, employeeId: emp || null, projectId: null, purpose: purpose || null, provider: prov || null, onlyErrors: errs, limit: PAGE, offset });
       setTotal(p.total);
       setRows((prev) => (offset === 0 ? p.rows : [...prev, ...p.rows]));
     } catch (e) { onError(String(e)); }
-  }, [days, emp, purpose, errs, onError]);
+  }, [days, emp, purpose, prov, errs, onError]);
   useEffect(() => { void fetchPage(0); }, [fetchPage, refreshKey]);
   return (
     <section className="panel-box" style={{ marginTop: 18 }}>
@@ -139,6 +145,9 @@ function CallLog({ days, employees, onError, refreshKey }: { days: number | null
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <select style={{ width: "auto" }} value={emp} onChange={(e) => setEmp(e.target.value)}>
             <option value="">全部员工</option>{employees.map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
+          </select>
+          <select style={{ width: "auto" }} value={prov} onChange={(e) => setProv(e.target.value)}>
+            <option value="">全部引擎</option><option value="claude">Claude Code</option><option value="copilot">GitHub Copilot</option>
           </select>
           <select style={{ width: "auto" }} value={purpose} onChange={(e) => setPurpose(e.target.value)}>
             <option value="">全部用途</option><option value="task">开发任务</option><option value="meeting">会议发言</option><option value="minutes">纪要起草</option><option value="onboarding">导入评估</option>
@@ -170,6 +179,8 @@ export function CostView({ events, onError }: { events: EventRow[]; onError: (m:
   const [days, setDays] = useState<number | null>(7);
   const [r, setR] = useState<CostReport | null>(null);
   const [metric, setMetric] = useState<"cost" | "tokens">("cost");
+  const [sec, setSec] = useState<string>(() => { try { return localStorage.getItem("usage.sec") ?? "overview"; } catch { return "overview"; } });
+  const pick = (k: string) => { setSec(k); try { localStorage.setItem("usage.sec", k); } catch { /* 忽略 */ } };
 
   const load = useCallback(async () => {
     try { setR(await api.costReport(days)); } catch (e) { onError(String(e)); }
@@ -185,92 +196,116 @@ export function CostView({ events, onError }: { events: EventRow[]; onError: (m:
   const e = r.efficiency;
   const q = r.quota_now;
 
+  const sideBadge = (k: string) => k === "calls" ? t.turns : k === "provider" ? r.by_provider.length : k === "model" ? r.by_model.length : k === "employee" ? r.by_employee.length : k === "project" ? r.by_project.length : null;
+
   return (
-    <div className="page wide">
-      <div className="page-head">
-        <div><h2>成本与额度</h2>
-          <div className="hint">数据来自每次调用的真实记录。<b>费用是 CLI 报告的等值估算，不是订阅账单上的实际扣费</b>；CLI 没给出的数据标为“未知”，不会按 0 计入。</div></div>
-        <select style={{ width: "auto" }} value={days ?? ""} onChange={(ev) => setDays(ev.target.value === "" ? null : Number(ev.target.value))}>
-          {RANGES.map(([l, d]) => <option key={l} value={d ?? ""}>{l}</option>)}
-        </select>
-      </div>
-
-      <section className="panel-box">
-        <h4 className="group-title">订阅额度（所有员工共享同一份）</h4>
-        {!q ? <div className="hint">还没有额度数据，员工执行过一次任务后就会出现。</div> : (
-          <>
-            <div className="qgrid">
-              <Meter label="5 小时窗口" v={q.five_hour} reset={q.five_resets_at} series={r.quota_series.map((p) => p.five_hour)} />
-              <Meter label="7 天窗口" v={q.seven_day} reset={q.seven_resets_at} series={r.quota_series.map((p) => p.seven_day)} />
-            </div>
-            <div className="hint">状态：{q.status === "allowed" ? "正常" : q.status === "allowed_warning" ? "接近上限（仍可使用）" : q.status}。虚线为 85% 警戒线。窗口数据来自最近一次调用，不是实时的。</div>
-          </>
-        )}
-      </section>
-
-      <div className="cards4">
-        <div className="stat"><span>调用次数</span><b>{t.turns}</b>{t.errors > 0 && <i className="bad">{t.errors} 次出错</i>}</div>
-        <div className="stat"><span>估算费用</span><b>{t.turns_with_cost === 0 ? "未知" : fmtCost(t.cost_usd)}</b>{t.turns_with_cost < t.turns && t.turns > 0 && <i>{t.turns - t.turns_with_cost} 轮无费用数据</i>}</div>
-        <div className="stat"><span>处理的上下文 token</span><b>{t.turns_with_tokens === 0 ? "未知" : fmtNum(ctx)}</b><i>含缓存读写</i></div>
-        <div className="stat"><span>输出 token</span><b>{t.turns_with_tokens === 0 ? "未知" : fmtNum(t.output_tokens)}</b></div>
-        {t.premium_requests > 0 && <div className="stat"><span>Copilot 高级请求</span><b>{t.premium_requests}</b><i>Copilot 按请求数计量，没有 token 和费用数据</i></div>}
-        <div className="stat"><span>耗时（中位 / P95）</span><b>{r.latency.p50_ms == null ? "未知" : `${secs(r.latency.p50_ms)} / ${secs(r.latency.p95_ms ?? 0)}`}</b>
-          {r.latency.avg_ttft_ms != null && <i>首字平均 {secs(r.latency.avg_ttft_ms)}（{r.latency.ttft_samples} 次）</i>}</div>
-      </div>
-
-      <section className="panel-box">
-        <h4 className="group-title">token 构成</h4>
-        <TokenMix t={t} />
-      </section>
-
-      <section className="panel-box">
-        <div className="page-head" style={{ marginBottom: 6 }}>
-          <h4 className="group-title" style={{ margin: 0 }}>每日用量</h4>
-          <select style={{ width: "auto" }} value={metric} onChange={(ev) => setMetric(ev.target.value as "cost" | "tokens")}>
-            <option value="cost">估算费用</option><option value="tokens">token 总量</option>
+    <div className="split">
+      <aside className="split-side" style={{ width: 210 }}>
+        <div className="split-head" style={{ display: "block" }}>
+          <b>用量</b>
+          <select style={{ width: "100%", marginTop: 8 }} value={days ?? ""} onChange={(ev) => setDays(ev.target.value === "" ? null : Number(ev.target.value))}>
+            {RANGES.map(([l, d]) => <option key={l} value={d ?? ""}>{l}</option>)}
           </select>
         </div>
-        <Bars days={days === 1 && r.by_hour.length > 0 ? r.by_hour : r.by_day} metric={metric} />
-        {days === 1 && r.by_hour.length > 0 && <div className="hint">今天按小时显示。</div>}
-      </section>
+        <div className="split-list">
+          {SECTIONS.map(([k, l]) => (
+            <button key={k} className={`mitem ${sec === k ? "on" : ""}`} onClick={() => pick(k)}>
+              <div className="mitem-title" style={{ display: "flex", justifyContent: "space-between" }}>{l}{sideBadge(k) != null && <span className="hint">{sideBadge(k)}</span>}</div>
+            </button>
+          ))}
+        </div>
+        <div className="hint" style={{ padding: 12, marginTop: "auto" }}>费用是 CLI 报告的等值估算，不是订阅账单上的实际扣费；没有的数据显示“未知”，不按 0 计入。</div>
+      </aside>
 
-      <div className="two-col">
-        <GroupTable title="按员工" groups={r.by_employee} />
-        <GroupTable title="按项目" groups={r.by_project} />
+      <div className="split-main" style={{ overflow: "auto" }}>
+        <div className="page wide">
+          {sec === "overview" && (
+            <>
+              <div className="page-head"><h2>概览</h2></div>
+              <div className="cards4">
+                <div className="stat"><span>调用次数</span><b>{t.turns}</b>{t.errors > 0 && <i className="bad">{t.errors} 次出错</i>}</div>
+                <div className="stat"><span>估算费用</span><b>{t.turns_with_cost === 0 ? "未知" : fmtCost(t.cost_usd)}</b>{t.turns_with_cost < t.turns && t.turns > 0 && <i>{t.turns - t.turns_with_cost} 轮无费用数据</i>}</div>
+                <div className="stat"><span>处理的上下文 token</span><b>{t.turns_with_tokens === 0 ? "未知" : fmtNum(ctx)}</b><i>含缓存读写</i></div>
+                <div className="stat"><span>输出 token</span><b>{t.turns_with_tokens === 0 ? "未知" : fmtNum(t.output_tokens)}</b></div>
+                {t.premium_requests > 0 && <div className="stat"><span>Copilot 高级请求</span><b>{t.premium_requests}</b><i>Copilot 按请求数计量，没有 token 和费用数据</i></div>}
+                <div className="stat"><span>耗时（中位 / P95）</span><b>{r.latency.p50_ms == null ? "未知" : `${secs(r.latency.p50_ms)} / ${secs(r.latency.p95_ms ?? 0)}`}</b>
+                  {r.latency.avg_ttft_ms != null && <i>首字平均 {secs(r.latency.avg_ttft_ms)}（{r.latency.ttft_samples} 次）</i>}</div>
+              </div>
+              <section className="panel-box">
+                <h4 className="group-title">token 构成</h4>
+                <TokenMix t={t} />
+              </section>
+              <section className="panel-box">
+                <div className="page-head" style={{ marginBottom: 6 }}>
+                  <h4 className="group-title" style={{ margin: 0 }}>{days === 1 && r.by_hour.length > 0 ? "今日用量（按小时）" : "每日用量"}</h4>
+                  <select style={{ width: "auto" }} value={metric} onChange={(ev) => setMetric(ev.target.value as "cost" | "tokens")}>
+                    <option value="cost">估算费用</option><option value="tokens">token 总量</option>
+                  </select>
+                </div>
+                <Bars days={days === 1 && r.by_hour.length > 0 ? r.by_hour : r.by_day} metric={metric} />
+              </section>
+            </>
+          )}
+
+          {sec === "quota" && (
+            <>
+              <div className="page-head"><h2>额度</h2></div>
+              <section className="panel-box">
+                <h4 className="group-title">Claude 订阅额度（所有 Claude 员工共享同一份）</h4>
+                {!q ? <div className="hint">还没有额度数据，Claude 员工执行过一次任务后就会出现。</div> : (
+                  <>
+                    <div className="qgrid">
+                      <Meter label="5 小时窗口" v={q.five_hour} reset={q.five_resets_at} series={r.quota_series.map((p) => p.five_hour)} />
+                      <Meter label="7 天窗口" v={q.seven_day} reset={q.seven_resets_at} series={r.quota_series.map((p) => p.seven_day)} />
+                    </div>
+                    <div className="hint">状态：{q.status === "allowed" ? "正常" : q.status === "allowed_warning" ? "接近上限（仍可使用）" : q.status}。虚线为 85% 警戒线。窗口数据来自最近一次调用，不是实时的。</div>
+                  </>
+                )}
+              </section>
+              <section className="panel-box">
+                <h4 className="group-title">GitHub Copilot</h4>
+                <div className="hint">Copilot CLI 不提供 5 小时 / 7 天额度读数，只能按“高级请求”计数（本时间范围内共 {t.premium_requests} 次）。调度器的额度降速对 Copilot 员工不起作用，并发上限仍然有效。</div>
+              </section>
+            </>
+          )}
+
+          {sec === "provider" && <><div className="page-head"><h2>按执行引擎</h2></div><GroupTable title="Claude Code 与 GitHub Copilot" groups={r.by_provider} /></>}
+          {sec === "model" && <><div className="page-head"><h2>按模型</h2><div className="hint">一次调用用了多个模型时各算一次；Copilot 只有模型名，token 与费用未知。</div></div><GroupTable title="模型" groups={r.by_model} /></>}
+          {sec === "employee" && <><div className="page-head"><h2>按员工</h2></div><GroupTable title="员工" groups={r.by_employee} /></>}
+          {sec === "project" && <><div className="page-head"><h2>按项目</h2></div><GroupTable title="项目" groups={r.by_project} /></>}
+          {sec === "purpose" && <><div className="page-head"><h2>按用途</h2><div className="hint">会议和评估也会消耗额度。</div></div><GroupTable title="用途" groups={r.by_purpose} /></>}
+          {sec === "calls" && <><div className="page-head"><h2>调用明细</h2></div><CallLog days={days} employees={r.by_employee} onError={onError} refreshKey={last} /></>}
+
+          {sec === "tasks" && (
+            <>
+              <div className="page-head"><h2>花费最多的任务</h2></div>
+              {r.top_tasks.length === 0 ? <div className="hint">暂无任务数据</div> : (
+                <table className="cost-table"><thead><tr><th>任务</th><th>员工</th><th>项目</th><th>轮数</th><th>估算费用</th><th>上下文 token</th></tr></thead>
+                  <tbody>{r.top_tasks.map((x) => (
+                    <tr key={x.task_id}><td><b>{x.title}</b></td><td>{x.employee}</td><td>{x.project}</td><td>{x.totals.turns}</td>
+                      <td>{x.totals.turns_with_cost === 0 ? "未知" : fmtCost(x.totals.cost_usd)}</td>
+                      <td>{x.totals.turns_with_tokens === 0 ? "未知" : fmtNum(x.totals.input_tokens + x.totals.cache_read_tokens + x.totals.cache_creation_tokens)}</td></tr>))}</tbody></table>
+              )}
+            </>
+          )}
+
+          {sec === "efficiency" && (
+            <>
+              <div className="page-head"><h2>省 token 效率</h2><div className="hint">用来验证“按需唤醒、会话复用、只检索相关记忆”这些设计是否真的省了。</div></div>
+              <table className="cost-table"><tbody>
+                <tr><td><b>平均每轮上下文</b><div className="hint">越小越省；包含缓存读写</div></td><td>{e.avg_context_per_turn == null ? "未知" : `${fmtNum(Math.round(e.avg_context_per_turn))} token`}</td></tr>
+                <tr><td><b>缓存命中率</b><div className="hint">越高越省；会话复用得好，缓存才用得上</div></td><td>{pct(e.cache_hit_ratio)}</td></tr>
+                <tr><td><b>会话复用率</b><div className="hint">开始执行时接续已有会话的比例</div></td><td>{e.total_starts === 0 ? "暂无" : `${pct(e.resumed_starts / e.total_starts)}（${e.resumed_starts}/${e.total_starts}）`}</td></tr>
+                <tr><td><b>每个任务平均轮数</b><div className="hint">反复追问会让它变大</div></td><td>{e.avg_turns_per_task == null ? "暂无" : e.avg_turns_per_task.toFixed(1)}</td></tr>
+                <tr><td><b>记忆注入</b><div className="hint">每次只注入少量相关记忆</div></td>
+                  <td>{e.memory_injections === 0 ? "暂无" : `${e.memory_injections} 次，平均每次 ${(e.memory_items / e.memory_injections).toFixed(1)} 条 / ${Math.round(e.memory_chars / e.memory_injections)} 字`}</td></tr>
+                <tr><td><b>会议发言</b><div className="hint">只有被 @ 的 AI 发言才调用模型</div></td><td>人类 {e.meeting_human_messages} 条，AI 回复 {e.meeting_agent_replies} 条</td></tr>
+                <tr><td><b>执行失败 / 会话恢复</b><div className="hint">进程崩溃或中途退出的次数</div></td><td>{e.failed_runs} 次失败，{e.recovered_sessions} 次恢复</td></tr>
+              </tbody></table>
+            </>
+          )}
+        </div>
       </div>
-      <div className="two-col">
-        <GroupTable title="按用途（会议和评估也会消耗额度）" groups={r.by_purpose} />
-        <GroupTable title="按模型（一次调用用了多个模型时各算一次）" groups={r.by_model} />
-      </div>
-
-      <CallLog days={days} employees={r.by_employee} onError={onError} refreshKey={last} />
-
-      <section style={{ marginTop: 18 }}>
-        <h4 className="group-title">花费最多的任务</h4>
-        {r.top_tasks.length === 0 ? <div className="hint">暂无任务数据</div> : (
-          <table className="cost-table"><thead><tr><th>任务</th><th>员工</th><th>项目</th><th>轮数</th><th>估算费用</th><th>上下文 token</th></tr></thead>
-            <tbody>{r.top_tasks.map((x) => (
-              <tr key={x.task_id}><td><b>{x.title}</b></td><td>{x.employee}</td><td>{x.project}</td><td>{x.totals.turns}</td>
-                <td>{x.totals.turns_with_cost === 0 ? "未知" : fmtCost(x.totals.cost_usd)}</td>
-                <td>{x.totals.turns_with_tokens === 0 ? "未知" : fmtNum(x.totals.input_tokens + x.totals.cache_read_tokens + x.totals.cache_creation_tokens)}</td></tr>))}</tbody></table>
-        )}
-      </section>
-
-      <section className="panel-box" style={{ marginTop: 18 }}>
-        <h4 className="group-title">省 token 效率指标</h4>
-        <div className="hint" style={{ marginBottom: 8 }}>用来验证“按需唤醒、会话复用、只检索相关记忆”这些设计是否真的省了。</div>
-        <table className="cost-table"><tbody>
-          <tr><td><b>平均每轮上下文</b><div className="hint">越小越省；包含缓存读写</div></td><td>{e.avg_context_per_turn == null ? "未知" : `${fmtNum(Math.round(e.avg_context_per_turn))} token`}</td></tr>
-          <tr><td><b>缓存命中率</b><div className="hint">越高越省；会话复用得好，缓存才用得上</div></td><td>{pct(e.cache_hit_ratio)}</td></tr>
-          <tr><td><b>会话复用率</b><div className="hint">开始执行时接续已有会话的比例</div></td><td>{e.total_starts === 0 ? "暂无" : `${pct(e.resumed_starts / e.total_starts)}（${e.resumed_starts}/${e.total_starts}）`}</td></tr>
-          <tr><td><b>每个任务平均轮数</b><div className="hint">反复追问会让它变大</div></td><td>{e.avg_turns_per_task == null ? "暂无" : e.avg_turns_per_task.toFixed(1)}</td></tr>
-          <tr><td><b>记忆注入</b><div className="hint">每次只注入少量相关记忆</div></td>
-            <td>{e.memory_injections === 0 ? "暂无" : `${e.memory_injections} 次，平均每次 ${(e.memory_items / e.memory_injections).toFixed(1)} 条 / ${Math.round(e.memory_chars / e.memory_injections)} 字`}</td></tr>
-          <tr><td><b>会议发言</b><div className="hint">只有被 @ 的 AI 发言才调用模型</div></td><td>人类 {e.meeting_human_messages} 条，AI 回复 {e.meeting_agent_replies} 条</td></tr>
-          <tr><td><b>执行失败 / 会话恢复</b><div className="hint">进程崩溃或中途退出的次数</div></td><td>{e.failed_runs} 次失败，{e.recovered_sessions} 次恢复</td></tr>
-        </tbody></table>
-      </section>
-      <div className="hint" style={{ marginTop: 10 }}>目前只有一个执行引擎（Claude Code，使用本机已登录账号）。重试次数尚未单独统计。</div>
     </div>
   );
 }

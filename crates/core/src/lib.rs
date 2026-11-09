@@ -7,6 +7,7 @@ pub mod db;
 pub mod guest;
 pub mod mcp;
 pub mod meeting;
+pub mod models;
 pub mod onboarding;
 pub mod memory;
 pub mod orchestrator;

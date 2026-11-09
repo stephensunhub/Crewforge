@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 迁移列表：下标 + 1 即版本号。只能追加，不能修改已发布的迁移。
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10, MIGRATION_11, MIGRATION_12];
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10, MIGRATION_11, MIGRATION_12, crate::models::MIGRATION_13];
 
 /// 员工使用的执行引擎：claude（默认）或 copilot
 const MIGRATION_11: &str = "ALTER TABLE employees ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';";
@@ -285,6 +285,9 @@ impl Db {
     pub fn add_employee_with(&self, name: &str, role: &str, persona: &str, provider: &str) -> Result<Employee> {
         if !PROVIDERS.contains(&provider) {
             anyhow::bail!("未知的执行引擎：{provider}（可选：{}）", PROVIDERS.join("、"));
+        }
+        if !self.provider_enabled(provider)? {
+            anyhow::bail!("执行引擎 {provider} 已停用，请先到“模型”页激活");
         }
         let e = Employee {
             provider: provider.into(),
@@ -592,6 +595,9 @@ impl Db {
             anyhow::bail!("未知的执行引擎：{provider}（可选：{}）", PROVIDERS.join("、"));
         }
         let old = self.employee_by_id(id)?.ok_or_else(|| anyhow::anyhow!("员工不存在"))?;
+        if old.provider != provider && !self.provider_enabled(provider)? {
+            anyhow::bail!("执行引擎 {provider} 已停用，请先到“模型”页激活");
+        }
         let model = model.trim();
         if model.contains(char::is_whitespace) {
             anyhow::bail!("模型名不能包含空格");
@@ -753,7 +759,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.name, e.role, m.role FROM project_members m JOIN employees e ON e.id = m.employee_id
              WHERE m.project_id = ?1 AND e.archived = 0
-             ORDER BY CASE m.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at",
+             ORDER BY CASE m.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, e.name",
         )?;
         let rows = stmt.query_map([project_id], |r| {
             Ok(Member { employee_id: r.get(0)?, name: r.get(1)?, title: r.get(2)?, role: r.get(3)? })

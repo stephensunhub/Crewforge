@@ -267,8 +267,49 @@ async fn copilot_employee_runs_with_preset_permissions_and_metering_in_premium_r
     assert_eq!((rep.totals.turns, rep.totals.turns_with_cost, rep.totals.turns_with_tokens), (2, 0, 0));
     assert_eq!(rep.totals.premium_requests, 2.0);
     assert!(rep.by_model.iter().any(|g| g.label == "claude-sonnet-5.5（Copilot）" && g.totals.turns == 2));
+    assert!(rep.by_provider.iter().any(|g| g.key == "copilot" && g.label == "GitHub Copilot" && g.totals.turns == 2));
+    assert_eq!(e.db.cost_calls(None, &crewforge_core::cost::CallFilter { provider: Some("copilot".into()), ..Default::default() }, 10, 0).unwrap().total, 2);
+    assert_eq!(e.db.cost_calls(None, &crewforge_core::cost::CallFilter { provider: Some("claude".into()), ..Default::default() }, 10, 0).unwrap().total, 0);
     let calls = e.db.cost_calls(None, &Default::default(), 10, 0).unwrap();
     assert_eq!((calls.rows[0].provider.as_str(), calls.rows[0].premium_requests), ("copilot", Some(1.0)));
     let kinds: Vec<String> = e.db.recent_events(300).unwrap().into_iter().map(|x| x.kind).collect();
     assert!(kinds.contains(&"tool_use".into()) && !kinds.contains(&"approval_requested".into()));
+}
+
+#[tokio::test]
+async fn model_comes_from_employee_then_purpose_default_and_disabled_engine_is_refused() {
+    let mut e = setup().await;
+    let log = e.tools.join("args2.log");
+    e.orch.copilot_program = fake_copilot(&e.tools, &log);
+    let dave = e.db.add_employee_with("dave", "全栈", "p", "copilot").unwrap();
+    let model_args = |text: &str| -> Vec<String> {
+        let call = text.rsplit("=== call").next().unwrap();
+        let lines: Vec<&str> = call.lines().collect();
+        lines.iter().position(|l| *l == "--model").map(|i| vec![lines[i + 1].to_string()]).unwrap_or_default()
+    };
+
+    // 没设任何模型：不传 --model
+    e.orch.assign(&dave, &e.repo, "任务一", &MustNotAsk, &NoopObserver).await.unwrap();
+    assert!(model_args(&std::fs::read_to_string(&log).unwrap()).is_empty());
+
+    // 用途默认：开发任务用 grok-4.7
+    e.db.set_purpose_model("copilot", "task", "grok-4.7").unwrap();
+    e.orch.assign(&dave, &e.repo, "任务二", &MustNotAsk, &NoopObserver).await.unwrap();
+    assert_eq!(model_args(&std::fs::read_to_string(&log).unwrap()), vec!["grok-4.7"]);
+
+    // 员工自己指定的模型优先于用途默认
+    e.db.update_employee_full(&dave.id, "全栈", "p", "copilot", "claude-haiku-5.5").unwrap();
+    let dave = e.db.employee_by_name("dave").unwrap().unwrap();
+    e.orch.assign(&dave, &e.repo, "任务三", &MustNotAsk, &NoopObserver).await.unwrap();
+    assert_eq!(model_args(&std::fs::read_to_string(&log).unwrap()), vec!["claude-haiku-5.5"]);
+
+    // 引擎停用：不能新建、不能切换过去，已有员工执行时被拒绝并说明原因；重新激活后恢复
+    e.db.set_provider_enabled("copilot", false).unwrap();
+    assert!(e.db.add_employee_with("x", "r", "p", "copilot").is_err());
+    let before = std::fs::read_to_string(&log).unwrap();
+    let err = e.orch.assign(&dave, &e.repo, "任务四", &MustNotAsk, &NoopObserver).await.unwrap_err().to_string();
+    assert!(err.contains("已停用"), "{err}");
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), before, "没有启动进程");
+    e.db.set_provider_enabled("copilot", true).unwrap();
+    e.orch.assign(&dave, &e.repo, "任务五", &MustNotAsk, &NoopObserver).await.unwrap();
 }

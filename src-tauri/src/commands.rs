@@ -700,15 +700,126 @@ pub fn latest_task_check(state: State<'_, AppState>, task_id: String) -> CmdResu
 }
 
 
+// ================= 引擎与模型 =================
+#[derive(serde::Serialize)]
+pub struct ProviderStatus {
+    provider: String,
+    label: String,
+    enabled: bool,
+    /// 是否检测到可执行文件，以及版本
+    installed: bool,
+    version: String,
+    /// 实际使用的可执行文件路径（Copilot 可在设置里指定）
+    program: String,
+    employees: usize,
+}
+
+#[derive(serde::Serialize)]
+pub struct ModelsOverview {
+    providers: Vec<ProviderStatus>,
+    models: Vec<crewforge_core::models::ModelEntry>,
+    /// 用途 → (引擎 → 默认模型)；空字符串表示引擎默认
+    purposes: Vec<(String, String, std::collections::HashMap<String, String>)>,
+}
+
+fn copilot_program(state: &AppState) -> String {
+    state.db.get_setting("copilot_program").ok().flatten().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| "copilot".into())
+}
+
+async fn detect_version(program: &str) -> Option<String> {
+    let out = tokio::process::Command::new(program).arg("--version").output().await.ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string())
+}
+
+#[tauri::command]
+pub async fn models_overview(state: State<'_, AppState>) -> CmdResult<ModelsOverview> {
+    let emps = state.db.list_employees().map_err(err)?;
+    let mut providers = Vec::new();
+    for (p, label, program) in [("claude", "Claude Code", "claude".to_string()), ("copilot", "GitHub Copilot CLI", copilot_program(&state))] {
+        let version = detect_version(&program).await;
+        providers.push(ProviderStatus {
+            provider: p.into(), label: label.into(), enabled: state.db.provider_enabled(p).map_err(err)?,
+            installed: version.is_some(), version: version.unwrap_or_default(), program,
+            employees: emps.iter().filter(|e| e.provider == p).count(),
+        });
+    }
+    let mut purposes = Vec::new();
+    for (k, label) in crewforge_core::models::PURPOSES {
+        let mut m = std::collections::HashMap::new();
+        for p in ["claude", "copilot"] {
+            m.insert(p.to_string(), state.db.purpose_model(p, k).map_err(err)?);
+        }
+        purposes.push((k.to_string(), label.to_string(), m));
+    }
+    Ok(ModelsOverview { providers, models: state.db.list_models(None).map_err(err)?, purposes })
+}
+
+#[tauri::command]
+pub fn set_provider_enabled(state: State<'_, AppState>, provider: String, enabled: bool) -> CmdResult<()> {
+    state.db.set_provider_enabled(&provider, enabled).map_err(err)
+}
+
+#[tauri::command]
+pub fn add_model(state: State<'_, AppState>, provider: String, model_id: String, label: String) -> CmdResult<()> {
+    state.db.add_model(&provider, &model_id, &label).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_model_enabled(state: State<'_, AppState>, provider: String, model_id: String, enabled: bool) -> CmdResult<()> {
+    state.db.set_model_enabled(&provider, &model_id, enabled).map_err(err)
+}
+
+#[tauri::command]
+pub fn remove_model(state: State<'_, AppState>, provider: String, model_id: String) -> CmdResult<()> {
+    state.db.remove_model(&provider, &model_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_purpose_model(state: State<'_, AppState>, provider: String, purpose: String, model: String) -> CmdResult<()> {
+    state.db.set_purpose_model(&provider, &purpose, model.trim()).map_err(err)
+}
+
+/// 从 Copilot CLI 自己的说明里读出可用模型并并入清单。返回新增数量。
+#[tauri::command]
+pub async fn discover_copilot_models(state: State<'_, AppState>) -> CmdResult<usize> {
+    let program = copilot_program(&state);
+    let out = tokio::process::Command::new(&program).args(["help", "config"]).output().await.map_err(|e| format!("无法运行 {program}：{e}"))?;
+    let ids = crewforge_core::models::parse_copilot_models(&String::from_utf8_lossy(&out.stdout));
+    if ids.is_empty() {
+        return Err("没有从 Copilot CLI 的说明里读到模型清单（版本可能变了）。可以手动添加模型。".into());
+    }
+    state.db.merge_discovered_models("copilot", &ids).map_err(err)
+}
+
+/// 把 Copilot CLI 安装到应用自己的数据目录（不动系统全局），并记下路径。
+#[tauri::command]
+pub async fn install_copilot(state: State<'_, AppState>) -> CmdResult<String> {
+    let dir = crewforge_core::db::default_data_dir().join("tools");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let out = tokio::process::Command::new("npm").args(["install", "--prefix"]).arg(&dir).arg("@github/copilot").output().await
+        .map_err(|e| format!("无法运行 npm：{e}。请先安装 Node.js"))?;
+    if !out.status.success() {
+        return Err(format!("安装失败：{}", String::from_utf8_lossy(&out.stderr).chars().take(400).collect::<String>()));
+    }
+    let bin = dir.join("node_modules/.bin/copilot");
+    state.db.set_setting("copilot_program", &bin.to_string_lossy()).map_err(err)?;
+    detect_version(&bin.to_string_lossy()).await.ok_or_else(|| "已安装，但无法运行".to_string())
+}
+
+#[tauri::command]
+pub fn set_copilot_program(state: State<'_, AppState>, path: String) -> CmdResult<()> {
+    state.db.set_setting("copilot_program", path.trim()).map_err(err)
+}
+
 // ================= 成本与额度 =================
 /// 调用明细：每次模型调用一行，最新的在前，可过滤与分页。
 #[tauri::command]
 pub fn cost_calls(
     state: State<'_, AppState>, days: Option<i64>, employee_id: Option<String>, project_id: Option<String>,
-    purpose: Option<String>, only_errors: bool, limit: usize, offset: usize,
+    purpose: Option<String>, provider: Option<String>, only_errors: bool, limit: usize, offset: usize,
 ) -> CmdResult<CallPage> {
     let since = days.filter(|d| *d > 0).map(|d| crewforge_core::db::now_ms() - d * 86_400_000);
-    let f = CallFilter { employee_id, project_id, purpose, only_errors };
+    let f = CallFilter { employee_id, project_id, purpose, provider, only_errors };
     state.db.cost_calls(since, &f, limit.min(200), offset).map_err(err)
 }
 

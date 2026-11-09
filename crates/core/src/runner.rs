@@ -76,7 +76,11 @@ pub async fn run_turn<A: Approver, O: Observer>(
 
     let mut spec = ClaudeSpec::new(session.id.clone(), session.started, employee.persona.clone(), cfg.project_path.clone());
     spec.program = cfg.program.clone();
-    spec.model = Some(employee.model.clone()).filter(|m| !m.is_empty());
+    if !db.provider_enabled(&employee.provider)? {
+        bail!("执行引擎 {} 已停用，请到“模型”页重新激活，或把 {} 切换到别的引擎", employee.provider, employee.name);
+    }
+    // 模型：员工指定 > 该引擎在这个用途下的默认模型 > 引擎默认
+    spec.model = db.effective_model(&employee.provider, &employee.model, &cfg.purpose)?;
     if cfg.mcp.is_some() {
         spec.persona = format!("{}\n\n{}", spec.persona, crate::mcp::TEAM_TOOLS_HINT);
         spec.mcp = cfg.mcp.clone();

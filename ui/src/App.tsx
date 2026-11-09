@@ -3,6 +3,7 @@ import { api, subscribe } from "./api";
 import { COMPANY_TABS, CompanyView, type CompanyTab } from "./CompanyView";
 import { PROJECT_TABS, ProjectView, type ProjectTab } from "./ProjectView";
 import { SettingsView } from "./SettingsView";
+import { ModelsView } from "./ModelsView";
 import { CostView } from "./CostView";
 import { formatApprovalInput, hhmm, short } from "./common";
 import type { ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
@@ -10,7 +11,7 @@ import type { ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, Pro
 const MAX_EVENTS = 2000;
 const SCOPE_KEY = "crewforge.scope";
 
-type Scope = { kind: "company" } | { kind: "project"; id: string } | { kind: "cost" } | { kind: "settings" };
+type Scope = { kind: "company" } | { kind: "project"; id: string } | { kind: "cost" } | { kind: "models" } | { kind: "settings" };
 
 function loadScope(): Scope {
   try { const s = JSON.parse(localStorage.getItem(SCOPE_KEY) ?? ""); if (s?.kind) return s; } catch { /* 忽略 */ }
@@ -167,7 +168,8 @@ export default function App() {
           <button className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
             🔔{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length > 0 && <span className="count">{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length}</span>}
           </button>
-          <button className={`icon-btn text ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>成本</button>
+          <button className={`icon-btn text ${scope.kind === "models" ? "on" : ""}`} onClick={() => setScope({ kind: "models" })}>模型</button>
+          <button className={`icon-btn text ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>用量</button>
           <button className={`icon-btn ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })} title="设置">⚙</button>
         </div>
         {inbox && (
@@ -249,6 +251,7 @@ export default function App() {
             onLeave={() => setScope({ kind: "company" })} />
         )}
         {scope.kind === "cost" && <CostView events={events} onError={setError} />}
+        {scope.kind === "models" && <ModelsView onError={setError} />}
         {scope.kind === "settings" && <SettingsView sched={sched} onConcurrency={(n) => void changeConcurrency(n)} onAction={schedAction} />}
       </main>
     </div>

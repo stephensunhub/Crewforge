@@ -271,7 +271,7 @@ export interface CallRow {
 }
 export interface CallPage { total: number; rows: CallRow[] }
 export interface CostReport {
-  since: number | null; totals: Totals; by_employee: CostGroup[]; by_project: CostGroup[]; by_purpose: CostGroup[]; by_model: CostGroup[]; by_day: CostDay[]; by_hour: CostDay[]; latency: Latency;
+  since: number | null; totals: Totals; by_employee: CostGroup[]; by_project: CostGroup[]; by_purpose: CostGroup[]; by_model: CostGroup[]; by_provider: CostGroup[]; by_day: CostDay[]; by_hour: CostDay[]; latency: Latency;
   top_tasks: CostTask[]; efficiency: Efficiency; quota_now: QuotaNow | null; quota_series: QuotaPoint[];
 }
 
@@ -295,3 +295,7 @@ export interface PlanViewData {
   percent_done: number;
 }
 export interface PlanItemInput { title: string; description: string; acceptance: string; kind: string; module: string; assignee_id: string | null; deps: string[] }
+
+export interface ModelEntry { provider: string; model_id: string; label: string; note: string; enabled: boolean; builtin: boolean }
+export interface ProviderStatus { provider: string; label: string; enabled: boolean; installed: boolean; version: string; program: string; employees: number }
+export interface ModelsOverview { providers: ProviderStatus[]; models: ModelEntry[]; purposes: [string, string, Record<string, string>][] }
