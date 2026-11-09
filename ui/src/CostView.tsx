@@ -12,6 +12,7 @@ const RANGES: [string, number | null][] = [["今天", 1], ["近 7 天", 7], ["�
 const fmtNum = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(1)}k` : n.toLocaleString("zh-CN"));
 const fmtCost = (n: number) => `$${n < 1 ? n.toFixed(3) : n.toFixed(2)}`;
 const pct = (n: number | null) => (n == null ? "未知" : `${(n * 100).toFixed(0)}%`);
+const compactSecs = (ms: number) => (ms >= 60_000 ? `${(ms / 60_000).toFixed(1)}分` : `${(ms / 1000).toFixed(0)}秒`);
 const secs = (ms: number) => (ms >= 60_000 ? `${(ms / 60_000).toFixed(1)} 分钟` : `${(ms / 1000).toFixed(1)} 秒`);
 
 function resetText(at: number | null): string {
@@ -228,7 +229,7 @@ export function CostView({ events, onError }: { events: EventRow[]; onError: (m:
                 <div className="stat"><span>处理的上下文 token</span><b>{t.turns_with_tokens === 0 ? "未知" : fmtNum(ctx)}</b><i>含缓存读写</i></div>
                 <div className="stat"><span>输出 token</span><b>{t.turns_with_tokens === 0 ? "未知" : fmtNum(t.output_tokens)}</b></div>
                 {t.premium_requests > 0 && <div className="stat"><span>Copilot 高级请求</span><b>{t.premium_requests}</b><i>Copilot 按请求数计量，没有 token 和费用数据</i></div>}
-                <div className="stat"><span>耗时（中位 / P95）</span><b>{r.latency.p50_ms == null ? "未知" : `${secs(r.latency.p50_ms)} / ${secs(r.latency.p95_ms ?? 0)}`}</b>
+                <div className="stat"><span>耗时（中位 / P95）</span><b>{r.latency.p50_ms == null ? "未知" : `${compactSecs(r.latency.p50_ms)} / ${compactSecs(r.latency.p95_ms ?? 0)}`}</b>
                   {r.latency.avg_ttft_ms != null && <i>首字平均 {secs(r.latency.avg_ttft_ms)}（{r.latency.ttft_samples} 次）</i>}</div>
               </div>
               <section className="panel-box">

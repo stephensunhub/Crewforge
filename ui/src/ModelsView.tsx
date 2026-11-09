@@ -97,7 +97,7 @@ function ProviderPanel({ p, models, busy, path, setPath, newId, setNewId, newLab
     <>
       <div className="page-head">
         <div><h2>{p.label}</h2><div className="hint">{PROVIDER_HINT[p.provider]}</div></div>
-        <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap", flex: "none" }}>
           <input type="checkbox" checked={p.enabled} onChange={(e) => void act("enable", () => api.setProviderEnabled(p.provider, e.target.checked))} /> 激活
         </label>
       </div>

@@ -333,3 +333,22 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .badge.ps-blocked { color: var(--bad); border-color: var(--bad); }
 .badge.ps-proposed { color: var(--warn); border-color: var(--warn); }
 .row-bad td { background: color-mix(in srgb, var(--bad) 8%, transparent); } .cost-table .bad, span.bad { color: var(--bad); }
+
+/* ===== 左侧导航布局 ===== */
+.app { flex-direction: row; }
+.sidenav { position: relative; width: 224px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-right: 1px solid var(--line); }
+.sidenav .brand { padding: 14px 16px 10px; }
+.nav-scroll { flex: 1; min-height: 0; overflow: auto; padding: 4px 8px; }
+.nav-group-title { font-size: 11px; color: var(--muted); padding: 12px 10px 4px; letter-spacing: .5px; }
+.nav-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 10px; border-radius: 8px; border: 1px solid transparent; background: none; color: var(--muted); }
+.nav-item:hover { color: var(--text); background: var(--panel-2); }
+.nav-item.on { color: var(--text); font-weight: 600; background: color-mix(in srgb, var(--accent) 16%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.nav-sub { display: grid; gap: 1px; margin: 3px 0 8px 16px; padding-left: 8px; border-left: 1px solid var(--line); }
+.nav-sub button { text-align: left; background: none; border: none; border-radius: 6px; padding: 5px 10px; color: var(--muted); font-size: 13px; }
+.nav-sub button:hover { color: var(--text); background: var(--panel-2); }
+.nav-sub button.on { color: var(--text); font-weight: 600; background: var(--panel-2); }
+.nav-bottom { border-top: 1px solid var(--line); padding: 8px; display: grid; gap: 4px; }
+.nav-bottom .quota { padding: 4px 10px 6px; gap: 10px; }
+.nav-bottom .sched-chip { flex-wrap: wrap; border-radius: 10px; padding: 6px 8px; }
+.shell-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.sidenav .inbox { left: calc(100% + 8px); right: auto; top: auto; bottom: 8px; }
