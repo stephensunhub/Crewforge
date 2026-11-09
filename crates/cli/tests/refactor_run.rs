@@ -115,8 +115,14 @@ impl Ctl {
     }
 
     /// 验证一个进行中的任务：有基线就和基线对比（引入新失败或无法确认都算不通过），否则直接构建测试。
+    /// 任务是否已经被合并（可能是人在界面里点了合并）：这种情况视为成功，不再检查或重复合并。
+    fn is_merged(&self, task_id: &str) -> bool {
+        self.db.get_task(task_id).ok().flatten().map(|t| t.status == "merged").unwrap_or(false)
+    }
+
     /// 与基线对比：对照命令只在“当前条目已经负责”的范围内要求通过（后面的条目还没实现对应的子命令）。
     async fn verify(&self, task: &Task) -> (bool, String) {
+        if self.is_merged(&task.id) { return (true, "任务已被合并（外部操作）".into()); }
         let title = self.db.plan_view(&self.pid).unwrap().items.into_iter().find(|i| i.task_id.as_deref() == Some(task.id.as_str())).map(|i| i.title).unwrap_or_default();
         let in_scope = |label: &str| SCOPES.iter().find(|(t, _)| *t == title).map(|(_, ls)| ls.iter().any(|l| format!("对照:{l}") == label)).unwrap_or(true);
         let rep = match self.orch.check_task(&task.id, Duration::from_secs(900)).await { Ok(r) => r, Err(e) => return (false, format!("检查失败：{e}")) };
@@ -176,7 +182,7 @@ impl Ctl {
             dispatches += 1;
             verdict = self.verify(&task).await;
         }
-        if !verdict.0 {
+        if !verdict.0 && !self.is_merged(&task.id) {
             self.db.set_plan_status(&item_id, "blocked", &format!("验证仍未通过：{}", clip(&verdict.1, 300)))?;
             anyhow::bail!("《{}》验证仍未通过", item.title);
         }
@@ -235,6 +241,7 @@ impl Ctl {
 
         // 合并（串行），冲突交给负责人解决
         for attempt in 0..3 {
+            if self.is_merged(&task.id) { self.say(format!("  🔀《{}》已被合并（外部操作），不再重复合并", item.title)); return Ok(()); }
             let outcome = { let _g = self.merge_lock.lock().await; self.orch.merge_task(&task.id).await? };
             match outcome {
                 MergeOutcome::Merged { commit } => { self.say(format!("  🔀 已合并《{}》 {}", item.title, &commit[..8])); return Ok(()); }
@@ -310,7 +317,7 @@ async fn refactor_python_to_rust_with_a_real_team() {
     let mut orch = Orchestrator::new(db.clone(), ws.clone());
     orch.mcp_exe = Some(std::env::var("SNAKE_MCP_EXE").map(PathBuf::from).unwrap_or_else(|_| env!("CARGO_BIN_EXE_crewforge").into()));
     let sched = Scheduler::new(db.clone(), 2);
-    let report_path = dir.parent().unwrap().join("refactor-REPORT.md");
+    let report_path = dir.parent().unwrap().join(format!("refactor-REPORT-{}.md", dir.file_name().unwrap().to_string_lossy()));
 
     ws.ensure_ready(&dir, true).await.unwrap();
     let repo = ws.repo_info(&dir).await.unwrap().root;
