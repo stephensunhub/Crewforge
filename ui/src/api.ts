@@ -58,6 +58,8 @@ export const api = {
   draftMinutes: (meetingId: string) => invoke<void>("draft_minutes", { meetingId }),
   saveMinutes: (id: string, minutes: string) => invoke<void>("save_minutes", { id, minutes }),
   closeMeeting: (id: string) => invoke<void>("close_meeting", { id }),
+  inviteGuest: (meetingId: string, name: string, brief: string, hours?: number) => invoke<void>("invite_guest", { meetingId, name, brief, hours: hours ?? null }),
+  endGuest: (meetingId: string, employeeId: string) => invoke<void>("end_guest", { meetingId, employeeId }),
   // 记忆
   memories: (f: { layer?: string; projectId?: string; employeeId?: string; status?: string; query?: string }) =>
     invoke<Memory[]>("list_memories", { layer: f.layer ?? null, projectId: f.projectId ?? null, employeeId: f.employeeId ?? null, status: f.status ?? null, query: f.query ?? null }),

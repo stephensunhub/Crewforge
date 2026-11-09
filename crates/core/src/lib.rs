@@ -4,6 +4,7 @@ pub mod actions;
 pub mod board;
 pub mod cost;
 pub mod db;
+pub mod guest;
 pub mod mcp;
 pub mod meeting;
 pub mod onboarding;

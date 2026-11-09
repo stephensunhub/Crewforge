@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 迁移列表：下标 + 1 即版本号。只能追加，不能修改已发布的迁移。
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9];
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10];
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE employees (
@@ -310,7 +310,7 @@ impl Db {
 
     pub fn list_employees(&self) -> Result<Vec<Employee>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, role, persona, archived FROM employees WHERE archived = 0 ORDER BY created_at")?;
+        let mut stmt = conn.prepare("SELECT id, name, role, persona, archived FROM employees WHERE archived = 0 AND role != 'guest' ORDER BY created_at")?;
         let rows = stmt.query_map([], row_to_employee)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }

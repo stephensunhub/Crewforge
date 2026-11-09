@@ -206,3 +206,53 @@ async fn task_views_surface_linked_reviews_and_their_action_items() {
     e.db.create_meeting(&e.project_id, "design", "无关", None, None, &[], 5).unwrap();
     assert_eq!(e.orch.task_views(&e.repo).await.unwrap().remove(0).reviews.len(), 1);
 }
+
+#[tokio::test]
+async fn guest_gets_minimal_context_is_read_only_and_leaves_with_the_meeting() {
+    let mut e = setup().await;
+    let alice = e.db.add_employee("alice", "全栈", "p").unwrap();
+    e.db.add_member(&e.project_id, &alice.id, "lead").unwrap();
+    e.db.update_company("公司", "", "内部规范：所有函数必须有中文注释").unwrap();
+    let issue = e.db.create_issue(&e.project_id, "要不要换数据库", "SQLite 还是 Postgres", "technical", false, None, None, None).unwrap();
+    let m = e.db.create_meeting(&e.project_id, "design", "选型讨论", None, None, &[issue.id.clone()], 12).unwrap();
+    let victim = e.repo.join("hacked.txt");
+    let (cli, prompt_file, resp_file) = meeting_cli(&e.tools, "cli", "建议先用 SQLite", &victim);
+    e.orch.program = cli;
+
+    // 校验：名字、目的、重名
+    assert!(e.orch.invite_guest(&m.id, "a b", "问个问题", None, "human").is_err());
+    assert!(e.orch.invite_guest(&m.id, "顾问甲", "  ", None, "human").is_err());
+    assert!(e.orch.invite_guest(&m.id, "alice", "问个问题", None, "human").unwrap_err().to_string().contains("已经有"));
+
+    let g = e.orch.invite_guest(&m.id, "@顾问甲", "请独立判断 SQLite 是否够用，团队有点拿不准", Some(2), "human").unwrap();
+    assert_eq!(g.name, "顾问甲");
+    // 不进公司花名册，也不是项目成员
+    assert!(!e.db.list_employees().unwrap().iter().any(|x| x.id == g.id));
+    assert!(!e.db.is_member(&e.project_id, &g.id).unwrap());
+    assert!(e.db.meeting_messages(&m.id, 0).unwrap().iter().any(|x| x.author_kind == "system" && x.content.contains("外部顾问")));
+
+    e.db.post_message(&m.id, "human", None, "@顾问甲 你怎么看？").unwrap();
+    let reply = e.orch.meeting_reply(&m.id, &g, &MustNotAsk).await.unwrap();
+    assert_eq!(reply, "建议先用 SQLite");
+    // 只读：写入被拒绝
+    assert!(std::fs::read_to_string(&resp_file).unwrap().contains("deny"));
+    assert!(!victim.exists());
+    // 最小上下文：有目的、议题和讨论；没有公司规范
+    let p = std::fs::read_to_string(&prompt_file).unwrap();
+    for needle in ["外部顾问", "SQLite 是否够用", "要不要换数据库", "你怎么看？"] {
+        assert!(p.contains(needle), "缺少 {needle}");
+    }
+    assert!(!p.contains("内部规范"), "顾问不应看到公司规范");
+    // 没有团队协作工具
+    assert!(!p.contains("propose_"));
+
+    // 会议结束后顾问离场，不能再被唤醒
+    e.db.close_meeting(&m.id).unwrap();
+    let guests = e.db.meeting_guests(&m.id).unwrap();
+    assert_eq!(guests.len(), 1);
+    assert!(!guests[0].active);
+    let m2 = e.db.create_meeting(&e.project_id, "design", "另一场", None, None, &[], 12).unwrap();
+    e.db.post_message(&m2.id, "human", None, "@顾问甲 再来").unwrap();
+    assert!(e.orch.meeting_reply(&m2.id, &g, &MustNotAsk).await.unwrap_err().to_string().contains("不是本项目成员"), "顾问只属于邀请他的那场会议");
+    assert!(e.orch.invite_guest(&m.id, "顾问乙", "x", None, "human").unwrap_err().to_string().contains("已结束"));
+}

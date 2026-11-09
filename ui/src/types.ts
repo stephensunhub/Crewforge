@@ -185,7 +185,9 @@ export interface MeetingDetail {
   messages: MeetingMessage[];
   issue_ids: string[];
   agent_replies: number;
+  guests: Guest[];
 }
+export interface Guest { employee_id: string; name: string; brief: string; invited_by: string; created_at: number; expires_at: number; active: boolean }
 
 export type MemoryLayer = "company" | "project" | "employee" | "task";
 export type MemoryKind = "lesson" | "decision" | "fact" | "convention" | "pitfall";

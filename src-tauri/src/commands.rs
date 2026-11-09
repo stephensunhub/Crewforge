@@ -389,6 +389,7 @@ pub struct MeetingDetail {
     messages: Vec<MeetingMessage>,
     issue_ids: Vec<String>,
     agent_replies: i64,
+    guests: Vec<crewforge_core::guest::Guest>,
 }
 
 #[tauri::command]
@@ -403,6 +404,7 @@ pub fn meeting_detail(state: State<'_, AppState>, id: String) -> CmdResult<Meeti
         messages: state.db.meeting_messages(&id, 0).map_err(err)?,
         issue_ids: state.db.meeting_issue_ids(&id).map_err(err)?,
         agent_replies: state.db.agent_reply_count(&id).map_err(err)?,
+        guests: state.db.meeting_guests(&id).map_err(err)?,
         meeting,
     })
 }
@@ -430,6 +432,19 @@ pub fn close_meeting(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     state.db.close_meeting(&id).map_err(err)
 }
 
+/// 邀请外部临时 AI（顾问）加入会议。用户直接邀请视为已批准。
+#[tauri::command]
+pub fn invite_guest(state: State<'_, AppState>, meeting_id: String, name: String, brief: String, hours: Option<i64>) -> CmdResult<()> {
+    state.orch.invite_guest(&meeting_id, &name, &brief, hours, "human").map(|_| ()).map_err(err)
+}
+
+/// 让顾问提前离场。
+#[tauri::command]
+pub fn end_guest(state: State<'_, AppState>, meeting_id: String, employee_id: String) -> CmdResult<()> {
+    state.db.end_guest(&meeting_id, &employee_id).map_err(err)?;
+    state.db.post_message(&meeting_id, "system", None, "顾问已离场。").map(|_| ()).map_err(err)
+}
+
 /// 人类在会议里发言。发言本身只是记录；只有被 @ 的成员才会被唤醒（各自并行、受并发上限约束）。
 #[tauri::command]
 pub fn post_meeting_message(app: AppHandle, state: State<'_, AppState>, meeting_id: String, content: String) -> CmdResult<Vec<String>> {
@@ -439,14 +454,13 @@ pub fn post_meeting_message(app: AppHandle, state: State<'_, AppState>, meeting_
 fn post_and_wake(app: &AppHandle, state: &AppState, meeting_id: &str, content: &str) -> CmdResult<Vec<String>> {
     let meeting = state.db.get_meeting(meeting_id).map_err(err)?.ok_or("会议不存在")?;
     state.db.post_message(meeting_id, "human", None, content).map_err(err)?;
-    let members = state.db.list_members(&meeting.project_id).map_err(err)?;
+    let mut names: Vec<String> = state.db.list_members(&meeting.project_id).map_err(err)?.into_iter().map(|m| m.name).collect();
+    names.extend(state.db.meeting_guests(meeting_id).map_err(err)?.into_iter().filter(|g| g.active).map(|g| g.name));
     let mut woken = Vec::new();
     for cap in content.split('@').skip(1) {
         let name: String = cap.chars().take_while(|c| !c.is_whitespace() && *c != '@').collect();
-        if let Some(m) = members.iter().find(|m| m.name == name) {
-            if !woken.contains(&m.name) {
-                woken.push(m.name.clone());
-            }
+        if names.contains(&name) && !woken.contains(&name) {
+            woken.push(name);
         }
     }
     for name in &woken {

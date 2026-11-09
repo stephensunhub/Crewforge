@@ -121,6 +121,9 @@ function MeetingRoom({ id, members, issues, tasks, events, running, onChanged, o
   const [dirty, setDirty] = useState(false);
   const [waiting, setWaiting] = useState<string[]>([]);
   const [lessonNote, setLessonNote] = useState("");
+  const [inviting, setInviting] = useState(false);
+  const [gName, setGName] = useState("");
+  const [gBrief, setGBrief] = useState("");
   const feed = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
 
@@ -139,9 +142,10 @@ function MeetingRoom({ id, members, issues, tasks, events, running, onChanged, o
 
   if (!d) return <div className="hint" style={{ padding: 20 }}>加载中…</div>;
   const m = d.meeting;
-  const nameOf = (eid: string | null) => members.find((x) => x.employee_id === eid)?.name ?? "未知";
+  const nameOf = (eid: string | null) => members.find((x) => x.employee_id === eid)?.name ?? d.guests.find((g) => g.employee_id === eid)?.name ?? "未知";
+  const activeGuests = d.guests.filter((g) => g.active);
   const open = m.status === "open";
-  const names = members.map((x) => x.name);
+  const names = [...members.map((x) => x.name), ...activeGuests.map((g) => g.name)];
   const mention = /@([^\s@]*)$/.exec(text);
   const sugg = mention ? names.filter((n) => n.toLowerCase().startsWith(mention[1].toLowerCase())).slice(0, 8) : names.slice(0, 8);
   const complete = (n: string) => setText((t) => (mention ? t.replace(/@([^\s@]*)$/, `@${n} `) : `${t}${t && !t.endsWith(" ") ? " " : ""}@${n} `));
@@ -162,10 +166,14 @@ function MeetingRoom({ id, members, issues, tasks, events, running, onChanged, o
           <b>{m.title}</b>
           <div className="hint">{MEETING_KIND_LABEL[m.kind]} · {open ? "进行中" : "已结束"} · AI 发言 {d.agent_replies}/{m.max_agent_replies}
             {m.host_id ? ` · 主持：${nameOf(m.host_id)}` : " · 主持：人类"}</div>
+          {d.guests.length > 0 && <div className="card-meta" style={{ marginTop: 4 }}>{d.guests.map((g) => (
+            <span key={g.employee_id} className="chip static" title={`邀请目的：${g.brief}`}>外部顾问：{g.name}{g.active ? ` · ${hhmm(g.expires_at)} 前有效` : "（已离场）"}
+              {open && g.active && <button className="link" style={{ marginLeft: 6 }} onClick={async () => { try { await api.endGuest(id, g.employee_id); await load(); } catch (e) { onError(String(e)); } }}>请离场</button>}</span>))}</div>}
           {linked.length > 0 && <div className="card-meta" style={{ marginTop: 4 }}>{linked.map((i) => <span key={i.issue.id} className="chip static">议题：{i.issue.title}（{ISSUE_STATUS_LABEL[i.issue.status]}）</span>)}</div>}
         </div>
         {open && (
           <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn" title="引入一个没有项目偏见的外部 AI，只读、只看本会议的议题和讨论，会议结束后离场" onClick={() => setInviting(true)}>邀请外部顾问</button>
             <button className="btn" onClick={async () => {
               if (d.messages.length === 0) { onError("会议里还没有发言"); return; }
               try { await api.draftMinutes(id); setDirty(false); setWaiting([]); } catch (e) { onError(String(e)); }
@@ -190,6 +198,20 @@ function MeetingRoom({ id, members, issues, tasks, events, running, onChanged, o
         })}
         {waiting.filter((n) => running.includes(n)).map((n) => <div className="line" key={n} style={{ paddingLeft: 0 }}><span>● {n} 正在回复…</span></div>)}
       </div>
+
+      {inviting && (
+        <div className="minutes">
+          <div className="minutes-head"><b>邀请外部顾问</b><span className="hint">全新会话、只读、不带公司规范和记忆，只看到下面的目的、本会议的议题与讨论；无权拍板。你直接邀请，无需另外批准。</span></div>
+          <div className="row" style={{ gap: 8 }}>
+            <input style={{ width: 140 }} value={gName} placeholder="名字，如 顾问甲" onChange={(e) => setGName(e.target.value)} />
+            <input style={{ flex: 1 }} value={gBrief} placeholder="请他回答什么？例如：独立判断 SQLite 是否够用" onChange={(e) => setGBrief(e.target.value)} />
+            <button className="btn primary" disabled={!gName.trim() || !gBrief.trim()} onClick={async () => {
+              try { await api.inviteGuest(id, gName.trim(), gBrief.trim()); setInviting(false); setGName(""); setGBrief(""); await load(); } catch (e) { onError(String(e)); }
+            }}>邀请</button>
+            <button className="btn" onClick={() => setInviting(false)}>取消</button>
+          </div>
+        </div>
+      )}
 
       <ActionPanel meeting={m} members={members} tasks={tasks} events={events} minutesKey={d.meeting.minutes} onError={onError} onChanged={onChanged} />
 

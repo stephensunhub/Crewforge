@@ -64,7 +64,7 @@ impl Orchestrator {
         id.and_then(|i| self.db.employee_by_id(i).ok().flatten()).map(|e| e.name).unwrap_or_else(|| "未知".into())
     }
 
-    fn issues_block(&self, meeting: &Meeting, detailed: bool) -> Result<String> {
+    pub(crate) fn issues_block(&self, meeting: &Meeting, detailed: bool) -> Result<String> {
         let mut out = String::new();
         for iid in self.db.meeting_issue_ids(&meeting.id)? {
             let Some(i) = self.db.get_issue(&iid)? else { continue };
@@ -90,6 +90,11 @@ impl Orchestrator {
         let new_msgs = self.db.meeting_messages(&meeting.id, last_seen.unwrap_or(0))?;
         let transcript = format_messages(&new_msgs, &|id| self.name_of(id), MAX_CONTEXT_CHARS);
 
+        if let Some(g) = self.db.guest_of_meeting(&meeting.id, &employee.id)? {
+            if g.active {
+                return self.guest_prompt(meeting, employee, first, &transcript);
+            }
+        }
         let mut p = String::new();
         if first {
             let role = self.db.list_members(&project.id)?.into_iter().find(|m| m.employee_id == employee.id).map(|m| m.role).unwrap_or_default();
@@ -164,8 +169,12 @@ impl Orchestrator {
         if meeting.status != "open" {
             bail!("会议已结束");
         }
-        if !self.db.is_member(&meeting.project_id, &employee.id)? {
-            bail!("{} 不是本项目成员，不能参会", employee.name);
+        let guest = self.db.guest_of_meeting(meeting_id, &employee.id)?;
+        match &guest {
+            Some(g) if !g.active => bail!("顾问 {} 已离场或已到期", employee.name),
+            Some(_) => {}
+            None if !self.db.is_member(&meeting.project_id, &employee.id)? => bail!("{} 不是本项目成员，不能参会", employee.name),
+            None => {}
         }
         if self.db.agent_reply_count(meeting_id)? >= meeting.max_agent_replies {
             bail!("本场会议的 AI 发言已达上限（{}）。请由负责人或你来裁决，或结束会议", meeting.max_agent_replies);
@@ -179,7 +188,7 @@ impl Orchestrator {
             task_id: None,
             project_id: None, // 不进入项目群聊的事件流，会议内容只在会议里显示
             read_only: true,
-            mcp: self.mcp_launch(&employee.id, &meeting.project_id, &format!("meeting:{meeting_id}")),
+            mcp: if guest.is_some() { None } else { self.mcp_launch(&employee.id, &meeting.project_id, &format!("meeting:{meeting_id}")) },
             purpose: "meeting".into(),
             attr_project: Some(meeting.project_id.clone()),
             meeting_id: Some(meeting_id.into()),

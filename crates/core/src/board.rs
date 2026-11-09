@@ -591,7 +591,8 @@ impl Db {
         }
         self.conn.lock().unwrap().execute(
             "UPDATE meetings SET status = 'closed', closed_at = ?2 WHERE id = ?1", params![meeting_id, now_ms()])?;
-        self.append_event_for(Some(&m.project_id), "meeting_closed", None, None, &json!({"meeting_id": meeting_id, "title": m.title}))?;
+        let left = self.end_meeting_guests(meeting_id)?;
+        self.append_event_for(Some(&m.project_id), "meeting_closed", None, None, &json!({"meeting_id": meeting_id, "title": m.title, "guests_left": left}))?;
         Ok(())
     }
 }
