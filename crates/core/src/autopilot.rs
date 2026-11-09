@@ -9,6 +9,7 @@
 //! 说明：流程由规则驱动，AI 负责人用在会议主持、纪要和站会；让 AI 负责人用模型自己做每一步判断是下一步。
 
 use crate::db::{Db, Employee, Task, now_ms};
+use crate::lead_actions::ActionOutcome;
 use crate::onboarding::baseline::{CommandResult, Origin, run_commands};
 use crate::onboarding::scan::scan_dir;
 use crate::orchestrator::Orchestrator;
@@ -526,6 +527,27 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         }
     }
 
+    /// 标给人的行动项：负责人先处理一遍（能定的定、不必做的驳回、必须是人的才留下并写明原因）。每轮最多 3 条。
+    async fn handle_human_actions(&self, tried: &mut HashSet<String>) {
+        let Some(lead) = self.lead() else { return };
+        let ids = self.orch.human_actions_for_lead(&self.project_id).unwrap_or_default();
+        let mut n = 0;
+        for id in ids {
+            if n >= 3 || self.soft_budget() || self.over_budget().is_some() || self.ctl.pause.load(Ordering::SeqCst) || self.ctl.stop.load(Ordering::SeqCst) { break; }
+            if tried.contains(&id) { continue; }
+            tried.insert(id.clone());
+            n += 1;
+            let _p = self.permit().await;
+            match self.orch.lead_handle_action(&id, &lead, &*self.approver).await {
+                Ok(Some(ActionOutcome::Decided { decision, follow_ups })) => self.say("autopilot_decided", format!("{} 处理了一项标给人的事项：{}{}", lead.name, clip(&decision, 120), if follow_ups.is_empty() { String::new() } else { format!("（追加了计划条目：{}）", follow_ups.join("、")) })),
+                Ok(Some(ActionOutcome::Dismissed { reason })) => self.say("autopilot_decided", format!("{} 判断一项标给人的事项不必做：{}", lead.name, clip(&reason, 120))),
+                Ok(Some(ActionOutcome::Escalated { reason })) => self.say("autopilot_step", format!("{} 把一项事项留给你，原因：{}", lead.name, clip(&reason, 160))),
+                Ok(None) => {}
+                Err(e) => self.say("autopilot_step", format!("处理标给人的事项没有完成：{e}")),
+            }
+        }
+    }
+
     fn lead(&self) -> Option<Employee> {
         self.members().into_iter().find(|(_, r)| r == "lead").map(|(e, _)| e)
     }
@@ -619,6 +641,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();
         let mut ruled: HashSet<String> = HashSet::new();
+        let mut handled_human: HashSet<String> = HashSet::new();
         let mut final_review_done = false;
         let mut replans = 0usize;
         let mut escalation: Option<String> = None;
@@ -657,6 +680,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             // 暂停、预算用尽或有事等人时，不再派新活，只等手上的做完
             if !(paused || budget.is_some() || human.is_some()) && !(self.no_room_for_another_item().is_some()) {
                 self.rule_issues(&mut ruled).await;
+                self.handle_human_actions(&mut handled_human).await;
                 let busy: HashSet<String> = running.iter().filter_map(|rid| self.db().get_plan_item(rid).ok().flatten().and_then(|i| i.task_id).and_then(|t| self.db().get_task(&t).ok().flatten()).map(|t| t.employee_id)).collect();
                 let mut busy = busy;
                 let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id)).cloned().collect();

@@ -78,6 +78,8 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
 
 export function DutiesPanel({ projectId, projectName, events, onGoTab, onOpenMeeting, onError }: { projectId: string; projectName: string; events: EventRow[]; onGoTab: (t: ProjectTab) => void; onOpenMeeting: (id: string) => void; onError: (m: string) => void }) {
   const [d, setD] = useState<Duties | null>(null);
+  const [handling, setHandling] = useState(false);
+  const [handled, setHandled] = useState<string[]>([]);
   const load = useCallback(async () => { try { setD(await api.myDuties(projectId)); } catch { /* 忽略 */ } }, [projectId]);
   const last = useMemo(() => events.reduce((m, e) => (/^(plan_|issue_|action_|memory_|task_|meeting_|agent_proposed)/.test(e.kind) ? Math.max(m, e.id) : m), 0), [events]);
   useEffect(() => { void load(); }, [load, last]);
@@ -92,7 +94,13 @@ export function DutiesPanel({ projectId, projectName, events, onGoTab, onOpenMee
       <AutopilotBox projectId={projectId} events={events} onGoTab={onGoTab} onError={onError} />
 
       <section className="panel-box">
-        <h4 className="group-title">现在在等你 {d && <span className="u-count">{d.items.length}</span>}</h4>
+        <h4 className="group-title">现在在等你 {d && <span className="u-count">{d.items.length}</span>}
+          {d && d.items.some((i) => i.kind === "action") && (
+            <button className="btn" style={{ marginLeft: 12 }} disabled={handling} title="这些事项被标成“人类处理”，但多数不需要你拍板。让负责人先看一遍：能定的定、不必做的驳回，只有需求变更、高风险、架构取舍才留给你。"
+              onClick={async () => { setHandling(true); setHandled([]); try { setHandled(await api.leadHandleActions(projectId)); await load(); } catch (e) { onError(String(e)); } finally { setHandling(false); } }}>
+              {handling ? "负责人处理中…" : "让负责人先处理"}</button>
+          )}</h4>
+        {handled.length > 0 && <div className="note ok" style={{ whiteSpace: "pre-wrap" }}>{handled.map((h) => `• ${h}`).join("\n")}</div>}
         {!d ? <div className="hint">加载中…</div> : d.items.length === 0 ? (
           <div className="hint" style={{ padding: "6px 0" }}>现在没有需要你处理的事，员工可以自己推进。有事会出现在这里，也会出现在左上角的“待你处理”里。</div>
         ) : (

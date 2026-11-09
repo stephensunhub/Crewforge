@@ -797,6 +797,31 @@ pub async fn lead_curate_memory(app: AppHandle, state: State<'_, AppState>, proj
     res.map_err(err)
 }
 
+// ================= 负责人处理标给人的行动项 =================
+/// 让负责人处理这个项目里所有标给人、还没处理的行动项：能定的定，不必做的驳回，必须是人的才留下并写明原因。返回每条的结果说明。
+#[tauri::command]
+pub async fn lead_handle_actions(app: AppHandle, state: State<'_, AppState>, project_id: String) -> CmdResult<Vec<String>> {
+    let lead = lead_of(&state, &project_id)?;
+    if !state.busy.lock().unwrap().insert(format!("actions:{project_id}")) { return Err("负责人正在处理，请稍等".into()); }
+    let approver = UiApprover { app, pending: state.pending.clone(), project_id: Some(project_id.clone()) };
+    let res = async {
+        let mut out = Vec::new();
+        for id in state.orch.human_actions_for_lead(&project_id)?.into_iter().take(5) {
+            let _permit = state.sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
+            use crewforge_core::lead_actions::ActionOutcome as O;
+            match state.orch.lead_handle_action(&id, &lead, &approver).await? {
+                Some(O::Decided { decision, follow_ups }) => out.push(format!("决定：{decision}{}", if follow_ups.is_empty() { String::new() } else { format!("（追加了计划条目：{}）", follow_ups.join("、")) })),
+                Some(O::Dismissed { reason }) => out.push(format!("驳回（不必做）：{reason}")),
+                Some(O::Escalated { reason }) => out.push(format!("留给你：{reason}")),
+                None => {}
+            }
+        }
+        anyhow::Ok(out)
+    }.await;
+    state.busy.lock().unwrap().remove(&format!("actions:{project_id}"));
+    res.map_err(err)
+}
+
 // ================= 负责人起草计划 =================
 /// 让项目的 AI 负责人根据项目目标、扫描、基线、评估和现有计划起草一份计划；条目进入“提议中”，等你确认。
 #[tauri::command]

@@ -22,6 +22,7 @@ export const api = {
   createProject: (name: string, description: string, path: string, initGit: boolean, importExisting: boolean) =>
     invoke<Project>("create_project", { name, description, path, initGit, importExisting }),
   updateProject: (id: string, name: string, description: string) => invoke<void>("update_project", { id, name, description }),
+  leadHandleActions: (projectId: string) => invoke<string[]>("lead_handle_actions", { projectId }),
   endProject: (id: string, kind: "completed" | "archived", reason: string) => invoke<void>("end_project", { id, kind, reason }),
   discardProject: (id: string, confirmName: string, deleteFolder: boolean) => invoke<DiscardReport>("discard_project", { id, confirmName, deleteFolder }),
   endedProjects: () => invoke<EndedProject[]>("list_ended_projects"),

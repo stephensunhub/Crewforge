@@ -202,6 +202,12 @@ impl Db {
         Ok(())
     }
 
+    /// 只写备注（比如负责人说明为什么留给人），不改状态。
+    pub fn set_action_note(&self, id: &str, note: &str) -> Result<()> {
+        self.conn.lock().unwrap().execute("UPDATE action_items SET note = ?2 WHERE id = ?1", params![id, note.trim()])?;
+        Ok(())
+    }
+
     /// 行动项被派给员工、并开始在某个任务里处理。
     pub fn mark_action_working(&self, id: &str, task_id: &str) -> Result<()> {
         self.conn.lock().unwrap().execute(

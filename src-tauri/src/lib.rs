@@ -70,6 +70,7 @@ pub fn run() {
             commands::read_doc,
             commands::lead_update_docs,
             commands::lead_curate_memory,
+            commands::lead_handle_actions,
             commands::lead_draft_plan,
             commands::start_autopilot,
             commands::pause_autopilot,

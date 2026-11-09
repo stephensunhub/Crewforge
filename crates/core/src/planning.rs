@@ -153,7 +153,7 @@ pub enum AdjustTrigger {
     FinalReview,
 }
 
-fn plan_table(items: &[PlanItem]) -> String {
+pub(crate) fn plan_table(items: &[PlanItem]) -> String {
     items.iter().enumerate().map(|(n, i)| format!("#{} [{}] {} → {}{}{}\n", n + 1, crate::plan::status_label(&i.status), i.title, i.assignee_name.clone().unwrap_or_else(|| "未指定".into()),
         if i.waiting_for.is_empty() { String::new() } else { format!("（依赖：{}）", i.waiting_for.join("、")) },
         if i.note.is_empty() { String::new() } else { format!("（备注：{}）", i.note.chars().take(120).collect::<String>()) })).collect()
@@ -161,11 +161,16 @@ fn plan_table(items: &[PlanItem]) -> String {
 
 impl Orchestrator {
     async fn lead_turn<A: Approver>(&self, lead: &Employee, project_id: &str, prompt: &str, label: &str, approver: &A) -> Result<String> {
+        self.lead_turn_as("planning", lead, project_id, prompt, label, approver).await
+    }
+
+    /// 负责人的一次只读调用，`purpose` 决定计费归类和默认模型。
+    pub(crate) async fn lead_turn_as<A: Approver>(&self, purpose: &str, lead: &Employee, project_id: &str, prompt: &str, label: &str, approver: &A) -> Result<String> {
         let project = self.db.get_project(project_id)?.context("项目不存在")?;
         let cfg = TurnConfig {
             project_path: Path::new(&project.path).to_path_buf(),
             task_id: None, project_id: None, read_only: true, mcp: None,
-            purpose: "planning".into(), attr_project: Some(project_id.into()), meeting_id: None,
+            purpose: purpose.into(), attr_project: Some(project_id.into()), meeting_id: None,
             log_prompt: Some(format!("[{label}] {}", project.name)),
             program: self.program.clone(), copilot_program: self.copilot_program.clone(),
         };

@@ -10,6 +10,7 @@ pub mod db;
 pub mod docs;
 pub mod duties;
 pub mod guest;
+pub mod lead_actions;
 pub mod mcp;
 pub mod meeting;
 pub mod models;
