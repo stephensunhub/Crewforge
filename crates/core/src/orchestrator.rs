@@ -159,7 +159,7 @@ impl Orchestrator {
         self.db.project_by_path(repo_path).ok().flatten().map(|p| p.id)
     }
 
-    async fn start_task(&self, employee: &Employee, repo: &Path, base_branch: &str, prompt: &str) -> Result<Task> {
+    pub(crate) async fn start_task(&self, employee: &Employee, repo: &Path, base_branch: &str, prompt: &str) -> Result<Task> {
         let id = uuid::Uuid::new_v4().to_string();
         let slug = safe_slug(&employee.name, &employee.id);
         let branch = format!("crewforge/{slug}/t-{}", &id[..8]);
@@ -187,7 +187,7 @@ impl Orchestrator {
         Ok(task)
     }
 
-    async fn checkpoint_task(&self, task: &Task, employee: &Employee, msg: &str) {
+    pub(crate) async fn checkpoint_task(&self, task: &Task, employee: &Employee, msg: &str) {
         let eid = Some(employee.id.as_str());
         match self.ws.checkpoint(Path::new(&task.worktree_path), &employee.name, msg).await {
             Ok(Some(cp)) => {

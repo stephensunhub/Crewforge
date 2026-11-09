@@ -12,7 +12,8 @@ const LAYER_HINT: Record<MemoryLayer, string> = {
   task: "",
 };
 
-export function MemoryView({ scope, events, members, onError, onChanged, embedded }: {
+export function MemoryView({ scope, events, members, onError, onChanged, embedded, canCurate }: {
+  canCurate?: boolean;
   scope: MemoryScope;
   events: EventRow[];
   members?: Member[];
@@ -24,6 +25,8 @@ export function MemoryView({ scope, events, members, onError, onChanged, embedde
   const [status, setStatus] = useState<string>("");
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Memory | "new" | null>(null);
+  const [curating, setCurating] = useState(false);
+  const [curNote, setCurNote] = useState("");
   const [learning, setLearning] = useState<Memory | null>(null);
   const [preview, setPreview] = useState<{ emp: string; text: string; out: Memory[] | null }>({ emp: members?.[0]?.employee_id ?? "", text: "", out: null });
 
@@ -55,8 +58,22 @@ export function MemoryView({ scope, events, members, onError, onChanged, embedde
           <h2>{scope.layer === "company" ? "公司记忆" : scope.layer === "project" ? "项目记忆" : `${scope.name} 的个人记忆`}</h2>
           <div className="hint">{LAYER_HINT[scope.layer]}</div>
         </div>
-        <button className="btn primary" onClick={() => setEditing("new")}>＋ 写入记忆</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {canCurate && scope.layer === "project" && (
+            <button className="btn" disabled={curating} title="负责人逐条核实待验证的经验：能核实的验证，过时的让它过期，重复的合并；人写的和议题决议沉淀的不碰。一次模型调用。" onClick={async () => {
+              setCurating(true); setCurNote("");
+              try {
+                const c = await api.leadCurateMemory(scope.projectId!);
+                const parts = [c.verified.length && `验证 ${c.verified.length} 条`, c.expired.length && `让 ${c.expired.length} 条过期`, ...c.merged].filter(Boolean);
+                setCurNote(`${parts.length ? parts.join("；") : c.summary || "没有改动（拿不准的留给你）"}${c.rejected.length ? `；${c.rejected.length} 项被拒绝` : ""}${c.escalate ? `；需要你判断：${c.escalate}` : ""}`);
+                onChanged?.();
+              } catch (e) { onError(String(e)); } finally { setCurating(false); }
+            }}>{curating ? "负责人整理中…" : "让负责人整理记忆"}</button>
+          )}
+          <button className="btn primary" onClick={() => setEditing("new")}>＋ 写入记忆</button>
+        </div>
       </div>
+      {curNote && <div className="note" style={{ marginBottom: 10 }}>负责人整理：{curNote}</div>}
 
       <div className="mem-filters">
         <input placeholder="搜索记忆" value={query} onChange={(e) => setQuery(e.target.value)} />

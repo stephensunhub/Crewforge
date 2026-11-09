@@ -35,6 +35,8 @@ f="w_$$_$(date +%s%N).txt"
 case "$line" in
   *起草计划*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"items\":[{\"title\":\"搭脚手架\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[]},{\"title\":\"写核心逻辑\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[0]},{\"title\":\"补测试\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"carol\",\"depends_on\":[1]}]}","usage":{}}' ;;
   *调整计划*完成度复盘*) if [ -f "@MARK@" ]; then printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[],\"escalate\":null,\"summary\":\"没有遗漏\"}","usage":{}}'; else touch "@MARK@"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"add\",\"title\":\"补收尾文档\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[\"#1\"],\"reason\":\"目标要求有说明文档\"},{\"op\":\"cancel\",\"item\":1,\"reason\":\"复盘时不该取消\"}],\"escalate\":null,\"summary\":\"补文档\"}","usage":{}}'; fi ;;
+  *撰写文档*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"# 项目概览\n\n这是一个测试项目。\n\n## 怎么运行\n见 README。","usage":{}}' ;;
+  *整理记忆*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"ops\":[{\"op\":\"verify\",\"memory\":1,\"reason\":\"README 里有对应说明\"},{\"op\":\"expire\",\"memory\":2,\"reason\":\"只是当前状态描述，不是经验\"},{\"op\":\"verify\",\"memory\":99,\"reason\":\"不存在\"}],\"escalate\":null,\"summary\":\"整理 2 条\"}","usage":{}}' ;;
   *调整计划*有条目反复失败*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"add\",\"title\":\"拆小 A1\",\"reason\":\"A 太大\",\"assignee\":\"bob\",\"depends_on\":[]},{\"op\":\"add\",\"title\":\"拆小 A2\",\"reason\":\"A 太大\",\"assignee\":\"bob\",\"depends_on\":[\"N1\"]},{\"op\":\"add\",\"title\":\"带坏依赖\",\"reason\":\"x\",\"depends_on\":[\"#99\"]},{\"op\":\"add\",\"title\":\"拆小 A3\",\"reason\":\"A 太大\",\"depends_on\":[\"N2\"]},{\"op\":\"add\",\"title\":\"超过上限\",\"reason\":\"x\"},{\"op\":\"cancel\",\"item\":2,\"reason\":\"B 不再需要\"},{\"op\":\"cancel\",\"item\":99,\"reason\":\"x\"},{\"op\":\"reassign\",\"item\":3,\"assignee\":\"bob\"},{\"op\":\"retry\",\"item\":1,\"note\":\"先做最小可用版本\"}],\"escalate\":null,\"summary\":\"把 A 拆小\"}","usage":{}}' ;;
   *负责人裁决*线上数据库*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"action\":\"escalate\",\"reason\":\"涉及线上数据迁移，我没有足够依据\"}","usage":{}}' ;;
   *负责人裁决*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"我的裁决：\n{\"action\":\"decide\",\"option\":1,\"decision\":\"推送用 SSE\",\"reason\":\"单向推送足够，实现更简单\",\"rejected\":{\"2\":\"WebSocket 要额外处理心跳\"}}","usage":{}}' ;;
@@ -276,4 +278,79 @@ async fn failure_replan_adds_cancels_reassigns_and_retries_within_limits() {
     let a1 = v.items.iter().find(|i| i.title == "拆小 A1").unwrap();
     assert_eq!((a2.status.as_str(), a2.deps.clone(), a2.note.contains("负责人追加")), ("planned", vec![a1.id.clone()], true));
     assert_eq!(r.summary, "把 A 拆小");
+}
+
+#[tokio::test]
+async fn lead_publishes_project_docs_through_the_normal_merge_flow_and_republishing_is_a_noop() {
+    let e = setup().await;
+    let alice = e.db.employee_by_name("alice").unwrap().unwrap();
+    let bob = e.db.employee_by_name("bob").unwrap().unwrap();
+    // 一个被负责人裁决的议题和一个升级给人的议题 → 进入决策记录与已知问题
+    let tech = e.db.create_issue(&e.pid, "推送方案：SSE 还是 WebSocket", "选择推送方案", "technical", false, Some(&bob.id), None, None).unwrap();
+    e.db.add_option(&tech.id, "SSE", "单向", None).unwrap();
+    e.db.add_option(&tech.id, "WebSocket", "双向", None).unwrap();
+    e.db.create_issue(&e.pid, "是否升级线上数据库版本", "", "technical", false, Some(&bob.id), None, None).unwrap();
+
+    let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    let docs = e.orch.list_docs(&e.pid).await.unwrap();
+    let paths: Vec<&str> = docs.iter().map(|d| d.path.as_str()).collect();
+    for p in ["docs/crewforge/overview.md", "docs/crewforge/decisions.md", "docs/crewforge/known-issues.md", "docs/crewforge/progress.md"] { assert!(paths.contains(&p), "缺少 {p}：{paths:?}"); }
+    assert!(docs.iter().all(|d| d.managed));
+    let decisions = e.orch.read_doc(&e.pid, "docs/crewforge/decisions.md").await.unwrap();
+    assert!(decisions.contains("推送方案") && decisions.contains("推送用 SSE") && decisions.contains("WebSocket 要额外处理心跳") && decisions.contains("拍板人：alice"), "{decisions}");
+    let known = e.orch.read_doc(&e.pid, "docs/crewforge/known-issues.md").await.unwrap();
+    assert!(known.contains("是否升级线上数据库版本") && known.contains("待决策"), "{known}");
+    assert!(e.orch.read_doc(&e.pid, "docs/crewforge/progress.md").await.unwrap().contains("完成"));
+    assert!(e.orch.read_doc(&e.pid, "docs/crewforge/overview.md").await.unwrap().starts_with("# 项目概览"));
+    // 走的是正常的合并流程：提交署名是负责人，任务记录在案
+    let author = String::from_utf8(Command::new("git").arg("-C").arg(&e.repo).args(["log", "--format=%an|%s", "-n", "30"]).output().unwrap().stdout).unwrap();
+    assert!(author.lines().any(|l| l.starts_with("alice|") && l.contains("文档")), "{author}");
+    assert!(e.db.recent_events(900).unwrap().iter().any(|x| x.kind == "autopilot_docs"));
+
+    // 路径与范围的限制：只能读 docs/ 下的 md；负责人只能写 docs/crewforge/
+    assert!(e.orch.read_doc(&e.pid, "README.md").await.is_err());
+    assert!(e.orch.read_doc(&e.pid, "docs/../README.md").await.is_err());
+    assert!(e.orch.publish_docs(&e.pid, &alice, vec![("docs/other.md".into(), "x".into())], "越界").await.unwrap_err().to_string().contains("docs/crewforge"));
+    // 内容没变就不产生新提交
+    let again = e.orch.update_project_docs(&e.pid, &alice, true, &Deny).await.unwrap();
+    assert!(again.commit.is_none() && again.note.contains("没有变化"), "{again:?}");
+}
+
+#[tokio::test]
+async fn lead_curates_only_ai_sourced_project_memories_and_never_touches_human_or_decision_ones() {
+    use crewforge_core::memory::NewMemory;
+    let e = setup().await;
+    let lead = e.db.employee_by_name("alice").unwrap().unwrap();
+    let bob = e.db.employee_by_name("bob").unwrap().unwrap();
+    let mem = |title: &str, source: &str, by: &str, status: &str| e.db.add_memory(NewMemory {
+        layer: "project".into(), project_id: Some(e.pid.clone()), kind: "lesson".into(), title: title.into(), content: format!("{title} 的内容"), scope: String::new(),
+        source_kind: source.into(), created_by: by.into(), status: status.into(), ..Default::default() }).unwrap();
+    let a = mem("AI 经验甲", "agent", &bob.id, "");
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let b = mem("AI 经验乙", "agent", &bob.id, "");
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let c = mem("AI 经验丙", "meeting", &bob.id, "");
+    let human = mem("人写的约定", "human", "human", "");
+    let decision = mem("议题决议沉淀", "issue", &bob.id, "verified");
+    assert_eq!((a.status.as_str(), human.status.as_str()), ("unverified", "verified"));
+    // 候选只含负责人能动的
+    let cands = e.orch.curation_candidates(&e.pid).unwrap();
+    let ids: Vec<&str> = cands.iter().map(|m| m.id.as_str()).collect();
+    assert!(ids.contains(&a.id.as_str()) && ids.contains(&c.id.as_str()) && !ids.contains(&human.id.as_str()) && !ids.contains(&decision.id.as_str()), "{ids:?}");
+
+    let r = e.orch.lead_curate_memory(&e.pid, &lead, &Deny).await.unwrap();
+    // 假负责人：验证 #1、让 #2 过期、#99 不存在被拒绝
+    assert_eq!((r.verified.len(), r.expired.len()), (1, 1), "{r:?}");
+    assert!(r.rejected.iter().any(|x| x.contains("#99")), "{:?}", r.rejected);
+    let st = |id: &str| e.db.get_memory(id).unwrap().unwrap();
+    assert_eq!((st(&a.id).status.as_str(), st(&a.id).verified_by.as_deref()), ("verified", Some(lead.id.as_str())));
+    assert_eq!(st(&b.id).status, "expired");
+    assert!(st(&b.id).expired_reason.unwrap_or_default().contains("负责人整理"));
+    assert_eq!(st(&c.id).status, "unverified", "没提到的不动");
+    assert_eq!((st(&human.id).status.as_str(), st(&decision.id).status.as_str()), ("verified", "verified"), "人写的和议题决议沉淀的不碰");
+    // 没有待验证的时候不调用模型
+    e.db.verify_memory(&c.id, "human").unwrap();
+    let none = e.orch.lead_curate_memory(&e.pid, &lead, &Deny).await.unwrap();
+    assert_eq!(none.summary, "没有待验证的记忆");
 }

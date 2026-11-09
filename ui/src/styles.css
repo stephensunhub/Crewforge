@@ -385,3 +385,4 @@ button.u-cell:hover { background: var(--panel-2); }
 .ap-line.ok { color: var(--ok); }
 .ap-line.end { font-weight: 600; background: var(--panel-2); }
 .ap-line.warn { color: var(--warn); }
+.md code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; } .md-code { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; } .md h2, .md h3, .md h4, .md h5 { font-weight: 600; }

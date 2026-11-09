@@ -701,6 +701,50 @@ pub fn latest_task_check(state: State<'_, AppState>, task_id: String) -> CmdResu
 }
 
 
+// ================= 负责人管理文档和记忆 =================
+fn lead_of(state: &AppState, project_id: &str) -> Result<Employee, String> {
+    let id = state.db.list_members(project_id).map_err(err)?.into_iter().find(|m| m.role == "lead").map(|m| m.employee_id).ok_or("项目还没有负责人，请先在“成员”页指定一位 AI 员工为负责人")?;
+    state.db.employee_by_id(&id).map_err(err)?.ok_or_else(|| "负责人不存在".to_string())
+}
+
+#[tauri::command]
+pub async fn list_docs(state: State<'_, AppState>, project_id: String) -> CmdResult<Vec<crewforge_core::docs::DocFile>> {
+    state.orch.list_docs(&project_id).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn read_doc(state: State<'_, AppState>, project_id: String, path: String) -> CmdResult<String> {
+    state.orch.read_doc(&project_id, &path).await.map_err(err)
+}
+
+/// 让负责人更新项目文档（docs/crewforge/）：决策记录、已知问题、计划进度由数据生成，概览由负责人读代码撰写（一次调用）。
+#[tauri::command]
+pub async fn lead_update_docs(app: AppHandle, state: State<'_, AppState>, project_id: String) -> CmdResult<crewforge_core::docs::DocsPublish> {
+    let lead = lead_of(&state, &project_id)?;
+    if !state.busy.lock().unwrap().insert(format!("docs:{project_id}")) { return Err("正在更新文档，请稍等".into()); }
+    let approver = UiApprover { app, pending: state.pending.clone(), project_id: Some(project_id.clone()) };
+    let res = async {
+        let _permit = state.sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
+        state.orch.update_project_docs(&project_id, &lead, true, &approver).await
+    }.await;
+    state.busy.lock().unwrap().remove(&format!("docs:{project_id}"));
+    res.map_err(err)
+}
+
+/// 让负责人整理项目记忆：能核实的验证，过时的让它过期，重复的合并；人写的和议题决议沉淀的不碰。
+#[tauri::command]
+pub async fn lead_curate_memory(app: AppHandle, state: State<'_, AppState>, project_id: String) -> CmdResult<crewforge_core::curate::Curated> {
+    let lead = lead_of(&state, &project_id)?;
+    if !state.busy.lock().unwrap().insert(format!("curate:{project_id}")) { return Err("负责人正在整理记忆，请稍等".into()); }
+    let approver = UiApprover { app, pending: state.pending.clone(), project_id: Some(project_id.clone()) };
+    let res = async {
+        let _permit = state.sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
+        state.orch.lead_curate_memory(&project_id, &lead, &approver).await
+    }.await;
+    state.busy.lock().unwrap().remove(&format!("curate:{project_id}"));
+    res.map_err(err)
+}
+
 // ================= 负责人起草计划 =================
 /// 让项目的 AI 负责人根据项目目标、扫描、基线、评估和现有计划起草一份计划；条目进入“提议中”，等你确认。
 #[tauri::command]

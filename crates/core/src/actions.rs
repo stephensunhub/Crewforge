@@ -370,3 +370,10 @@ mod tests {
         assert_eq!((p.assignee, p.blocking), (None, true));
     }
 }
+
+impl Db {
+    /// 项目里还没处理完的行动项（文档“已知问题”用）。
+    pub fn open_actions_for_project(&self, project_id: &str) -> Result<Vec<ActionItem>> {
+        self.query_actions("WHERE a.project_id = ?1 AND a.status IN ('open','working')", &[&project_id])
+    }
+}

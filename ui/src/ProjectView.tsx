@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { Avatar, Field, Modal, Placeholder, ROLE_LABEL, ROLE_ORDER } from "./common";
+import { Avatar, Field, Modal, ROLE_LABEL, ROLE_ORDER } from "./common";
 import { Chat } from "./Chat";
 import { TasksPanel } from "./TasksPanel";
 import { IssuesView } from "./IssuesView";
 import { MeetingsView } from "./MeetingsView";
 import { MemoryView } from "./MemoryView";
 import { OnboardingView } from "./OnboardingView";
+import { DocsView } from "./DocsView";
 import { DutiesPanel } from "./DutiesPanel";
 import { PlanPanel } from "./PlanPanel";
 import type { ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
@@ -126,8 +127,8 @@ export function ProjectView({
       <MeetingsView projectId={project.id} meetings={meetings} members={members} issues={issues} tasks={taskViews} events={events} running={running}
         focusId={meetingFocus} onFocused={onFocusHandled} onChanged={() => void refreshBoard()} onError={onError} />
     );
-  if (tab === "memory") return <MemoryView scope={{ layer: "project", projectId: project.id }} events={events} members={members} onError={onError} />;
-  return <Placeholder title="项目文档">需求、架构说明、决策记录、测试基线。计划存放在项目仓库的 docs/ 目录，由员工通过同一套分支与合并流程维护。</Placeholder>;
+  if (tab === "memory") return <MemoryView scope={{ layer: "project", projectId: project.id }} events={events} members={members} onError={onError} canCurate={members.some((m) => m.role === "lead")} />;
+  return <DocsView projectId={project.id} hasLead={members.some((m) => m.role === "lead")} onError={onError} />;
 }
 
 function MembersTab({ project, members, employees, running, onChanged, onError, onArchived }: {

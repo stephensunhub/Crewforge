@@ -128,6 +128,7 @@ pub struct Autopilot<A: Approver + Send + Sync + 'static> {
     standup_lock: tokio::sync::Mutex<()>,
     merged: AtomicUsize,
     last_standup_at_merged: AtomicUsize,
+    last_curated_at_merged: AtomicUsize,
     standups: AtomicUsize,
     /// 正在被占用的员工名（与应用里“工作中”的集合共用，避免人和负责人同时驱动同一员工的会话）
     busy: Arc<std::sync::Mutex<HashSet<String>>>,
@@ -182,7 +183,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         Ok(Arc::new(Self {
             orch, sched, approver, ctl, project_id: run.project_id.clone(), run_id: run.id.clone(), repo: std::path::PathBuf::from(project.path),
             calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()),
-            merged: AtomicUsize::new(0), last_standup_at_merged: AtomicUsize::new(0), standups: AtomicUsize::new(0),
+            merged: AtomicUsize::new(0), last_standup_at_merged: AtomicUsize::new(0), last_curated_at_merged: AtomicUsize::new(0), standups: AtomicUsize::new(0),
             busy, on_busy_change,
         }))
     }
@@ -497,6 +498,40 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         }
     }
 
+    /// 负责人整理项目记忆：待验证的经验攒到 3 条以上、且自上次整理后至少合并了 2 个任务才整理（`force` 时只要有待验证的就整理）。
+    async fn maybe_curate(&self, force: bool) {
+        let Some(lead) = self.lead() else { return };
+        if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) { return; }
+        let unverified = self.orch.curation_candidates(&self.project_id).map(|c| c.iter().filter(|m| m.status == "unverified").count()).unwrap_or(0);
+        let merged = self.merged.load(Ordering::SeqCst);
+        if unverified == 0 || (!force && (unverified < 3 || merged < self.last_curated_at_merged.load(Ordering::SeqCst) + 2)) { return; }
+        self.last_curated_at_merged.store(merged, Ordering::SeqCst);
+        let _p = self.permit().await;
+        match self.orch.lead_curate_memory(&self.project_id, &lead, &*self.approver).await {
+            Ok(c) => {
+                let mut parts = Vec::new();
+                if !c.verified.is_empty() { parts.push(format!("验证 {} 条", c.verified.len())); }
+                if !c.expired.is_empty() { parts.push(format!("让 {} 条过期", c.expired.len())); }
+                if !c.merged.is_empty() { parts.push(format!("合并 {}", c.merged.join("、"))); }
+                self.say("autopilot_memory", format!("{} 整理了项目记忆：{}{}", lead.name, if parts.is_empty() { "没有改动（拿不准的留给你）".to_string() } else { parts.join("；") }, if c.summary.is_empty() { String::new() } else { format!("（{}）", clip(&c.summary, 100)) }));
+                for r in &c.rejected { self.say("autopilot_step", format!("记忆整理被拒绝：{r}")); }
+                if let Some(e) = &c.escalate { self.say("autopilot_step", format!("{} 认为记忆里有需要你判断的矛盾：{}", lead.name, clip(e, 200))); }
+            }
+            Err(e) => self.say("autopilot_step", format!("整理记忆没有完成：{e}")),
+        }
+    }
+
+    /// 收尾：更新负责人维护的项目文档（决策记录、已知问题、计划进度由数据生成；概览由负责人读代码撰写）。
+    async fn update_docs(&self) {
+        let Some(lead) = self.lead() else { return };
+        if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) { return; }
+        let _p = self.permit().await;
+        match self.orch.update_project_docs(&self.project_id, &lead, true, &*self.approver).await {
+            Ok(r) => self.say("autopilot_docs", format!("{} 更新了项目文档（docs/crewforge/）：{}", lead.name, r.note)),
+            Err(e) => self.say("autopilot_step", format!("文档没有更新：{e}")),
+        }
+    }
+
     /// 有两个以上的任务同时在做时开一次站会，先对齐接口和进度。限流：第一次直接开，之后至少合并过一个任务才再开。
     async fn maybe_standup(&self) {
         let Ok(_g) = self.standup_lock.try_lock() else { return };
@@ -550,6 +585,11 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                     }
                 }
                 if let Some(e) = escalation.take() { break ("escalated", format!("负责人复盘后认为需要你来定：{e}")); }
+                // 收尾：整理记忆、更新文档（各一次）
+                if !paused && budget.is_none() && human.is_none() && set.is_empty() {
+                    self.maybe_curate(true).await;
+                    self.update_docs().await;
+                }
                 break ("finished", "计划全部完成".to_string());
             }
             // 暂停、预算用尽或有事等人时，不再派新活，只等手上的做完
@@ -578,7 +618,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             if let Some(Ok((id, res))) = set.join_next().await {
                 running.remove(&id);
                 match res {
-                    Ok(()) => self.ensure_baseline().await,
+                    Ok(()) => { self.ensure_baseline().await; self.maybe_curate(false).await; }
                     Err(e) => {
                         let title = self.db().get_plan_item(&id).ok().flatten().map(|i| i.title).unwrap_or_default();
                         self.say("autopilot_step", format!("《{title}》没做成：{e}"));

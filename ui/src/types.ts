@@ -323,3 +323,7 @@ export interface Duties { items: DutyItem[]; later_actions: number; plan_done: n
 
 export interface AutopilotRun { id: string; project_id: string; status: string; max_calls: number; max_minutes: number; calls: number; started_at: number; ended_at: number | null; reason: string }
 export interface AutopilotStatus { run: AutopilotRun | null; live: boolean }
+
+export interface DocFile { path: string; size: number; managed: boolean }
+export interface DocsPublish { files: number; commit: string | null; note: string }
+export interface Curated { verified: string[]; expired: string[]; merged: string[]; rejected: string[]; escalate: string | null; summary: string }
