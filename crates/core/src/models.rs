@@ -22,7 +22,7 @@ CREATE TABLE models (
 "#;
 
 /// 可以设默认模型的用途。
-pub const PURPOSES: &[(&str, &str)] = &[("task", "开发任务"), ("meeting", "会议发言"), ("minutes", "纪要起草"), ("ruling", "负责人裁决"), ("onboarding", "导入评估")];
+pub const PURPOSES: &[(&str, &str)] = &[("task", "开发任务"), ("meeting", "会议发言"), ("minutes", "纪要起草"), ("ruling", "负责人裁决"), ("planning", "负责人计划"), ("onboarding", "导入评估")];
 
 /// Claude Code 内置可选项：别名（CLI 解析为最新版本）与完整模型名。
 const CLAUDE_SEED: &[(&str, &str, &str)] = &[

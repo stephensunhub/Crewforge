@@ -13,6 +13,7 @@ use crate::onboarding::baseline::{CommandResult, Origin, run_commands};
 use crate::onboarding::scan::scan_dir;
 use crate::orchestrator::Orchestrator;
 use crate::plan::PlanItem;
+use crate::planning::{AdjustTrigger, Applied};
 use crate::ruling::RulingOutcome;
 use crate::runner::{Approver, NoopObserver};
 use crate::scheduler::{Permit, Scheduler};
@@ -162,7 +163,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         }
         let view = db.plan_view(project_id)?;
         if view.items.iter().filter(|i| i.status != "cancelled").count() == 0 {
-            bail!("项目还没有计划。请先在“计划”页让负责人起草计划，或手动添加");
+            bail!("项目还没有计划。请先在“计划”页点“让负责人起草计划”，或手动添加条目");
         }
         let approved = db.approve_proposed_plan(project_id)?;
         let run = db.create_autopilot_run(project_id, max_calls, max_minutes)?;
@@ -468,6 +469,34 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         }
     }
 
+    fn lead(&self) -> Option<Employee> {
+        self.members().into_iter().find(|(_, r)| r == "lead").map(|(e, _)| e)
+    }
+
+    /// 负责人调整计划（失败后或完成度复盘）。返回应用的结果；把改动、被拒绝的改动和升级都写进动态。
+    async fn adjust_plan(&self, trigger: AdjustTrigger, failure: &str) -> Option<Applied> {
+        let lead = self.lead()?;
+        let _p = self.permit().await;
+        match self.orch.lead_adjust_plan(&self.project_id, &lead, trigger, failure, &*self.approver).await {
+            Ok(a) => {
+                let mut parts = Vec::new();
+                if !a.added.is_empty() { parts.push(format!("追加 {}", a.added.iter().map(|t| format!("《{t}》")).collect::<Vec<_>>().join("、"))); }
+                if !a.cancelled.is_empty() { parts.push(format!("取消 {}", a.cancelled.iter().map(|t| format!("《{t}》")).collect::<Vec<_>>().join("、"))); }
+                if !a.reassigned.is_empty() { parts.push(format!("改派 {}", a.reassigned.join("、"))); }
+                if !a.retried.is_empty() { parts.push(format!("重试 {}", a.retried.iter().map(|t| format!("《{t}》")).collect::<Vec<_>>().join("、"))); }
+                if !parts.is_empty() {
+                    self.say("autopilot_plan_changed", format!("{} 调整了计划：{}{}", lead.name, parts.join("；"), if a.summary.is_empty() { String::new() } else { format!("（{}）", clip(&a.summary, 100)) }));
+                } else if trigger == AdjustTrigger::FinalReview && a.escalate.is_none() {
+                    self.say("autopilot_step", format!("{} 做了完成度复盘：不需要追加条目", lead.name));
+                }
+                for r in &a.rejected { self.say("autopilot_step", format!("计划调整被拒绝：{r}")); }
+                if let Some(e) = &a.escalate { self.say("autopilot_step", format!("{} 认为这需要你来定：{}", lead.name, clip(e, 200))); }
+                Some(a)
+            }
+            Err(e) => { self.say("autopilot_step", format!("计划调整没有完成：{e}")); None }
+        }
+    }
+
     /// 有两个以上的任务同时在做时开一次站会，先对齐接口和进度。限流：第一次直接开，之后至少合并过一个任务才再开。
     async fn maybe_standup(&self) {
         let Ok(_g) = self.standup_lock.try_lock() else { return };
@@ -499,6 +528,9 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();
         let mut ruled: HashSet<String> = HashSet::new();
+        let mut final_review_done = false;
+        let mut replans = 0usize;
+        let mut escalation: Option<String> = None;
         let (status, reason) = loop {
             if self.ctl.stop.load(Ordering::SeqCst) { break ("stopped", "你停止了推进".to_string()); }
             let paused = self.ctl.pause.load(Ordering::SeqCst);
@@ -508,7 +540,18 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 break if paused { ("paused", "你暂停了推进".to_string()) } else if let Some(b) = budget { ("budget", b) } else { ("escalated", human.unwrap_or_default()) };
             }
             let view = match self.db().plan_view(&self.project_id) { Ok(v) => v, Err(e) => break ("failed", e.to_string()) };
-            if view.items.iter().filter(|i| i.status != "cancelled").all(|i| i.status == "done") { break ("finished", "计划全部完成".to_string()); }
+            if view.items.iter().filter(|i| i.status != "cancelled").all(|i| i.status == "done") {
+                // 做完后让负责人对照目标复盘一次：还有必要的工作就追加，继续推进
+                if !final_review_done && !paused && budget.is_none() && human.is_none() && set.is_empty() {
+                    final_review_done = true;
+                    if let Some(a) = self.adjust_plan(AdjustTrigger::FinalReview, "").await {
+                        if !a.added.is_empty() { continue; }
+                        if let Some(e) = a.escalate { escalation = Some(e); }
+                    }
+                }
+                if let Some(e) = escalation.take() { break ("escalated", format!("负责人复盘后认为需要你来定：{e}")); }
+                break ("finished", "计划全部完成".to_string());
+            }
             // 暂停、预算用尽或有事等人时，不再派新活，只等手上的做完
             if !(paused || budget.is_some() || human.is_some()) {
                 self.rule_issues(&mut ruled).await;
@@ -528,7 +571,10 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                     set.spawn(async move { let r = me.process_item(i2.clone(), emp).await; (i2, r) });
                 }
             }
-            if set.is_empty() { break ("escalated", "没有可以开始的条目了（前置条目失败或被阻塞），需要你看一下".to_string()); }
+            if set.is_empty() {
+                if let Some(e) = escalation.take() { break ("escalated", format!("负责人认为需要你来定：{e}")); }
+                break ("escalated", "没有可以开始的条目了（前置条目失败或被阻塞），需要你看一下".to_string());
+            }
             if let Some(Ok((id, res))) = set.join_next().await {
                 running.remove(&id);
                 match res {
@@ -537,6 +583,14 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                         let title = self.db().get_plan_item(&id).ok().flatten().map(|i| i.title).unwrap_or_default();
                         self.say("autopilot_step", format!("《{title}》没做成：{e}"));
                         failed.insert(id);
+                        // 负责人看一眼：拆小、补前置、取消、改派或换个说明重试（每批次最多 2 次）
+                        if replans < 2 && !self.ctl.stop.load(Ordering::SeqCst) && self.over_budget().is_none() {
+                            replans += 1;
+                            if let Some(a) = self.adjust_plan(AdjustTrigger::ItemFailed, &format!("《{title}》：{e}")).await {
+                                for rid in &a.retried_ids { failed.remove(rid); }
+                                if a.escalate.is_some() { escalation = a.escalate; }
+                            }
+                        }
                     }
                 }
             }

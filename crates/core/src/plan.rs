@@ -299,6 +299,12 @@ impl Db {
         Ok(())
     }
 
+    /// 只改备注（负责人追加条目时写明原因）。
+    pub fn set_plan_note(&self, id: &str, note: &str) -> Result<()> {
+        self.conn.lock().unwrap().execute("UPDATE plan_items SET note = ?2, updated_at = ?3 WHERE id = ?1", params![id, note.trim(), now_ms()])?;
+        Ok(())
+    }
+
     pub fn mark_plan_started(&self, id: &str, task_id: &str) -> Result<()> {
         self.conn.lock().unwrap().execute(
             "UPDATE plan_items SET status = 'in_progress', task_id = ?2, updated_at = ?3 WHERE id = ?1 AND status IN ('planned','in_progress')", params![id, task_id, now_ms()])?;

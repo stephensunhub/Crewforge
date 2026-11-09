@@ -53,6 +53,7 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
   const [open, setOpen] = useState<string | null>(null);
   const [planner, setPlanner] = useState(members.find((m) => m.role === "lead")?.employee_id ?? members[0]?.employee_id ?? "");
   const [busy, setBusy] = useState("");
+  const [note, setNote] = useState("");
 
   const load = useCallback(async () => { try { setView(await api.planView(project.id)); } catch (e) { onError(String(e)); } }, [project.id, onError]);
   useEffect(() => { void load(); }, [load]);
@@ -70,9 +71,19 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
     <div className="page wide">
       <div className="page-head">
         <div><h2>计划</h2><div className="hint">把大目标拆成有顺序、有依赖的小步骤，逐条派给员工。条目的任务合并后自动完成。</div></div>
-        <button className="btn primary" onClick={() => setEditing("new")}>＋ 添加条目</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {members.some((m) => m.role === "lead") && (
+            <button className="btn" disabled={busy === "lead-plan"} title="负责人读项目目标、扫描、基线和现有计划，起草一份有依赖的计划；条目要你确认（开始自主推进时一并批准）" onClick={async () => {
+              if (!project.goal.trim()) { onError("请先写下项目目标并保存，负责人需要它来制定计划"); return; }
+              setBusy("lead-plan");
+              try { const n = await api.leadDraftPlan(project.id); setNote(`负责人起草了 ${n} 个条目，在下面等你确认；确认后（或直接开始自主推进）才会派活。`); await load(); } catch (e) { onError(String(e)); } finally { setBusy(""); }
+            }}>{busy === "lead-plan" ? "负责人起草中…" : "让负责人起草计划"}</button>
+          )}
+          <button className="btn primary" onClick={() => setEditing("new")}>＋ 添加条目</button>
+        </div>
       </div>
 
+      {note && <div className="note" style={{ marginBottom: 10 }}>{note}</div>}
       <section className="panel-box">
         <h4 className="group-title">项目目标与硬性约束</h4>
         <div className="hint" style={{ marginBottom: 6 }}>每个新任务开始时都会带上这段话，例如“技术栈升级，业务行为不变”。</div>

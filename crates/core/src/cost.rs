@@ -254,6 +254,7 @@ pub fn purpose_label(p: &str) -> &'static str {
         "minutes" => "纪要起草",
         "onboarding" => "导入评估",
         "ruling" => "负责人裁决",
+        "planning" => "负责人计划",
         _ => "其他",
     }
 }

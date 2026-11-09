@@ -28,11 +28,14 @@ fn sh(dir: &Path, args: &[&str]) {
 /// 假 CLI：开发任务写一个唯一文件；评审返回意见；整理纪要返回带两条行动项的纪要。
 fn fake_cli(dir: &Path) -> String {
     let path = dir.join("fake-claude");
-    std::fs::write(&path, r###"#!/bin/sh
+    let script = r###"#!/bin/sh
 read -r line
 echo '{"type":"system","subtype":"init","session_id":"x"}'
 f="w_$$_$(date +%s%N).txt"
 case "$line" in
+  *起草计划*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"items\":[{\"title\":\"搭脚手架\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[]},{\"title\":\"写核心逻辑\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[0]},{\"title\":\"补测试\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"carol\",\"depends_on\":[1]}]}","usage":{}}' ;;
+  *调整计划*完成度复盘*) if [ -f "@MARK@" ]; then printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[],\"escalate\":null,\"summary\":\"没有遗漏\"}","usage":{}}'; else touch "@MARK@"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"add\",\"title\":\"补收尾文档\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[\"#1\"],\"reason\":\"目标要求有说明文档\"},{\"op\":\"cancel\",\"item\":1,\"reason\":\"复盘时不该取消\"}],\"escalate\":null,\"summary\":\"补文档\"}","usage":{}}'; fi ;;
+  *调整计划*有条目反复失败*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"add\",\"title\":\"拆小 A1\",\"reason\":\"A 太大\",\"assignee\":\"bob\",\"depends_on\":[]},{\"op\":\"add\",\"title\":\"拆小 A2\",\"reason\":\"A 太大\",\"assignee\":\"bob\",\"depends_on\":[\"N1\"]},{\"op\":\"add\",\"title\":\"带坏依赖\",\"reason\":\"x\",\"depends_on\":[\"#99\"]},{\"op\":\"add\",\"title\":\"拆小 A3\",\"reason\":\"A 太大\",\"depends_on\":[\"N2\"]},{\"op\":\"add\",\"title\":\"超过上限\",\"reason\":\"x\"},{\"op\":\"cancel\",\"item\":2,\"reason\":\"B 不再需要\"},{\"op\":\"cancel\",\"item\":99,\"reason\":\"x\"},{\"op\":\"reassign\",\"item\":3,\"assignee\":\"bob\"},{\"op\":\"retry\",\"item\":1,\"note\":\"先做最小可用版本\"}],\"escalate\":null,\"summary\":\"把 A 拆小\"}","usage":{}}' ;;
   *负责人裁决*线上数据库*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"action\":\"escalate\",\"reason\":\"涉及线上数据迁移，我没有足够依据\"}","usage":{}}' ;;
   *负责人裁决*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"我的裁决：\n{\"action\":\"decide\",\"option\":1,\"decision\":\"推送用 SSE\",\"reason\":\"单向推送足够，实现更简单\",\"rejected\":{\"2\":\"WebSocket 要额外处理心跳\"}}","usage":{}}' ;;
   *整理纪要*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"## 决议\n- 同意\n## 被否决的方案及原因\n无\n## 行动项\n- [合并前] alice：补一个说明\n- [之后] 人类：以后再看\n## 待验证的经验\n无","usage":{}}' ;;
@@ -40,7 +43,8 @@ case "$line" in
   *站会*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"做完了；无依赖。","usage":{}}' ;;
   *) echo x > "$f"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已完成。","usage":{}}' ;;
 esac
-"###).unwrap();
+"###.replace("@MARK@", &dir.join("final_add_once").to_string_lossy());
+    std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path.to_string_lossy().into_owned()
 }
@@ -102,7 +106,7 @@ async fn lead_loop_runs_the_whole_plan_by_dependency_and_merges_everything() {
     let r = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
     assert_eq!((r.status.as_str(), r.reason.as_str()), ("finished", "计划全部完成"), "{r:?}");
     let v = e.db.plan_view(&e.pid).unwrap();
-    assert_eq!((v.counts.done, v.percent_done), (4, 100));
+    assert_eq!((v.counts.done, v.percent_done), (5, 100), "4 个条目加上负责人复盘时追加的 1 个");
     // 每个条目的改动都合并进了主分支
     assert!(e.repo.join("README.md").exists());
     let log = String::from_utf8(Command::new("git").arg("-C").arg(&e.repo).args(["log", "--oneline"]).output().unwrap().stdout).unwrap();
@@ -207,4 +211,69 @@ async fn lead_rules_ai_raised_technical_issues_escalates_the_rest_and_never_touc
     let r2 = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
     let again = e.db.recent_events(800).unwrap().into_iter().filter(|x| x.kind == "autopilot_issue_escalated").count();
     assert_eq!((r2.status.as_str(), again), ("finished", 1), "{r2:?}");
+}
+
+#[tokio::test]
+async fn lead_drafts_a_plan_and_adjusts_it_within_limits() {
+    let e = setup().await;
+    let lead = e.db.employee_by_name("alice").unwrap().unwrap();
+    // 起草：全新项目没有计划条目 → 清掉 setup 里的，再让负责人起草
+    for id in &e.ids { e.db.set_plan_status(id, "cancelled", "测试").unwrap(); }
+    assert!(e.orch.lead_draft_plan(&e.pid, &lead, &Deny).await.unwrap_err().to_string().contains("目标"), "没有项目目标时不起草");
+    e.db.set_project_goal(&e.pid, "做一个小工具").unwrap();
+    let n = e.orch.lead_draft_plan(&e.pid, &lead, &Deny).await.unwrap();
+    assert_eq!(n, 3);
+    let v = e.db.plan_view(&e.pid).unwrap();
+    let drafted: Vec<_> = v.items.iter().filter(|i| i.status == "proposed").collect();
+    assert_eq!(drafted.len(), 3, "起草的条目是“提议中”，等人确认");
+    let core = drafted.iter().find(|i| i.title == "写核心逻辑").unwrap();
+    assert_eq!((core.assignee_name.as_deref(), core.deps.len()), (Some("bob"), 1));
+    assert!(e.db.recent_events(200).unwrap().iter().any(|x| x.kind == "plan_drafted_by_lead"));
+}
+
+#[tokio::test]
+async fn final_review_may_only_add_and_the_plan_continues_with_the_added_item() {
+    let e = setup().await;
+    let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    let v = e.db.plan_view(&e.pid).unwrap();
+    // 复盘追加了“补收尾文档”，并且也被做完、合并
+    let added = v.items.iter().find(|i| i.title == "补收尾文档").expect("复盘追加的条目");
+    assert_eq!(added.status, "done", "{:?}", v.items.iter().map(|i| (&i.title, &i.status)).collect::<Vec<_>>());
+    assert!(added.note.contains("负责人追加") && added.note.contains("说明文档"));
+    // 复盘时同时提出的“取消”被拒绝（复盘只能追加），原条目没被取消
+    assert!(v.items.iter().filter(|i| ["A", "B", "C"].contains(&i.title.as_str())).all(|i| i.status == "done"));
+    let texts: Vec<String> = e.db.recent_events(900).unwrap().into_iter().filter(|x| x.kind.starts_with("autopilot_")).map(|x| x.payload["text"].as_str().unwrap_or("").to_string()).collect();
+    assert!(texts.iter().any(|t| t.contains("调整了计划") && t.contains("补收尾文档")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("计划调整被拒绝") && t.contains("复盘时只能追加")));
+}
+
+#[tokio::test]
+async fn failure_replan_adds_cancels_reassigns_and_retries_within_limits() {
+    use crewforge_core::planning::AdjustTrigger;
+    let e = setup().await;
+    let lead = e.db.employee_by_name("alice").unwrap().unwrap();
+    let (a, b, c) = (e.ids[0].clone(), e.ids[1].clone(), e.ids[2].clone());
+    e.db.set_plan_status(&a, "blocked", "验证仍未通过").unwrap();
+    let r = e.orch.lead_adjust_plan(&e.pid, &lead, AdjustTrigger::ItemFailed, "《A》：验证仍未通过", &Deny).await.unwrap();
+    // 追加：最多 3 个；坏依赖和超上限的被拒绝，并说明原因
+    assert_eq!(r.added, vec!["拆小 A1", "拆小 A2", "拆小 A3"], "{r:?}");
+    assert!(r.rejected.iter().any(|x| x.contains("带坏依赖") && x.contains("不存在")), "{:?}", r.rejected);
+    assert!(r.rejected.iter().any(|x| x.contains("超过上限")), "{:?}", r.rejected);
+    assert!(r.rejected.iter().any(|x| x.contains("#99")), "不存在的条目：{:?}", r.rejected);
+    // 取消、改派、重试
+    assert_eq!(r.cancelled, vec!["B"]);
+    assert_eq!(e.db.get_plan_item(&b).unwrap().unwrap().status, "cancelled");
+    assert_eq!(r.reassigned.len(), 1);
+    assert_eq!(e.db.get_plan_item(&c).unwrap().unwrap().assignee_name.as_deref(), Some("bob"));
+    assert_eq!((r.retried.as_slice(), r.retried_ids.as_slice()), (&["A".to_string()][..], &[a.clone()][..]));
+    let ra = e.db.get_plan_item(&a).unwrap().unwrap();
+    assert_eq!(ra.status, "planned");
+    assert!(ra.description.contains("先做最小可用版本"));
+    // 追加的条目直接待开始，依赖关系正确（A2 依赖 A1，A3 依赖 A2），并写明了原因
+    let v = e.db.plan_view(&e.pid).unwrap();
+    let a2 = v.items.iter().find(|i| i.title == "拆小 A2").unwrap();
+    let a1 = v.items.iter().find(|i| i.title == "拆小 A1").unwrap();
+    assert_eq!((a2.status.as_str(), a2.deps.clone(), a2.note.contains("负责人追加")), ("planned", vec![a1.id.clone()], true));
+    assert_eq!(r.summary, "把 A 拆小");
 }

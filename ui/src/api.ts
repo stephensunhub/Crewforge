@@ -41,6 +41,7 @@ export const api = {
   usageOverview: (filter: UsageFilter) => invoke<UsageOverview>("usage_overview", { filter, tzOffsetMinutes: -new Date().getTimezoneOffset() }),
   usageStats: (filter: UsageFilter, dim: string) => invoke<CostGroup[]>("usage_stats", { filter, dim }),
   usageCalls: (filter: UsageFilter, page: number, pageSize: number) => invoke<UsagePageData>("usage_calls", { filter, page, pageSize }),
+  leadDraftPlan: (projectId: string) => invoke<number>("lead_draft_plan", { projectId }),
   startAutopilot: (projectId: string, maxCalls: number, maxMinutes: number) => invoke<AutopilotRun>("start_autopilot", { projectId, maxCalls, maxMinutes }),
   pauseAutopilot: (projectId: string) => invoke<void>("pause_autopilot", { projectId }),
   stopAutopilot: (projectId: string) => invoke<void>("stop_autopilot", { projectId }),

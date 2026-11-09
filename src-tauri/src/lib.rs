@@ -66,6 +66,7 @@ pub fn run() {
             commands::cost_report,
             commands::cost_calls,
             commands::my_duties,
+            commands::lead_draft_plan,
             commands::start_autopilot,
             commands::pause_autopilot,
             commands::stop_autopilot,

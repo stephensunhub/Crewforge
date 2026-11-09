@@ -701,6 +701,24 @@ pub fn latest_task_check(state: State<'_, AppState>, task_id: String) -> CmdResu
 }
 
 
+// ================= 负责人起草计划 =================
+/// 让项目的 AI 负责人根据项目目标、扫描、基线、评估和现有计划起草一份计划；条目进入“提议中”，等你确认。
+#[tauri::command]
+pub async fn lead_draft_plan(app: AppHandle, state: State<'_, AppState>, project_id: String) -> CmdResult<usize> {
+    let lead_id = state.db.list_members(&project_id).map_err(err)?.into_iter().find(|m| m.role == "lead").map(|m| m.employee_id).ok_or("项目还没有负责人，请先在“成员”页指定一位 AI 员工为负责人")?;
+    let lead = state.db.employee_by_id(&lead_id).map_err(err)?.ok_or("负责人不存在")?;
+    if !state.busy.lock().unwrap().insert(format!("draft:{project_id}")) {
+        return Err("负责人正在起草计划，请稍等".into());
+    }
+    let approver = UiApprover { app, pending: state.pending.clone(), project_id: Some(project_id.clone()) };
+    let res = async {
+        let _permit = state.sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
+        state.orch.lead_draft_plan(&project_id, &lead, &approver).await
+    }.await;
+    state.busy.lock().unwrap().remove(&format!("draft:{project_id}"));
+    res.map_err(err)
+}
+
 // ================= 自主推进 =================
 /// 开始一个自主推进批次：负责人按依赖派活、验证、评审、合并；预算用完、需要你拍板或反复失败时自动停下。
 /// 点“开始”就是你对计划的最后确认——提议中的计划条目会一并批准。

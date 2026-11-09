@@ -14,6 +14,7 @@ pub mod onboarding;
 pub mod memory;
 pub mod orchestrator;
 pub mod plan;
+pub mod planning;
 pub mod policy;
 pub mod protocol;
 pub mod provider;
