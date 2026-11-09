@@ -17,6 +17,7 @@ pub mod plan;
 pub mod policy;
 pub mod protocol;
 pub mod provider;
+pub mod ruling;
 pub mod runner;
 pub mod scheduler;
 pub mod standup;

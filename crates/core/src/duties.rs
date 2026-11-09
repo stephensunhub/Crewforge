@@ -39,8 +39,14 @@ impl Db {
         }
         for d in self.pending_decisions()?.into_iter().filter(|d| d.issue.project_id == project_id) {
             let only_human = d.issue.high_risk || d.issue.kind == "requirement";
+            // 负责人在自主推进里没有裁决、升级给人的议题：带上负责人写的原因
+            let lead_reason: Option<String> = self.conn.lock().unwrap().query_row(
+                "SELECT json_extract(payload,'$.reason') FROM events WHERE kind = 'autopilot_issue_escalated' AND json_extract(payload,'$.issue_id') = ?1 ORDER BY id DESC LIMIT 1",
+                params![d.issue.id], |r| r.get(0)).ok().flatten();
             items.push(DutyItem { kind: "decision".into(), title: format!("议题待拍板：{}", d.issue.title),
-                reason: if only_human { "需求类或高风险议题，只有你能拍板（AI 没有拍板权限）".into() } else { "讨论已结束，等有权限者拍板；你始终可以拍板".into() }, goto: "issues".into(), count: 1 });
+                reason: if let Some(r) = lead_reason { format!("负责人没有裁决，交给你：{r}") }
+                    else if only_human { "需求类或高风险议题，只有你能拍板（AI 没有拍板权限）".into() }
+                    else { "讨论已结束，等有权限者拍板；你始终可以拍板".into() }, goto: "issues".into(), count: 1 });
         }
         for d in self.ai_proposals()?.into_iter().filter(|d| d.issue.project_id == project_id) {
             items.push(DutyItem { kind: "proposal".into(), title: format!("员工提议了议题：{}", d.issue.title), reason: "AI 只能提议；是否值得讨论由你确认，确认前不会占用大家的额度".into(), goto: "issues".into(), count: 1 });
@@ -102,6 +108,7 @@ mod tests {
         let req = db.create_issue(&p.id, "要不要支持多币种", "", "requirement", false, None, None, None).unwrap();
         db.conn.lock().unwrap().execute("UPDATE issues SET status = 'pending_decision' WHERE id = ?1", params![req.id]).unwrap();
         db.create_issue(&p.id, "换个存储引擎？", "", "technical", false, Some(&alice.id), None, None).unwrap();
+        let esc = db.create_issue(&p.id, "要不要升级数据库版本", "", "technical", false, Some(&alice.id), None, None).unwrap();
         // 任务：t1 评审已结束且没有拦合并的意见 → 等确认合并；t2 有拦合并的意见
         for (id, title) in [("t1", "转账"), ("t2", "提现")] {
             db.create_task(&crate::db::Task { id: id.into(), repo_path: "/r".into(), employee_id: alice.id.clone(), title: title.into(), branch: format!("b-{id}"), base_branch: "main".into(),
@@ -113,7 +120,12 @@ mod tests {
         db.set_minutes(&m2.id, "## 行动项\n- [合并前] alice：补边界测试\n- [之后] alice：以后优化\n- [之后] 人类：决定是否支持负数").unwrap();
         db.close_meeting(&m2.id).unwrap();
 
+        // 负责人升级给人的技术议题：待办里带上负责人的原因
+        db.set_issue_status(&esc.id, "discussing").unwrap();
+        db.set_issue_status(&esc.id, "pending_decision").unwrap();
+        db.append_event_for(Some(&p.id), "autopilot_issue_escalated", None, None, &serde_json::json!({"issue_id": esc.id, "reason": "涉及线上数据，依据不足"})).unwrap();
         let d = db.my_duties(&p.id).unwrap();
+        assert!(d.items.iter().any(|i| i.kind == "decision" && i.reason.contains("负责人没有裁决") && i.reason.contains("涉及线上数据")), "{:?}", d.items);
         let kinds: Vec<&str> = d.items.iter().map(|i| i.kind.as_str()).collect();
         for k in ["plan", "decision", "proposal", "merge", "review", "action"] {
             assert!(kinds.contains(&k), "缺少 {k}：{kinds:?}");

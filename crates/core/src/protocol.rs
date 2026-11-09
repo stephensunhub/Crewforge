@@ -29,7 +29,7 @@ pub fn enabled(db: &Db) -> bool {
 pub fn style_for(purpose: &str) -> String {
     match purpose {
         "task" => format!("{COMMON}\n\n{TASK_REPORT}"),
-        "meeting" | "minutes" => COMMON.to_string(),
+        "meeting" | "minutes" | "ruling" => COMMON.to_string(),
         _ => String::new(),
     }
 }

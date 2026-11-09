@@ -384,3 +384,4 @@ button.u-cell:hover { background: var(--panel-2); }
 .ap-line .time { margin-left: 0; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
 .ap-line.ok { color: var(--ok); }
 .ap-line.end { font-weight: 600; background: var(--panel-2); }
+.ap-line.warn { color: var(--warn); }

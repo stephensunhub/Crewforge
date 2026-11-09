@@ -13,6 +13,7 @@ use crate::onboarding::baseline::{CommandResult, Origin, run_commands};
 use crate::onboarding::scan::scan_dir;
 use crate::orchestrator::Orchestrator;
 use crate::plan::PlanItem;
+use crate::ruling::RulingOutcome;
 use crate::runner::{Approver, NoopObserver};
 use crate::scheduler::{Permit, Scheduler};
 use crate::workspace::MergeOutcome;
@@ -441,6 +442,32 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         bail!("多次尝试后仍无法合并")
     }
 
+    /// 负责人裁决 AI 员工提议的一般技术议题（需求类、高风险、代码细节类和人提的议题不碰）。
+    /// 裁决不了的升级给人（议题进入“待决策”，出现在人的待办里），同一个议题不会反复裁决。
+    async fn rule_issues(&self, tried: &mut HashSet<String>) {
+        let Some(lead) = self.members().into_iter().find(|(_, r)| r == "lead").map(|(e, _)| e) else { return };
+        let issues = self.db().list_issues(&self.project_id).unwrap_or_default();
+        let mut n = 0;
+        for i in issues {
+            if n >= 3 || self.over_budget().is_some() || self.ctl.pause.load(Ordering::SeqCst) || self.ctl.stop.load(Ordering::SeqCst) { break; }
+            if i.raised_by.is_none() || !matches!(i.status.as_str(), "open" | "discussing" | "pending_decision") || Orchestrator::lead_can_rule(&i).is_err() || tried.contains(&i.id) { continue; }
+            let escalated: i64 = self.db().conn.lock().unwrap().query_row(
+                "SELECT COUNT(*) FROM events WHERE kind = 'autopilot_issue_escalated' AND json_extract(payload,'$.issue_id') = ?1", [&i.id], |r| r.get(0)).unwrap_or(0);
+            if escalated > 0 { continue; }
+            tried.insert(i.id.clone());
+            n += 1;
+            let _p = self.permit().await;
+            match self.orch.lead_rule_issue(&i.id, &lead, &*self.approver).await {
+                Ok(RulingOutcome::Decided { decision, reason }) => self.say("autopilot_decided", format!("{} 裁决《{}》：{}（原因：{}）", lead.name, i.title, clip(&decision, 120), clip(&reason, 120))),
+                Ok(RulingOutcome::Escalated { reason }) => {
+                    let _ = self.db().append_event_for(Some(&self.project_id), "autopilot_issue_escalated", Some(&lead.id), None, &json!({"run_id": self.run_id, "issue_id": i.id, "title": i.title, "reason": reason, "text": format!("{} 没有裁决《{}》，交给你：{}", lead.name, i.title, clip(&reason, 160))}));
+                }
+                Ok(RulingOutcome::NotForLead { .. }) => {}
+                Err(e) => self.say("autopilot_step", format!("裁决《{}》没有完成：{e}", i.title)),
+            }
+        }
+    }
+
     /// 有两个以上的任务同时在做时开一次站会，先对齐接口和进度。限流：第一次直接开，之后至少合并过一个任务才再开。
     async fn maybe_standup(&self) {
         let Ok(_g) = self.standup_lock.try_lock() else { return };
@@ -471,6 +498,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     pub async fn run(self: Arc<Self>) -> AutopilotRun {
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();
+        let mut ruled: HashSet<String> = HashSet::new();
         let (status, reason) = loop {
             if self.ctl.stop.load(Ordering::SeqCst) { break ("stopped", "你停止了推进".to_string()); }
             let paused = self.ctl.pause.load(Ordering::SeqCst);
@@ -483,6 +511,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             if view.items.iter().filter(|i| i.status != "cancelled").all(|i| i.status == "done") { break ("finished", "计划全部完成".to_string()); }
             // 暂停、预算用尽或有事等人时，不再派新活，只等手上的做完
             if !(paused || budget.is_some() || human.is_some()) {
+                self.rule_issues(&mut ruled).await;
                 let busy: HashSet<String> = running.iter().filter_map(|rid| self.db().get_plan_item(rid).ok().flatten().and_then(|i| i.task_id).and_then(|t| self.db().get_task(&t).ok().flatten()).map(|t| t.employee_id)).collect();
                 let mut busy = busy;
                 let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id)).cloned().collect();

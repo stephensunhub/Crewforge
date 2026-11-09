@@ -65,7 +65,7 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
       {timeline.length === 0 ? <div className="hint">还没有动态。</div> : (
         <div className="ap-timeline">
           {timeline.map((e) => (
-            <div key={e.id} className={`ap-line ${e.kind === "autopilot_merged" ? "ok" : e.kind === "autopilot_finished" ? "end" : ""}`}>
+            <div key={e.id} className={`ap-line ${e.kind === "autopilot_merged" || e.kind === "autopilot_decided" ? "ok" : e.kind === "autopilot_issue_escalated" ? "warn" : e.kind === "autopilot_finished" ? "end" : ""}`}>
               <span className="time">{hms(e.ts)}</span><span>{(e.payload as { text?: string }).text ?? e.kind}</span>
             </div>
           ))}

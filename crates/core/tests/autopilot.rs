@@ -33,6 +33,8 @@ read -r line
 echo '{"type":"system","subtype":"init","session_id":"x"}'
 f="w_$$_$(date +%s%N).txt"
 case "$line" in
+  *负责人裁决*线上数据库*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"action\":\"escalate\",\"reason\":\"涉及线上数据迁移，我没有足够依据\"}","usage":{}}' ;;
+  *负责人裁决*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"我的裁决：\n{\"action\":\"decide\",\"option\":1,\"decision\":\"推送用 SSE\",\"reason\":\"单向推送足够，实现更简单\",\"rejected\":{\"2\":\"WebSocket 要额外处理心跳\"}}","usage":{}}' ;;
   *整理纪要*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"## 决议\n- 同意\n## 被否决的方案及原因\n无\n## 行动项\n- [合并前] alice：补一个说明\n- [之后] 人类：以后再看\n## 待验证的经验\n无","usage":{}}' ;;
   *请评审*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"评审意见：可以。","usage":{}}' ;;
   *站会*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"做完了；无依赖。","usage":{}}' ;;
@@ -160,4 +162,49 @@ async fn preconditions_are_checked_before_starting() {
     // 应用重启后，上次“推进中”的批次被标为已停止
     assert_eq!(e.db.close_orphaned_autopilot_runs().unwrap(), 1);
     assert_eq!(e.db.get_autopilot_run(&run.id).unwrap().unwrap().status, "stopped");
+}
+
+#[tokio::test]
+async fn lead_rules_ai_raised_technical_issues_escalates_the_rest_and_never_touches_human_or_requirement_issues() {
+    let e = setup().await;
+    let alice = e.db.employee_by_name("alice").unwrap().unwrap();
+    let bob = e.db.employee_by_name("bob").unwrap().unwrap();
+    // 1) 员工提议的技术议题，有两个方案 → 负责人裁决
+    let tech = e.db.create_issue(&e.pid, "推送方案：SSE 还是 WebSocket", "选择推送方案", "technical", false, Some(&bob.id), None, None).unwrap();
+    e.db.add_option(&tech.id, "SSE", "单向", None).unwrap();
+    e.db.add_option(&tech.id, "WebSocket", "双向", None).unwrap();
+    // 2) 负责人判断不了的 → 升级给人
+    let hard = e.db.create_issue(&e.pid, "是否升级线上数据库版本", "", "technical", false, Some(&bob.id), None, None).unwrap();
+    // 3) 需求类（AI 提议）、4) 人提的技术议题 → 不碰
+    let req = e.db.create_issue(&e.pid, "要不要支持多币种", "", "requirement", false, Some(&bob.id), None, None).unwrap();
+    let human = e.db.create_issue(&e.pid, "日志用哪个库", "", "technical", false, None, None, None).unwrap();
+
+    let r = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+
+    let t = e.db.get_issue(&tech.id).unwrap().unwrap();
+    assert_eq!((t.status.as_str(), t.decided_by.as_deref(), t.decision.as_deref()), ("decided", Some(alice.id.as_str()), Some("推送用 SSE")), "{t:?}");
+    assert_eq!(t.decision_reason.as_deref(), Some("单向推送足够，实现更简单"));
+    let opts = e.db.issue_options(&tech.id).unwrap();
+    assert_eq!(opts.iter().find(|o| o.title == "SSE").unwrap().status, "chosen");
+    let ws = opts.iter().find(|o| o.title == "WebSocket").unwrap();
+    assert_eq!((ws.status.as_str(), ws.reject_reason.as_deref()), ("rejected", Some("WebSocket 要额外处理心跳")), "没选的方案记录原因");
+    // 决议沉淀为已验证的项目决策记忆
+    let mem = e.db.list_memories(&Default::default()).unwrap();
+    assert!(mem.iter().any(|m| m.kind == "decision" && m.status == "verified" && m.content.contains("SSE")), "{mem:?}");
+
+    let h = e.db.get_issue(&hard.id).unwrap().unwrap();
+    assert_eq!(h.status, "pending_decision", "升级给人：进入待决策");
+    assert!(h.decision.is_none());
+    assert_eq!(e.db.get_issue(&req.id).unwrap().unwrap().status, "open");
+    assert_eq!(e.db.get_issue(&human.id).unwrap().unwrap().status, "open");
+
+    let kinds: Vec<(String, String)> = e.db.recent_events(800).unwrap().into_iter().map(|x| (x.kind, x.payload["text"].as_str().unwrap_or("").to_string())).collect();
+    assert!(kinds.iter().any(|(k, t)| k == "autopilot_decided" && t.contains("推送用 SSE")));
+    assert!(kinds.iter().any(|(k, t)| k == "autopilot_issue_escalated" && t.contains("线上数据")));
+
+    // 同一个议题不会在下一批里被反复裁决
+    let r2 = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
+    let again = e.db.recent_events(800).unwrap().into_iter().filter(|x| x.kind == "autopilot_issue_escalated").count();
+    assert_eq!((r2.status.as_str(), again), ("finished", 1), "{r2:?}");
 }

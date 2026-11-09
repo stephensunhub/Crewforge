@@ -253,6 +253,7 @@ pub fn purpose_label(p: &str) -> &'static str {
         "meeting" => "会议发言",
         "minutes" => "纪要起草",
         "onboarding" => "导入评估",
+        "ruling" => "负责人裁决",
         _ => "其他",
     }
 }
