@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import { Field, Modal } from "./common";
+import { Field, Modal, ReasonButton } from "./common";
 import type { EventRow, Member, PlanItem, PlanItemInput, PlanViewData, Project } from "./types";
 
 const STATUS: Record<string, string> = { proposed: "待确认", planned: "待开始", in_progress: "进行中", done: "已完成", blocked: "已阻塞", cancelled: "已取消" };
@@ -166,7 +166,7 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
                 {["planned", "blocked", "in_progress"].includes(i.status) && <button className="btn" onClick={() => setEditing(i)}>编辑</button>}
                 <button className="btn" onClick={() => void act(() => api.movePlanItem(i.id, -1))}>↑</button>
                 <button className="btn" onClick={() => void act(() => api.movePlanItem(i.id, 1))}>↓</button>
-                {i.status === "planned" && <button className="btn" onClick={() => void act(() => api.setPlanStatus(i.id, "blocked", window.prompt("为什么阻塞？", "") ?? ""))}>阻塞</button>}
+                {i.status === "planned" && <ReasonButton label="阻塞" placeholder="为什么阻塞？" onSubmit={(why) => void act(() => api.setPlanStatus(i.id, "blocked", why))} />}
                 {i.status === "blocked" && <button className="btn" onClick={() => void act(() => api.setPlanStatus(i.id, "planned"))}>解除阻塞</button>}
                 {i.status === "done" && <button className="link" onClick={() => void act(() => api.setPlanStatus(i.id, "planned"))}>重新打开</button>}
                 {["planned", "blocked"].includes(i.status) && <button className="btn danger" onClick={() => void act(() => api.setPlanStatus(i.id, "cancelled", "取消"))}>取消</button>}

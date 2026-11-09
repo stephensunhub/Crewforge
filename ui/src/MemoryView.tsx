@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import { Field, MEMORY_KIND_LABEL, MEMORY_SOURCE_LABEL, MEMORY_STATUS_LABEL, Modal, hhmm } from "./common";
+import { Field, MEMORY_KIND_LABEL, MEMORY_SOURCE_LABEL, MEMORY_STATUS_LABEL, Modal, ReasonButton, hhmm } from "./common";
 import type { EventRow, Member, Memory, MemoryLayer } from "./types";
 
 export type MemoryScope = { layer: "company" } | { layer: "project"; projectId: string } | { layer: "employee"; employeeId: string; name: string };
@@ -112,10 +112,7 @@ export function MemoryView({ scope, events, members, onError, onChanged, embedde
               )}
               {m.status !== "expired" && <button className="btn" onClick={() => setEditing(m)}>编辑</button>}
               {m.status === "verified" && (
-                <button className="btn" onClick={() => {
-                  const reason = window.prompt("为什么过期？（例如：方案已被推翻）", "");
-                  if (reason !== null) void act(() => api.expireMemory(m.id, reason));
-                }}>标记过期</button>
+                <ReasonButton label="标记过期" placeholder="为什么过期？（例如：方案已被推翻）" onSubmit={(reason) => void act(() => api.expireMemory(m.id, reason))} />
               )}
               {m.status === "verified" && m.layer === "project" && members && members.length > 0 && <button className="btn" onClick={() => setLearning(m)}>让员工学习</button>}
             </div>

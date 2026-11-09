@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { ProjectRole } from "./types";
 
 const COLORS = ["#ffb347", "#6ec1ff", "#9be37a", "#e58bff", "#ff8a8a", "#7fe3d0"];
@@ -87,3 +87,23 @@ export const MEETING_KIND_LABEL: Record<string, string> = {
 export const MEMORY_KIND_LABEL: Record<string, string> = { lesson: "经验", decision: "决策", fact: "事实", convention: "规范", pitfall: "踩过的坑" };
 export const MEMORY_STATUS_LABEL: Record<string, string> = { unverified: "待验证", verified: "已验证", expired: "已过期" };
 export const MEMORY_SOURCE_LABEL: Record<string, string> = { human: "人工写入", meeting: "会议纪要", issue: "议题决议", promoted: "学习自项目", onboarding: "导入时确认", agent: "员工提议" };
+
+/** 需要填写原因的按钮。WebView 里没有 window.prompt（调用会直接返回 null、什么都不发生），所以就地展开一个输入框。 */
+export function ReasonButton({ label, placeholder, required = false, className = "btn", onSubmit }: {
+  label: string; placeholder: string; required?: boolean; className?: string; onSubmit: (reason: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  if (!open) return <button className={className} onClick={() => setOpen(true)}>{label}</button>;
+  const ok = !required || text.trim() !== "";
+  const submit = () => { if (!ok) return; onSubmit(text.trim()); setOpen(false); setText(""); };
+  return (
+    <span className="reason-box">
+      <input autoFocus value={text} placeholder={placeholder} onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") setOpen(false); }} />
+      <button className="btn primary" disabled={!ok} onClick={submit}>确认{label}</button>
+      <button className="btn" onClick={() => { setOpen(false); setText(""); }}>取消</button>
+    </span>
+  );
+}
+

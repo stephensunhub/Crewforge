@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { Avatar, Field, ISSUE_STATUS_LABEL, MEETING_KIND_LABEL, Modal, hhmm } from "./common";
+import { Avatar, Field, ISSUE_STATUS_LABEL, MEETING_KIND_LABEL, Modal, ReasonButton, hhmm } from "./common";
 import type { ActionItem, EventRow, IssueView, Meeting, MeetingDetail, MeetingKind, Member, TaskView } from "./types";
 
 export function MeetingsView({ projectId, meetings, members, issues, tasks, events, running, focusId, onFocused, onChanged, onError }: {
@@ -263,6 +263,7 @@ function ActionPanel({ meeting, members, tasks, events, minutesKey, onError, onC
 }) {
   const [items, setItems] = useState<ActionItem[]>([]);
   const [pick, setPick] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState<Record<string, { text: string; bad: boolean }>>({});
   const load = useCallback(async () => {
     try { setItems((await api.actionItems(meeting.id)).filter((a) => a.status !== "dropped")); } catch (e) { onError(String(e)); }
   }, [meeting.id, onError]);
@@ -275,6 +276,19 @@ function ActionPanel({ meeting, members, tasks, events, minutesKey, onError, onC
   const blocking = open.filter((a) => a.blocking && meeting.task_id);
 
   async function act(fn: () => Promise<unknown>) { try { await fn(); await load(); onChanged(); } catch (e) { onError(String(e)); } }
+
+  // 派活的结果就地显示在这一项下面：员工在忙、不是评审对象的负责人等原因，顶部的提示条容易看漏，看起来就像“点了没反应”
+  async function dispatch(id: string, employeeId: string) {
+    const who = members.find((x) => x.employee_id === employeeId)?.name ?? "TA";
+    setNotice((n) => ({ ...n, [id]: { text: "正在派活…", bad: false } }));
+    try {
+      await api.dispatchAction(id, employeeId);
+      setNotice((n) => ({ ...n, [id]: { text: `已派给 ${who}。TA 开始处理后这里会变成“处理中”；如果并发已满或额度紧张，会先排队。`, bad: false } }));
+      await load(); onChanged();
+    } catch (e) {
+      setNotice((n) => ({ ...n, [id]: { text: String(e).replace(/^Error:\s*/, ""), bad: true } }));
+    }
+  }
 
   return (
     <div className="actions">
@@ -303,16 +317,14 @@ function ActionPanel({ meeting, members, tasks, events, minutesKey, onError, onC
                       {members.map((m) => <option key={m.employee_id} value={m.employee_id}>{m.name}</option>)}
                     </select>
                     <button className="btn" disabled={!target} title="让 TA 处理这一项。对进行中任务的评审意见，只能交给该任务的员工，在同一个分支里改"
-                      onClick={() => void act(() => api.dispatchAction(a.id, target))}>{a.status === "working" ? "再派一次" : "交给 TA 处理"}</button>
+                      onClick={() => void dispatch(a.id, target)}>{a.status === "working" ? "再派一次" : "交给 TA 处理"}</button>
                   </>
                 )}
                 <button className="btn primary" onClick={() => void act(() => api.setActionStatus(a.id, "done"))}>已处理</button>
-                <button className="btn" onClick={() => {
-                  const why = window.prompt("为什么不处理这一项？（会记录下来）", "");
-                  if (why && why.trim()) void act(() => api.setActionStatus(a.id, "dismissed", why));
-                }}>驳回</button>
+                <ReasonButton label="驳回" required placeholder="为什么不处理这一项？（会记录下来）" onSubmit={(why) => void act(() => api.setActionStatus(a.id, "dismissed", why))} />
               </div>
             )}
+            {live && notice[a.id] && a.status !== "working" && <div className={`hint ${notice[a.id].bad ? "bad" : ""}`}>{notice[a.id].text}</div>}
             {!live && <button className="link" onClick={() => void act(() => api.setActionStatus(a.id, "open"))}>重新打开</button>}
           </div>
         );
