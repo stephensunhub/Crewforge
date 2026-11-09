@@ -145,49 +145,32 @@ export default function App() {
 
   return (
     <div className="app">
-      <aside className="sidenav">
+      <header className="topbar">
         <div className="brand"><img src="/logo.png" alt="" /><b>Crewforge</b></div>
-        <nav className="nav-scroll">
-          <div className="nav-group-title">公司</div>
-          <button className={`nav-item ${scope.kind === "company" ? "on" : ""}`} onClick={() => setScope({ kind: "company" })}>{company?.name ?? "公司"}</button>
-          {scope.kind === "company" && tabs && (
-            <div className="nav-sub">{tabs.map(([k, label]) => <button key={k} className={activeTab === k ? "on" : ""} onClick={() => setTab(k)}>{label}</button>)}</div>
-          )}
-
-          <div className="nav-group-title">项目</div>
-          {projects.length === 0 && <div className="hint" style={{ padding: "4px 10px" }}>还没有项目</div>}
-          {projects.map((p) => {
-            const on = scope.kind === "project" && scope.id === p.project.id;
-            return (
-              <div key={p.project.id}>
-                <button className={`nav-item ${on ? "on" : ""}`} title={p.project.path} onClick={() => openProject(p.project.id)}>
-                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.project.name}</span>
-                  {p.active_tasks > 0 && <i className="pip" title={`${p.active_tasks} 个进行中任务`} />}
-                </button>
-                {on && tabs && (
-                  <div className="nav-sub">{tabs.map(([k, label]) => <button key={k} className={activeTab === k ? "on" : ""} onClick={() => setTab(k)}>{label}</button>)}</div>
-                )}
-              </div>
-            );
-          })}
+        <nav className="scopes">
+          <button className={`scope ${scope.kind === "company" ? "on" : ""}`} onClick={() => setScope({ kind: "company" })}>{company?.name ?? "公司"}</button>
+          {projects.map((p) => (
+            <button key={p.project.id} className={`scope ${scope.kind === "project" && scope.id === p.project.id ? "on" : ""}`} onClick={() => openProject(p.project.id)}>
+              {p.project.name}{p.active_tasks > 0 && <i className="pip" title={`${p.active_tasks} 个进行中任务`} />}
+            </button>
+          ))}
         </nav>
-
-        <div className="nav-bottom">
+        <div className="top-right">
           {sched && <SchedChip s={sched} onSettings={() => setScope({ kind: "settings" })} onAction={schedAction} />}
           {quota && (
-            <div className="quota" title={`Claude 额度状态：${quota.status}`}>
+            <div className="quota" title={`额度状态：${quota.status}`}>
               {([["5h", quota.five_hour], ["7d", quota.seven_day]] as const).map(([l, v]) => (
-                <div key={l} style={{ flex: 1 }}>{l} {v != null ? `${Math.round(v * 100)}%` : "?"}
+                <div key={l}>{l} {v != null ? `${Math.round(v * 100)}%` : "?"}
                   <div className="meter"><i className={(v ?? 0) > 0.85 ? "hot" : ""} style={{ width: `${Math.min(100, (v ?? 0) * 100)}%` }} /></div></div>
               ))}
             </div>
           )}
-          <button className={`nav-item ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)}>
-            🔔 待你处理{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length > 0 && <span className="count" style={{ marginLeft: "auto" }}>{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length}</span>}
+          <button className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
+            🔔{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length > 0 && <span className="count">{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length}</span>}
           </button>
-          <button className={`nav-item ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>用量</button>
-          <button className={`nav-item ${scope.kind === "models" ? "on" : ""}`} onClick={() => setScope({ kind: "models" })}>模型</button>
-          <button className={`nav-item ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })}>设置</button>
+          <button className={`icon-btn text ${scope.kind === "models" ? "on" : ""}`} onClick={() => setScope({ kind: "models" })}>模型</button>
+          <button className={`icon-btn text ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>用量</button>
+          <button className={`icon-btn ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })} title="设置">⚙</button>
         </div>
         {inbox && (
           <div className="inbox">
@@ -242,9 +225,17 @@ export default function App() {
             ))}
           </div>
         )}
-      </aside>
+      </header>
 
-      <div className="shell-main">
+      {tabs && (
+        <div className="tabbar">
+          {tabs.map(([k, label]) => (
+            <button key={k} className={`tab ${activeTab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
+          ))}
+          {scope.kind === "project" && currentProject && <span className="hint tabbar-path" title={currentProject.project.path}>{currentProject.project.path}</span>}
+        </div>
+      )}
+
       {error && <div className="banner"><span>{error}</span><button onClick={() => setError("")}>✕</button></div>}
 
       <main className="content">
@@ -263,7 +254,6 @@ export default function App() {
         {scope.kind === "models" && <ModelsView onError={setError} />}
         {scope.kind === "settings" && <SettingsView sched={sched} onConcurrency={(n) => void changeConcurrency(n)} onAction={schedAction} />}
       </main>
-      </div>
     </div>
   );
 }
