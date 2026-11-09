@@ -401,3 +401,5 @@ button.u-cell:hover { background: var(--panel-2); }
 .navbtns { display: flex; gap: 2px; align-items: center; margin-right: 4px; }
 .navbtns .icon-btn { font-size: 18px; line-height: 1; padding: 2px 8px; }
 .navbtns .icon-btn:disabled { opacity: .3; cursor: default; }
+
+.action.focus { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }

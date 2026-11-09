@@ -88,6 +88,9 @@ export const MEMORY_KIND_LABEL: Record<string, string> = { lesson: "经验", dec
 export const MEMORY_STATUS_LABEL: Record<string, string> = { unverified: "待验证", verified: "已验证", expired: "已过期" };
 export const MEMORY_SOURCE_LABEL: Record<string, string> = { human: "人工写入", meeting: "会议纪要", issue: "议题决议", promoted: "学习自项目", onboarding: "导入时确认", agent: "员工提议" };
 
+/** 从“待你处理”点进会议时，要定位到哪一条行动项（打开会议是异步的，用模块级变量传递，行动项加载后取走）。 */
+export const focusAction: { id: string | null } = { id: null };
+
 /** 需要填写原因的按钮。WebView 里没有 window.prompt（调用会直接返回 null、什么都不发生），所以就地展开一个输入框。 */
 export function ReasonButton({ label, placeholder, required = false, className = "btn", onSubmit }: {
   label: string; placeholder: string; required?: boolean; className?: string; onSubmit: (reason: string) => void;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { Avatar, Field, ISSUE_STATUS_LABEL, MEETING_KIND_LABEL, Modal, ReasonButton, hhmm } from "./common";
+import { Avatar, Field, ISSUE_STATUS_LABEL, MEETING_KIND_LABEL, Modal, ReasonButton, focusAction, hhmm } from "./common";
 import type { ActionItem, EventRow, IssueView, Meeting, MeetingDetail, MeetingKind, Member, TaskView } from "./types";
 
 export function MeetingsView({ projectId, meetings, members, issues, tasks, events, running, focusId, onFocused, onChanged, onError }: {
@@ -21,7 +21,8 @@ export function MeetingsView({ projectId, meetings, members, issues, tasks, even
   const activeWorkers = new Set(tasks.filter((t) => t.task.status === "active").map((t) => t.task.employee_id)).size;
 
   useEffect(() => { if (focusId) { setSelected(focusId); onFocused(); } }, [focusId, onFocused]);
-  useEffect(() => { if (!selected && meetings[0]) setSelected(meetings[0].id); }, [meetings, selected]);
+  // 有要定位的会议时不要默认选第一场（两个 effect 在同一次渲染里都看到 selected 为空，后一个会把前一个的选择覆盖掉）
+  useEffect(() => { if (!selected && !focusId && meetings[0]) setSelected(meetings[0].id); }, [meetings, selected, focusId]);
 
   return (
     <div className="split">
@@ -264,12 +265,22 @@ function ActionPanel({ meeting, members, tasks, events, minutesKey, onError, onC
   const [items, setItems] = useState<ActionItem[]>([]);
   const [pick, setPick] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Record<string, { text: string; bad: boolean }>>({});
+  const [flash, setFlash] = useState<string | null>(null);
   const load = useCallback(async () => {
     try { setItems((await api.actionItems(meeting.id)).filter((a) => a.status !== "dropped")); } catch (e) { onError(String(e)); }
   }, [meeting.id, onError]);
   // 纪要改动（自动起草或手动保存）后行动项会重新同步；处理状态变化、任务结束时也刷新
   const last = useMemo(() => events.reduce((m, e) => (["action_item_status", "meeting_minutes", "task_merged", "turn_result"].includes(e.kind) ? Math.max(m, e.id) : m), 0), [events]);
   useEffect(() => { void load(); }, [load, minutesKey, last]);
+  // 从“待你处理”点进来的：滚动到那一条并高亮（会议已结束时，行动项仍然可以处理）
+  useEffect(() => {
+    const id = focusAction.id;
+    if (!id || !items.some((a) => a.id === id)) return;
+    focusAction.id = null;
+    setFlash(id);
+    setTimeout(() => document.getElementById(`action-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60);
+    setTimeout(() => setFlash(null), 6000);
+  }, [items]);
   if (items.length === 0) return null;
   const owner = tasks.find((t) => t.task.id === meeting.task_id)?.task.employee_id ?? null;
   const open = items.filter((a) => a.status === "open" || a.status === "working");
@@ -294,18 +305,19 @@ function ActionPanel({ meeting, members, tasks, events, minutesKey, onError, onC
     <div className="actions">
       <div className="minutes-head">
         <b>行动项</b>
-        <span className="hint">{open.length === 0 ? "全部处理完了" : `${open.length} 条未处理`}{blocking.length > 0 ? `，其中 ${blocking.length} 条会拦住任务的合并` : ""}</span>
+        <span className="hint">{meeting.status !== "open" ? "会议已结束，但行动项仍然要处理。" : ""}{open.length === 0 ? "全部处理完了" : `${open.length} 条未处理`}{blocking.length > 0 ? `，其中 ${blocking.length} 条会拦住任务的合并` : ""}</span>
       </div>
       {items.map((a) => {
         const target = pick[a.id] ?? a.assignee_id ?? owner ?? "";
         const live = a.status === "open" || a.status === "working";
         return (
-          <div className={`action ${a.status}`} key={a.id}>
+          <div className={`action ${a.status} ${flash === a.id ? "focus" : ""}`} key={a.id} id={`action-${a.id}`}>
             <div className="action-top">
               {meeting.task_id && <span className={`badge ${a.blocking ? "ab-block" : ""}`}>{a.blocking ? "合并前" : "之后"}</span>}
               <span className={`badge as-${a.status}`}>{ACTION_STATUS[a.status]}</span>
               <span className="hint">{a.assignee_name ? `负责人 ${a.assignee_name}` : a.for_human ? "需要你处理" : "未指定负责人"}</span>
             </div>
+            {flash === a.id && <div className="note ok" style={{ margin: "4px 0" }}>就是这一条：你决定后，点下面的“已处理”（或写明原因后“驳回”）。</div>}
             <div>{a.text}</div>
             {a.note && <div className="hint">备注：{a.note}</div>}
             {live && (

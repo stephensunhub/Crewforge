@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+import { focusAction } from "./common";
 import type { AutopilotStatus, Duties, EventRow } from "./types";
 import type { ProjectTab } from "./ProjectView";
 
@@ -102,7 +103,7 @@ export function DutiesPanel({ projectId, projectName, events, onGoTab, onOpenMee
                   <span className="badge" style={{ marginRight: 8 }}>{KIND_LABEL[it.kind] ?? it.kind}</span><b>{it.title}</b>
                   <div className="hint" style={{ marginTop: 3 }}>为什么是你：{it.reason}</div>
                 </div>
-                <button className="btn primary" onClick={() => (it.meeting_id ? onOpenMeeting(it.meeting_id) : onGoTab(it.goto as ProjectTab))}>去处理</button>
+                <button className="btn primary" onClick={() => { if (it.meeting_id) { focusAction.id = it.action_id; onOpenMeeting(it.meeting_id); } else onGoTab(it.goto as ProjectTab); }}>去处理</button>
               </div>
             ))}
           </div>

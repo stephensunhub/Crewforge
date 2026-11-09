@@ -20,6 +20,8 @@ pub struct DutyItem {
     pub count: usize,
     /// 要去处理的会议（行动项所在的会议）；没有则只跳到页签
     pub meeting_id: Option<String>,
+    /// 具体是哪一条行动项（打开会议后定位到它）
+    pub action_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,7 +39,7 @@ impl Db {
         let mut items = Vec::new();
         let plan = self.plan_view(project_id)?;
         if plan.counts.proposed > 0 {
-            items.push(DutyItem { kind: "plan".into(), title: format!("AI 起草了 {} 个计划条目", plan.counts.proposed), reason: "计划要你批准后才会派活，批准之前员工不会开始做".into(), goto: "plan".into(), count: plan.counts.proposed, meeting_id: None });
+            items.push(DutyItem { kind: "plan".into(), title: format!("AI 起草了 {} 个计划条目", plan.counts.proposed), reason: "计划要你批准后才会派活，批准之前员工不会开始做".into(), goto: "plan".into(), count: plan.counts.proposed, meeting_id: None, action_id: None });
         }
         for d in self.pending_decisions()?.into_iter().filter(|d| d.issue.project_id == project_id) {
             let only_human = d.issue.high_risk || d.issue.kind == "requirement";
@@ -48,10 +50,10 @@ impl Db {
             items.push(DutyItem { kind: "decision".into(), title: format!("议题待拍板：{}", d.issue.title),
                 reason: if let Some(r) = lead_reason { format!("负责人没有裁决，交给你：{r}") }
                     else if only_human { "需求类或高风险议题，只有你能拍板（AI 没有拍板权限）".into() }
-                    else { "讨论已结束，等有权限者拍板；你始终可以拍板".into() }, goto: "issues".into(), count: 1, meeting_id: None });
+                    else { "讨论已结束，等有权限者拍板；你始终可以拍板".into() }, goto: "issues".into(), count: 1, meeting_id: None, action_id: None });
         }
         for d in self.ai_proposals()?.into_iter().filter(|d| d.issue.project_id == project_id) {
-            items.push(DutyItem { kind: "proposal".into(), title: format!("员工提议了议题：{}", d.issue.title), reason: "AI 只能提议；是否值得讨论由你确认，确认前不会占用大家的额度".into(), goto: "issues".into(), count: 1, meeting_id: None });
+            items.push(DutyItem { kind: "proposal".into(), title: format!("员工提议了议题：{}", d.issue.title), reason: "AI 只能提议；是否值得讨论由你确认，确认前不会占用大家的额度".into(), goto: "issues".into(), count: 1, meeting_id: None, action_id: None });
         }
         let conn = self.conn.lock().unwrap();
         // 评审已结束、没有拦合并的行动项：等你确认合并
@@ -62,26 +64,26 @@ impl Db {
             let blocking: i64 = conn.query_row("SELECT COUNT(*) FROM action_items WHERE task_id = ?1 AND blocking = 1 AND status IN ('open','working')", params![tid], |r| r.get(0))?;
             let reviewed: i64 = conn.query_row("SELECT COUNT(*) FROM meetings WHERE task_id = ?1 AND kind = 'code_review' AND status = 'closed'", params![tid], |r| r.get(0))?;
             if blocking > 0 {
-                items.push(DutyItem { kind: "review".into(), title: format!("《{title}》有 {blocking} 条拦合并的评审意见"), reason: "员工改完不等于解决：处理中的意见仍拦着合并，需要你确认已解决（或写明原因后放行）".into(), goto: "meetings".into(), count: blocking as usize, meeting_id: None });
+                items.push(DutyItem { kind: "review".into(), title: format!("《{title}》有 {blocking} 条拦合并的评审意见"), reason: "员工改完不等于解决：处理中的意见仍拦着合并，需要你确认已解决（或写明原因后放行）".into(), goto: "meetings".into(), count: blocking as usize, meeting_id: None, action_id: None });
             } else if reviewed > 0 {
-                items.push(DutyItem { kind: "merge".into(), title: format!("《{title}》评审已结束，等你确认合并"), reason: "合并到主分支由项目负责人最终确认；负责人是你，所以由你来点合并".into(), goto: "tasks".into(), count: 1, meeting_id: None });
+                items.push(DutyItem { kind: "merge".into(), title: format!("《{title}》评审已结束，等你确认合并"), reason: "合并到主分支由项目负责人最终确认；负责人是你，所以由你来点合并".into(), goto: "tasks".into(), count: 1, meeting_id: None, action_id: None });
             }
         }
         // 明确需要你决定的行动项：每一条单独列出，并指向它所在的会议（不然只知道“有 2 件事”，却不知道去哪里找）
-        let mine: Vec<(String, String, String)> = {
-            let mut s = conn.prepare("SELECT a.text, a.meeting_id, m.title FROM action_items a JOIN meetings m ON m.id = a.meeting_id
+        let mine: Vec<(String, String, String, String)> = {
+            let mut s = conn.prepare("SELECT a.text, a.meeting_id, m.title, a.id FROM action_items a JOIN meetings m ON m.id = a.meeting_id
                 WHERE a.project_id = ?1 AND a.for_human = 1 AND a.status IN ('open','working') ORDER BY a.created_at")?;
-            s.query_map(params![project_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?
+            s.query_map(params![project_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<std::result::Result<_, _>>()?
         };
-        for (text, meeting_id, meeting_title) in mine {
+        for (text, meeting_id, meeting_title, action_id) in mine {
             let shown: String = text.chars().take(120).collect();
             items.push(DutyItem { kind: "action".into(), title: format!("{}{}", shown, if text.chars().count() > 120 { "…" } else { "" }),
                 reason: format!("会议《{meeting_title}》的纪要里指明要由人来决定；只有人能关闭行动项。点“去处理”会打开那场会议，在纪要下方的行动项里点“已处理”（或写明原因后“驳回”）"),
-                goto: "meetings".into(), count: 1, meeting_id: Some(meeting_id) });
+                goto: "meetings".into(), count: 1, meeting_id: Some(meeting_id), action_id: Some(action_id) });
         }
         let unverified: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE project_id = ?1 AND status = 'unverified'", params![project_id], |r| r.get(0))?;
         if unverified > 0 {
-            items.push(DutyItem { kind: "memory".into(), title: format!("{unverified} 条 AI 总结的经验等你验证"), reason: "没验证的经验不会注入给员工；你确认它真的有用，员工才会用上".into(), goto: "memory".into(), count: unverified as usize, meeting_id: None });
+            items.push(DutyItem { kind: "memory".into(), title: format!("{unverified} 条 AI 总结的经验等你验证"), reason: "没验证的经验不会注入给员工；你确认它真的有用，员工才会用上".into(), goto: "memory".into(), count: unverified as usize, meeting_id: None, action_id: None });
         }
         let later: i64 = conn.query_row(
             "SELECT COUNT(*) FROM action_items WHERE project_id = ?1 AND status IN ('open','working') AND for_human = 0
