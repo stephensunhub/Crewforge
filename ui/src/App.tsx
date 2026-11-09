@@ -124,6 +124,20 @@ export default function App() {
   async function changeConcurrency(n: number) {
     try { await api.setConcurrency(n); setSched(await api.schedulerStatus()); } catch (e) { setError(String(e)); }
   }
+  // 待办来源很多（事件之外，命令行或别的进程也会改库）：定时刷新并在窗口重新获得焦点时刷新，保证角标不过期
+  const refreshInbox = useCallback(() => {
+    void api.pendingDecisions().then(setPending).catch(() => undefined);
+    void api.pendingProposals().then(setProposals).catch(() => undefined);
+    void api.actionCounts().then(setActionCounts).catch(() => undefined);
+    void api.planProposedCounts().then(setPlanCounts).catch(() => undefined);
+    void api.unverifiedCounts().then(setUnverified).catch(() => undefined);
+    void api.projects().then(setProjects).catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    const t = window.setInterval(refreshInbox, 20000);
+    window.addEventListener("focus", refreshInbox);
+    return () => { window.clearInterval(t); window.removeEventListener("focus", refreshInbox); };
+  }, [refreshInbox]);
   // 额度窗口到期会自动恢复，没有事件可等；定时刷新让倒计时和状态保持准确
   useEffect(() => {
     const t = window.setInterval(() => void api.schedulerStatus().then(setSched).catch(() => undefined), 15000);
@@ -141,6 +155,9 @@ export default function App() {
 
   const tabs = scope.kind === "company" ? COMPANY_TABS : scope.kind === "project" ? PROJECT_TABS.filter(([k]) => k !== "onboarding" || (currentProject?.project.onboarding ?? "none") !== "none") : null;
   const activeTab = scope.kind === "company" ? companyTab : projectTab;
+  // 角标是待处理事项的总数（不是“有待办的项目数”）：行动项、待验证经验、待确认的计划条目都按条数算
+  const sum = (a: [string, string, number][]) => a.reduce((n, x) => n + x[2], 0);
+  const inboxTotal = approvals.length + pending.length + proposals.length + sum(unverified) + sum(actionCounts) + sum(planCounts);
   const setTab = (t: string) => (scope.kind === "company" ? setCompanyTab(t as CompanyTab) : setProjectTab(t as ProjectTab));
 
   return (
@@ -166,7 +183,7 @@ export default function App() {
             </div>
           )}
           <button className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
-            🔔{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length > 0 && <span className="count">{approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length}</span>}
+            🔔{inboxTotal > 0 && <span className="count">{inboxTotal}</span>}
           </button>
           <button className={`icon-btn text ${scope.kind === "models" ? "on" : ""}`} onClick={() => setScope({ kind: "models" })}>模型</button>
           <button className={`icon-btn text ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>用量</button>
@@ -175,7 +192,7 @@ export default function App() {
         {inbox && (
           <div className="inbox">
             <b>待你处理</b>
-            {approvals.length + pending.length + unverified.length + proposals.length + actionCounts.length + planCounts.length === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
+            {inboxTotal === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
             {planCounts.map(([pid, pname, n]) => (
               <div className="inbox-item" key={`plan-${pid}`}>
                 <div>AI 起草了 <b>{n}</b> 个计划条目，等你确认<span className="hint"> · {pname}</span></div>
