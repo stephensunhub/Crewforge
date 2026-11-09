@@ -298,7 +298,7 @@ export interface PlanItemInput { title: string; description: string; acceptance:
 
 export interface ModelEntry { provider: string; model_id: string; label: string; note: string; enabled: boolean; builtin: boolean }
 export interface ProviderStatus { provider: string; label: string; enabled: boolean; installed: boolean; version: string; program: string; employees: number }
-export interface ModelsOverview { providers: ProviderStatus[]; models: ModelEntry[]; purposes: [string, string, Record<string, string>][] }
+export interface ModelsOverview { providers: ProviderStatus[]; models: ModelEntry[]; purposes: [string, string, Record<string, string>][]; recommended: [string, string, string][] }
 
 export interface UsageFilter {
   since?: number | null; until?: number | null; provider?: string | null; employeeId?: string | null; projectId?: string | null;

@@ -846,6 +846,8 @@ pub struct ModelsOverview {
     models: Vec<crewforge_core::models::ModelEntry>,
     /// 用途 → (引擎 → 默认模型)；空字符串表示引擎默认
     purposes: Vec<(String, String, std::collections::HashMap<String, String>)>,
+    /// Claude 各用途的推荐：(用途, 模型, 理由)
+    recommended: Vec<(String, String, String)>,
 }
 
 fn copilot_program(state: &AppState) -> String {
@@ -877,7 +879,8 @@ pub async fn models_overview(state: State<'_, AppState>) -> CmdResult<ModelsOver
         }
         purposes.push((k.to_string(), label.to_string(), m));
     }
-    Ok(ModelsOverview { providers, models: state.db.list_models(None).map_err(err)?, purposes })
+    let recommended = crewforge_core::models::RECOMMENDED_CLAUDE.iter().map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string())).collect();
+    Ok(ModelsOverview { providers, models: state.db.list_models(None).map_err(err)?, purposes, recommended })
 }
 
 #[tauri::command]
@@ -898,6 +901,12 @@ pub fn set_model_enabled(state: State<'_, AppState>, provider: String, model_id:
 #[tauri::command]
 pub fn remove_model(state: State<'_, AppState>, provider: String, model_id: String) -> CmdResult<()> {
     state.db.remove_model(&provider, &model_id).map_err(err)
+}
+
+/// 把推荐模型填进 Claude 还没设置的用途；返回填了几项。
+#[tauri::command]
+pub fn apply_recommended_models(state: State<'_, AppState>) -> CmdResult<usize> {
+    state.db.apply_recommended_models().map_err(err)
 }
 
 #[tauri::command]

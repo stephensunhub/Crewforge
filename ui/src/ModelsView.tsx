@@ -76,8 +76,16 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
                         </td>
                       );
                     })}
+                    {(() => {
+                      const r = o.recommended.find((x) => x[0] === k);
+                      return <td className="hint" title={r?.[2]}>{r ? <><b>{r[1]}</b> · {r[2]}</> : "—"}</td>;
+                    })()}
                   </tr>))}</tbody>
               </table>
+              <div className="row" style={{ gap: 10, marginTop: 10, alignItems: "center" }}>
+                <button className="btn" disabled={busy === "rec"} onClick={() => void act("rec", () => api.applyRecommendedModels(), "已应用推荐")}>应用推荐（只填还没设置的用途）</button>
+                <span className="hint">思路：次数少、影响大的判断（裁决、计划）用强模型；量最大的开发和讨论用中档；整理类用小模型。只改 Claude 的用途默认，员工自己指定的模型不受影响。</span>
+              </div>
               <div className="hint" style={{ marginTop: 10 }}>实际用了哪个模型，可以在“用量 → 按模型”和“调用明细”里核对。</div>
             </>
           )}

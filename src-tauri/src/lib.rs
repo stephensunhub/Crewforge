@@ -85,6 +85,7 @@ pub fn run() {
             commands::set_model_enabled,
             commands::remove_model,
             commands::set_purpose_model,
+            commands::apply_recommended_models,
             commands::discover_copilot_models,
             commands::install_copilot,
             commands::set_copilot_program,

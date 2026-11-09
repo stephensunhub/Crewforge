@@ -24,6 +24,19 @@ CREATE TABLE models (
 /// 可以设默认模型的用途。
 pub const PURPOSES: &[(&str, &str)] = &[("task", "开发任务"), ("meeting", "会议发言"), ("minutes", "纪要起草"), ("ruling", "负责人裁决"), ("planning", "负责人计划"), ("docs", "负责人文档"), ("curation", "负责人整理记忆"), ("onboarding", "导入评估")];
 
+/// Claude Code 各用途的推荐模型：难判断、次数少的用强模型，日常开发和讨论用中档，纯整理用小模型。
+/// 只是建议，由用户点“应用推荐”才会写入，而且只填还没设置的用途。
+pub const RECOMMENDED_CLAUDE: &[(&str, &str, &str)] = &[
+    ("task", "sonnet", "日常开发、写测试、修常规 bug，量最大，用中档"),
+    ("meeting", "sonnet", "讨论要有判断力，但每次发言很短"),
+    ("minutes", "haiku", "把已有的讨论整理成纪要，轻量"),
+    ("ruling", "opus", "技术裁决影响后续方向，次数少，值得用强模型"),
+    ("planning", "opus", "起草和调整计划决定整个批次的走向，次数少"),
+    ("docs", "sonnet", "读代码写概览，要准确但不需要最强"),
+    ("curation", "sonnet", "核实记忆是否与代码一致，需要读代码"),
+    ("onboarding", "sonnet", "导入评估读大量代码，中档够用"),
+];
+
 /// Claude Code 内置可选项：别名（CLI 解析为最新版本）与完整模型名。
 const CLAUDE_SEED: &[(&str, &str, &str)] = &[
     ("opus", "Opus（别名）", "最强，适合难任务；用量大时很贵"),
@@ -173,6 +186,18 @@ impl Db {
         self.set_setting(&format!("model.{provider}.{purpose}"), model.trim())
     }
 
+    /// 把推荐模型填进 Claude 还没设置的用途（已设置的不动）。返回填了几项。
+    pub fn apply_recommended_models(&self) -> Result<usize> {
+        let mut n = 0;
+        for (purpose, model, _) in RECOMMENDED_CLAUDE {
+            if self.purpose_model("claude", purpose)?.is_empty() {
+                self.set_purpose_model("claude", purpose, model)?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
     /// 最终使用的模型：员工指定 > 用途默认 > 引擎默认（None）。
     pub fn effective_model(&self, provider: &str, employee_model: &str, purpose: &str) -> Result<Option<String>> {
         if !employee_model.trim().is_empty() {
@@ -185,6 +210,19 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn applying_recommended_models_only_fills_blanks() {
+        let db = Db::open_memory().unwrap();
+        db.set_purpose_model("claude", "task", "opus").unwrap();
+        assert_eq!(db.apply_recommended_models().unwrap(), RECOMMENDED_CLAUDE.len() - 1);
+        assert_eq!(db.purpose_model("claude", "task").unwrap(), "opus", "已设置的不覆盖");
+        assert_eq!(db.purpose_model("claude", "ruling").unwrap(), "opus");
+        assert_eq!(db.purpose_model("claude", "minutes").unwrap(), "haiku");
+        assert_eq!(db.purpose_model("copilot", "minutes").unwrap(), "", "Copilot 不动");
+        assert_eq!(db.apply_recommended_models().unwrap(), 0);
+        assert!(RECOMMENDED_CLAUDE.iter().all(|(p, _, _)| PURPOSES.iter().any(|(k, _)| k == p)));
+    }
 
     #[test]
     fn parses_the_model_list_from_copilot_help() {

@@ -34,6 +34,7 @@ export const api = {
   addModel: (provider: string, modelId: string, label: string) => invoke<void>("add_model", { provider, modelId, label }),
   setModelEnabled: (provider: string, modelId: string, enabled: boolean) => invoke<void>("set_model_enabled", { provider, modelId, enabled }),
   removeModel: (provider: string, modelId: string) => invoke<void>("remove_model", { provider, modelId }),
+  applyRecommendedModels: () => invoke<number>("apply_recommended_models"),
   setPurposeModel: (provider: string, purpose: string, model: string) => invoke<void>("set_purpose_model", { provider, purpose, model }),
   discoverCopilotModels: () => invoke<number>("discover_copilot_models"),
   installCopilot: () => invoke<string>("install_copilot"),
