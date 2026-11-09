@@ -432,6 +432,41 @@ pub fn close_meeting(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     state.db.close_meeting(&id).map_err(err)
 }
 
+/// 开站会：系统先汇总事实，在做事的成员依次各报告一次，再做对齐检查并起草纪要。立即返回会议，其余在后台进行。
+#[tauri::command]
+pub async fn start_standup(app: AppHandle, state: State<'_, AppState>, project_id: String) -> CmdResult<Meeting> {
+    let (m, who) = state.orch.start_standup(&project_id).await.map_err(err)?;
+    let (db, orch, sched, running) = (state.db.clone(), state.orch.clone(), state.sched.clone(), state.running.clone());
+    let approver = UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: None };
+    let (app2, mid) = (app.clone(), m.id.clone());
+    tauri::async_runtime::spawn(async move {
+        let say = |t: String| { let _ = db.post_message(&mid, "system", None, &t); };
+        for emp in who {
+            // 正在执行任务的成员不打断：以系统记录的事实为准
+            if !running.lock().unwrap().insert(emp.name.clone()) {
+                say(format!("{} 正在执行任务，这次不打断，以上面系统记录的现状为准。", emp.name));
+                continue;
+            }
+            let _ = app2.emit("crewforge://running", running.lock().unwrap().iter().cloned().collect::<Vec<_>>());
+            let res: anyhow::Result<()> = async {
+                let _permit = sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
+                orch.meeting_reply(&mid, &emp, &approver).await.map(|_| ())
+            }.await;
+            if let Err(e) = res { say(format!("{}：{e}", emp.name)); }
+            running.lock().unwrap().remove(&emp.name);
+            let _ = app2.emit("crewforge://running", running.lock().unwrap().iter().cloned().collect::<Vec<_>>());
+        }
+        if let Err(e) = orch.standup_alignment_check(&mid).await { say(format!("对齐检查失败：{e}")); }
+        let res: anyhow::Result<()> = async {
+            let _permit = sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
+            orch.draft_minutes(&mid, &approver).await.map(|_| ())
+        }.await;
+        if let Err(e) = res { say(format!("纪要没有起草：{e}。可以稍后手动让主持人起草。")); }
+        let _ = db.append_event("meeting_minutes", None, None, &serde_json::json!({"meeting_id": mid}));
+    });
+    Ok(m)
+}
+
 /// 邀请外部临时 AI（顾问）加入会议。用户直接邀请视为已批准。
 #[tauri::command]
 pub fn invite_guest(state: State<'_, AppState>, meeting_id: String, name: String, brief: String, hours: Option<i64>) -> CmdResult<()> {

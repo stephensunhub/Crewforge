@@ -58,6 +58,7 @@ export const api = {
   draftMinutes: (meetingId: string) => invoke<void>("draft_minutes", { meetingId }),
   saveMinutes: (id: string, minutes: string) => invoke<void>("save_minutes", { id, minutes }),
   closeMeeting: (id: string) => invoke<void>("close_meeting", { id }),
+  startStandup: (projectId: string) => invoke<Meeting>("start_standup", { projectId }),
   inviteGuest: (meetingId: string, name: string, brief: string, hours?: number) => invoke<void>("invite_guest", { meetingId, name, brief, hours: hours ?? null }),
   endGuest: (meetingId: string, employeeId: string) => invoke<void>("end_guest", { meetingId, employeeId }),
   // 记忆

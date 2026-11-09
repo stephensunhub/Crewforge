@@ -84,6 +84,7 @@ pub fn run() {
             commands::link_meeting_issue,
             commands::save_minutes,
             commands::close_meeting,
+            commands::start_standup,
             commands::invite_guest,
             commands::end_guest,
             commands::post_meeting_message,

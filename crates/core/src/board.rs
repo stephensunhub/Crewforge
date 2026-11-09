@@ -78,7 +78,7 @@ CREATE TABLE meeting_participants (
 "#;
 
 pub const ISSUE_KINDS: &[&str] = &["technical", "requirement", "bug", "risk", "process", "implementation"];
-pub const MEETING_KINDS: &[&str] = &["requirements", "design", "code_review", "qa_case", "retro", "planning"];
+pub const MEETING_KINDS: &[&str] = &["requirements", "design", "code_review", "qa_case", "retro", "planning", "standup"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Issue {

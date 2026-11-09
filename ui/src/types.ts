@@ -158,7 +158,7 @@ export interface PendingDecision {
   issue: Issue;
   project_name: string;
 }
-export type MeetingKind = "requirements" | "design" | "code_review" | "qa_case" | "retro";
+export type MeetingKind = "requirements" | "design" | "code_review" | "qa_case" | "retro" | "planning" | "standup";
 export interface Meeting {
   id: string;
   project_id: string;

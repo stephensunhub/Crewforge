@@ -256,3 +256,51 @@ async fn guest_gets_minimal_context_is_read_only_and_leaves_with_the_meeting() {
     assert!(e.orch.meeting_reply(&m2.id, &g, &MustNotAsk).await.unwrap_err().to_string().contains("不是本项目成员"), "顾问只属于邀请他的那场会议");
     assert!(e.orch.invite_guest(&m.id, "顾问乙", "x", None, "human").unwrap_err().to_string().contains("已结束"));
 }
+
+/// 假 CLI：在工作目录写入同名文件后正常结束（让两个人改同一个文件）。
+fn writer_cli(dir: &Path, name: &str, file: &str) -> String {
+    let path = dir.join(name);
+    std::fs::write(&path, format!(
+        "#!/bin/sh\nread -r line\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"x\"}}'\necho {name} > '{file}'\nprintf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"usage\":{{}}}}'\n"
+    )).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+#[tokio::test]
+async fn standup_collects_facts_asks_each_active_member_once_and_flags_misalignment() {
+    let mut e = setup().await;
+    let alice = e.db.add_employee("alice", "全栈", "p").unwrap();
+    let bob = e.db.add_employee("bob", "全栈", "p").unwrap();
+    let carol = e.db.add_employee("carol", "QA", "p").unwrap();
+    for (x, r) in [(&alice, "developer"), (&bob, "developer"), (&carol, "qa")] { e.db.add_member(&e.project_id, &x.id, r).unwrap(); }
+
+    // 没人在做事：不需要站会
+    assert!(e.orch.start_standup(&e.project_id).await.unwrap_err().to_string().contains("不需要站会"));
+
+    // alice 和 bob 各有一个进行中的任务，而且改了同一个文件；carol 没有任务
+    e.orch.program = writer_cli(&e.tools, "wa", "api.md");
+    e.orch.assign(&alice, &e.repo, "实现接口 A", &MustNotAsk, &NoopObserver).await.unwrap();
+    e.orch.program = writer_cli(&e.tools, "wb", "api.md");
+    e.orch.assign(&bob, &e.repo, "实现接口 B", &MustNotAsk, &NoopObserver).await.unwrap();
+
+    let (m, who) = e.orch.start_standup(&e.project_id).await.unwrap();
+    assert_eq!(m.kind, "standup");
+    assert_eq!(who.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), vec!["alice", "bob"], "只有在做事的人参会");
+    let facts = e.db.meeting_messages(&m.id, 0).unwrap();
+    assert!(facts[0].author_kind == "system" && facts[0].content.contains("实现接口 A") && facts[0].content.contains("api.md") && facts[0].content.contains("议程"));
+
+    // 每人发言一次；后发言的人看得到前面的报告；提示里是站会的固定格式
+    let (cli, prompt_file, _) = meeting_cli(&e.tools, "cli", "做完了接口，依赖 bob 的字段名", &e.repo.join("v"));
+    e.orch.program = cli;
+    for w in &who { e.orch.meeting_reply(&m.id, w, &MustNotAsk).await.unwrap(); }
+    let prompts: Vec<String> = std::fs::read_to_string(&prompt_file).unwrap().lines().map(String::from).collect();
+    assert_eq!(prompts.len(), 2);
+    assert!(prompts[0].contains("这是站会") && prompts[0].contains("系统记录的现状") && prompts[0].contains("不要做决策"));
+    assert!(prompts[1].contains("做完了接口，依赖 bob 的字段名"), "bob 能看到 alice 的报告");
+
+    // 对齐检查：同一文件被两人修改
+    let check = e.orch.standup_alignment_check(&m.id).await.unwrap();
+    assert!(check.contains("api.md") && check.contains("alice") && check.contains("bob"), "{check}");
+    assert!(e.db.meeting_messages(&m.id, 0).unwrap().last().unwrap().content.contains("需要对齐"));
+}
