@@ -141,6 +141,8 @@ pub struct Autopilot<A: Approver + Send + Sync + 'static> {
 pub const MAX_ACTIONS_PER_TASK: usize = 3;
 /// 调用数或时间用到预算的这个比例之后，进入“软预算”：不再处理评审意见、不再开站会和整理记忆。
 pub const SOFT_BUDGET_RATIO: f64 = 0.8;
+/// 给收尾（整理记忆、更新文档）留的调用数：开始新条目前先扣掉，保证预算用尽时收尾也能做。
+pub const WRAP_UP_RESERVE: usize = 3;
 
 fn bigrams(s: &str) -> std::collections::HashSet<(char, char)> {
     let cs: Vec<char> = s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect();
@@ -245,8 +247,8 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         if merged == 0 { return None; }
         let used = self.calls.load(Ordering::SeqCst);
         let avg = (used as f64 / merged as f64).ceil() as usize;
-        let remaining = self.max_calls.saturating_sub(used);
-        (remaining < avg).then(|| format!("预算只剩 {remaining} 次调用，不够再做一个条目（本批次每个条目平均约 {avg} 次）"))
+        let remaining = self.max_calls.saturating_sub(used + WRAP_UP_RESERVE);
+        (remaining < avg).then(|| format!("预算（扣掉收尾要留的 {WRAP_UP_RESERVE} 次）只剩 {remaining} 次调用，不够再做一个条目（本批次每个条目平均约 {avg} 次）"))
     }
 
     /// 这条评审意见是不是和已经处理（或正在处理）的某条是同一件事。
@@ -626,7 +628,13 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             let budget = self.over_budget().or_else(|| if running.is_empty() { self.no_room_for_another_item() } else { None });
             let human = self.needs_human();
             if (paused || budget.is_some() || human.is_some()) && set.is_empty() {
-                break if paused { ("paused", "你暂停了推进".to_string()) } else if let Some(b) = budget { ("budget", b) } else { ("escalated", human.unwrap_or_default()) };
+                let end = if paused { ("paused", "你暂停了推进".to_string()) } else if let Some(b) = budget { ("budget", b) } else { ("escalated", human.unwrap_or_default()) };
+                // 预算是因为“留给收尾的调用数”而停的（还没真正用光）：收尾照做，不让文档和记忆总被挤掉
+                if end.0 == "budget" && !paused && self.over_budget().is_none() && !self.ctl.stop.load(Ordering::SeqCst) {
+                    self.maybe_curate(true).await;
+                    self.update_docs().await;
+                }
+                break end;
             }
             let view = match self.db().plan_view(&self.project_id) { Ok(v) => v, Err(e) => break ("failed", e.to_string()) };
             if view.items.iter().filter(|i| i.status != "cancelled").all(|i| i.status == "done") {
@@ -653,9 +661,15 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 let mut busy = busy;
                 let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id)).cloned().collect();
                 let mut starts: Vec<(String, Employee)> = vec![];
+                // 预计会改同一个文件的条目不并行（并行必然合并冲突，每次解决要多花调用）
+                let files = self.db().plan_files(&self.project_id).unwrap_or_default();
+                let mut claimed: HashSet<String> = running.iter().filter_map(|id| files.get(id)).flatten().cloned().collect();
                 for it in &ready {
+                    let mine = files.get(&it.id).cloned().unwrap_or_default();
+                    if mine.iter().any(|f| claimed.contains(f)) { continue; }
                     if let Some(emp) = self.pick(it, &busy) {
                         busy.insert(emp.id.clone());
+                        claimed.extend(mine);
                         starts.push((it.id.clone(), emp));
                     }
                 }

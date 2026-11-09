@@ -16,6 +16,9 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+/// 条目预计会改的文件（换行分隔），自主推进据此避免让改同一个文件的条目并行。
+pub const MIGRATION_15: &str = "ALTER TABLE plan_items ADD COLUMN files TEXT NOT NULL DEFAULT '';";
+
 pub const MIGRATION_9: &str = r#"
 ALTER TABLE projects ADD COLUMN goal TEXT NOT NULL DEFAULT '';   -- 重构目标与硬性约束，每个新任务开始时都会带上
 CREATE TABLE plan_items (
@@ -143,6 +146,25 @@ impl Db {
             self.conn.lock().unwrap().execute("INSERT OR IGNORE INTO plan_deps (item_id, depends_on) VALUES (?1,?2)", params![id, d])?;
         }
         Ok(id)
+    }
+
+    /// 记录条目预计会改的文件（相对仓库根目录的路径）。
+    pub fn set_plan_item_files(&self, id: &str, files: &[String]) -> Result<()> {
+        self.conn.lock().unwrap().execute("UPDATE plan_items SET files = ?2 WHERE id = ?1", params![id, files.join("\n")])?;
+        Ok(())
+    }
+
+    /// 项目里各条目预计会改的文件；没写的条目不在结果里。
+    pub fn plan_files(&self, project_id: &str) -> Result<std::collections::HashMap<String, Vec<String>>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, files FROM plan_items WHERE project_id = ?1 AND files != ''")?;
+        let rows = stmt.query_map([project_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut m = std::collections::HashMap::new();
+        for r in rows {
+            let (id, f) = r?;
+            m.insert(id, f.lines().map(String::from).collect());
+        }
+        Ok(m)
     }
 
     pub fn get_plan_item(&self, id: &str) -> Result<Option<PlanItem>> {

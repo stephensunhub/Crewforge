@@ -17,6 +17,18 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 pub const MAX_DRAFT_ITEMS: usize = 15;
+/// 解析条目预计会改的文件：去掉空白和 `./` 前缀，去重，最多 8 个。
+fn parse_files(v: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for f in v["files"].as_array().into_iter().flatten().filter_map(|x| x.as_str()) {
+        let f = f.trim().trim_start_matches("./").to_string();
+        if !f.is_empty() && !out.contains(&f) && out.len() < 8 {
+            out.push(f);
+        }
+    }
+    out
+}
+
 pub const MAX_ADDED_PER_ADJUST: usize = 3;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +39,8 @@ pub struct DraftItem {
     pub assignee: Option<String>,
     /// 依赖的条目（本份计划里更靠前的条目的下标，从 0 开始）
     pub depends_on: Vec<usize>,
+    /// 预计会改的文件；改同一个文件的条目不会并行
+    pub files: Vec<String>,
 }
 
 fn json_slice(text: &str) -> Result<Value> {
@@ -70,7 +84,7 @@ pub fn parse_draft(text: &str, member_names: &[String]) -> Result<Vec<DraftItem>
                 deps.push(n);
             }
         }
-        out.push(DraftItem { title, description: text_of(it, "description"), acceptance: text_of(it, "acceptance"), assignee, depends_on: deps });
+        out.push(DraftItem { title, description: text_of(it, "description"), acceptance: text_of(it, "acceptance"), assignee, depends_on: deps, files: parse_files(it) });
     }
     Ok(out)
 }
@@ -78,7 +92,7 @@ pub fn parse_draft(text: &str, member_names: &[String]) -> Result<Vec<DraftItem>
 /// 调整计划的一项改动。条目用计划里的编号 `#n` 指代。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
-    Add { title: String, description: String, acceptance: String, assignee: Option<String>, depends_on: Vec<String>, reason: String },
+    Add { title: String, description: String, acceptance: String, assignee: Option<String>, depends_on: Vec<String>, files: Vec<String>, reason: String },
     Cancel { item: usize, reason: String },
     Reassign { item: usize, assignee: String },
     Retry { item: usize, note: String },
@@ -105,7 +119,7 @@ pub fn parse_adjustment(text: &str) -> Result<Adjustment> {
                     bail!("追加条目必须写标题和原因");
                 }
                 let deps = c["depends_on"].as_array().into_iter().flatten().filter_map(|d| d.as_str().map(String::from)).collect();
-                Change::Add { title, description: text_of(c, "description"), acceptance: text_of(c, "acceptance"), assignee: Some(text_of(c, "assignee")).filter(|a| !a.is_empty() && a != "null"), depends_on: deps, reason }
+                Change::Add { title, description: text_of(c, "description"), acceptance: text_of(c, "acceptance"), assignee: Some(text_of(c, "assignee")).filter(|a| !a.is_empty() && a != "null"), depends_on: deps, files: parse_files(c), reason }
             }
             Some("cancel") => Change::Cancel { item: item.context("cancel 需要 item")?, reason: Some(text_of(c, "reason")).filter(|r| !r.is_empty()).context("取消必须写原因")? },
             Some("reassign") => Change::Reassign { item: item.context("reassign 需要 item")?, assignee: Some(text_of(c, "assignee")).filter(|a| !a.is_empty()).context("reassign 需要 assignee")? },
@@ -188,9 +202,9 @@ impl Orchestrator {
         if !existing.items.is_empty() {
             p.push_str(&format!("\n已有计划（不要重复，新条目要和它们衔接）：\n{}", plan_table(&existing.items)));
         }
-        p.push_str(&format!("\n你可以只读地查看代码。要求：1 到 {MAX_DRAFT_ITEMS} 个条目，每个条目一名员工一次任务能做完；第一个条目通常是脚手架或建立可验证的基础；用 depends_on 标明先后依赖（只能依赖更靠前的条目的下标，从 0 开始），让能并行的尽量并行；\
+        p.push_str(&format!("\n你可以只读地查看代码。要求：1 到 {MAX_DRAFT_ITEMS} 个条目，每个条目一名员工一次任务能做完；第一个条目通常是脚手架或建立可验证的基础；用 depends_on 标明先后依赖（只能依赖更靠前的条目的下标，从 0 开始），让能并行的尽量并行；每个条目用 files 列出它预计会修改的主要文件（相对仓库根目录），改同一个文件的条目会被自动排成先后、不能并行，所以尽量让不同条目改不同的文件（例如每个命令放一个模块），实在要改同一个文件的就合并成一个条目；\
 至少有一个条目交给 QA 角色的成员做测试或评审（如果有）；每个条目写清 description 和能用命令验证的 acceptance。\n"));
-        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"items\":[{\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名或 null\",\"depends_on\":[下标...]}]}");
+        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"items\":[{\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名或 null\",\"depends_on\":[下标...],\"files\":[\"路径\"]}]}");
         let text = self.lead_turn(lead, project_id, &p, "起草计划", approver).await?;
         let names: Vec<String> = members.iter().map(|m| m.name.clone()).collect();
         let draft = parse_draft(&text, &names)?;
@@ -198,7 +212,9 @@ impl Orchestrator {
         for d in &draft {
             let aid = d.assignee.as_ref().and_then(|n| members.iter().find(|m| &m.name == n)).map(|m| m.employee_id.clone());
             let deps = d.depends_on.iter().map(|i| ids[*i].clone()).collect();
-            ids.push(self.db.create_plan_item(project_id, &NewPlanItem { title: d.title.clone(), description: d.description.clone(), acceptance: d.acceptance.clone(), kind: "migrate".into(), module: String::new(), assignee_id: aid, deps }, Some(&lead.id))?);
+            let id = self.db.create_plan_item(project_id, &NewPlanItem { title: d.title.clone(), description: d.description.clone(), acceptance: d.acceptance.clone(), kind: "migrate".into(), module: String::new(), assignee_id: aid, deps }, Some(&lead.id))?;
+            self.db.set_plan_item_files(&id, &d.files)?;
+            ids.push(id);
         }
         self.db.append_event_for(Some(project_id), "plan_drafted_by_lead", Some(&lead.id), None, &json!({"count": ids.len(), "text": format!("{} 起草了 {} 个计划条目，等你确认", lead.name, ids.len())}))?;
         Ok(ids.len())
@@ -222,7 +238,7 @@ impl Orchestrator {
         }
         p.push_str(&format!("\n\n规则：每次最多追加 {MAX_ADDED_PER_ADJUST} 个条目，每条都要写原因；已开始和已完成的条目不能动；涉及项目目标、需求或范围变更时，不要自己改，用 escalate 交给人（写明原因）。\
 条目用 #编号 指代（见上面的计划）；追加的条目 depends_on 里写 \"#编号\"（已有条目）或 \"N1\"、\"N2\"（本次追加的第几个）。\n"));
-        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"changes\":[{\"op\":\"add\",\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"depends_on\":[\"#2\"],\"reason\":\"...\"},{\"op\":\"cancel\",\"item\":3,\"reason\":\"...\"},{\"op\":\"reassign\",\"item\":4,\"assignee\":\"成员名\"},{\"op\":\"retry\",\"item\":5,\"note\":\"换成更清楚的说明\"}],\"escalate\":null,\"summary\":\"一句话说明做了什么调整\"}");
+        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"changes\":[{\"op\":\"add\",\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"depends_on\":[\"#2\"],\"files\":[\"路径\"],\"reason\":\"...\"},{\"op\":\"cancel\",\"item\":3,\"reason\":\"...\"},{\"op\":\"reassign\",\"item\":4,\"assignee\":\"成员名\"},{\"op\":\"retry\",\"item\":5,\"note\":\"换成更清楚的说明\"}],\"escalate\":null,\"summary\":\"一句话说明做了什么调整\"}");
         let text = self.lead_turn(lead, project_id, &p, "调整计划", approver).await?;
         let adj = parse_adjustment(&text)?;
         let mut out = Applied { escalate: adj.escalate.clone(), summary: adj.summary.clone(), ..Default::default() };
@@ -231,7 +247,7 @@ impl Orchestrator {
         let mut new_ids: Vec<String> = Vec::new();
         for ch in adj.changes {
             match ch {
-                Change::Add { title, description, acceptance, assignee, depends_on, reason } => {
+                Change::Add { title, description, acceptance, assignee, depends_on, files, reason } => {
                     if new_ids.len() >= MAX_ADDED_PER_ADJUST {
                         out.rejected.push(format!("追加《{title}》：超过每次 {MAX_ADDED_PER_ADJUST} 个的上限"));
                         continue;
@@ -250,6 +266,7 @@ impl Orchestrator {
                     if assignee.is_some() && aid.is_none() { out.rejected.push(format!("追加《{title}》：负责人不是项目成员")); continue; }
                     match self.db.create_plan_item(project_id, &NewPlanItem { title: title.clone(), description, acceptance, kind: "migrate".into(), module: String::new(), assignee_id: aid, deps }, None) {
                         Ok(id) => {
+                            let _ = self.db.set_plan_item_files(&id, &files);
                             let _ = self.db.set_plan_note(&id, &format!("负责人追加：{reason}"));
                             new_ids.push(id);
                             out.added.push(title);
@@ -325,5 +342,15 @@ mod tests {
                     r#"{"changes":[{"op":"删除全部"}]}"#, "不是 json"] {
             assert!(parse_adjustment(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn expected_files_are_normalised_and_capped() {
+        let names = vec!["bob".to_string()];
+        let t = r#"{"items":[{"title":"a","description":"","acceptance":"","assignee":"bob","depends_on":[],"files":["./todo.py"," todo.py ","tests/t.py","","a","b","c","d","e","f"]},{"title":"b","depends_on":[]}]}"#;
+        let d = parse_draft(t, &names).unwrap();
+        assert_eq!(d[0].files[..2], ["todo.py".to_string(), "tests/t.py".to_string()], "去掉 ./ 和空白、去重");
+        assert_eq!(d[0].files.len(), 8, "最多 8 个");
+        assert!(d[1].files.is_empty(), "没写就是空");
     }
 }

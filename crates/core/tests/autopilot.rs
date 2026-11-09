@@ -416,3 +416,42 @@ async fn near_the_budget_limit_no_new_item_is_started_and_the_budget_is_not_over
     assert_eq!(v.items.iter().find(|i| i.title == "A").unwrap().status, "done");
     assert_eq!(v.items.iter().find(|i| i.title == "B").unwrap().status, "planned", "B 没有被开始");
 }
+
+#[tokio::test]
+async fn wrap_up_still_happens_when_the_batch_stops_because_of_the_budget() {
+    let e = setup().await;
+    e.db.set_plan_status(&e.ids[2], "cancelled", "测试").unwrap();
+    // 预算 5：A 做完后扣掉收尾要留的调用数，不够再做 B → 以预算结束，但文档照常更新
+    let r = run(&e, 5, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "budget", "{r:?}");
+    assert!(r.reason.contains("收尾"), "原因里说明了为收尾留了预算：{r:?}");
+    assert!(r.calls <= 5, "{r:?}");
+    let docs = e.orch.list_docs(&e.pid).await.unwrap();
+    assert!(docs.iter().any(|d| d.path == "docs/crewforge/progress.md"), "预算用尽时也应该写了文档：{docs:?}");
+    assert!(e.db.recent_events(900).unwrap().iter().any(|x| x.kind == "autopilot_docs"));
+}
+
+fn parallel_standups(e: &Env) -> usize {
+    e.db.recent_events(900).unwrap().iter().filter(|x| x.payload["text"].as_str().map(|t| t.contains("并行，开站会")).unwrap_or(false)).count()
+}
+
+#[tokio::test]
+async fn items_expected_to_touch_the_same_file_never_run_in_parallel() {
+    // 对照：不写文件时，A 和 C 互不依赖，会并行
+    let free = setup().await;
+    free.db.set_plan_status(&free.ids[1], "cancelled", "测试").unwrap();
+    assert_eq!(run(&free, 100, Arc::new(AutopilotCtl::default())).await.status, "finished");
+    assert!(parallel_standups(&free) > 0, "对照组应该有并行");
+
+    // A 和 C 都声明要改 shop.py → 排成先后；B（依赖 A）改别的文件
+    let e = setup().await;
+    e.db.set_plan_status(&e.ids[1], "cancelled", "测试").unwrap();
+    e.db.set_plan_item_files(&e.ids[0], &["shop.py".into()]).unwrap();
+    e.db.set_plan_item_files(&e.ids[2], &["shop.py".into(), "tests/test_shop.py".into()]).unwrap();
+    assert_eq!(e.db.plan_files(&e.pid).unwrap().len(), 2);
+    let r = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    assert_eq!(parallel_standups(&e), 0, "改同一个文件的条目没有并行");
+    let v = e.db.plan_view(&e.pid).unwrap();
+    assert!(v.items.iter().filter(|i| i.title == "A" || i.title == "C").all(|i| i.status == "done"));
+}
