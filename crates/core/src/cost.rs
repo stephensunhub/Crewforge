@@ -51,6 +51,28 @@ impl Totals {
             self.turns_with_duration += 1;
         }
     }
+    /// 以原始数据累加一次调用（用量页使用）：缺失的数据是“未知”，不当成 0。
+    pub fn add_call(&mut self, cost: Option<f64>, tokens: [Option<u64>; 4], duration: Option<u64>, is_error: bool, premium: Option<f64>) {
+        self.turns += 1;
+        self.errors += is_error as u64;
+        if let Some(c) = cost {
+            self.cost_usd += c;
+            self.turns_with_cost += 1;
+        }
+        if tokens.iter().any(Option::is_some) {
+            self.turns_with_tokens += 1;
+        }
+        self.input_tokens += tokens[0].unwrap_or(0);
+        self.output_tokens += tokens[1].unwrap_or(0);
+        self.cache_read_tokens += tokens[2].unwrap_or(0);
+        self.cache_creation_tokens += tokens[3].unwrap_or(0);
+        self.premium_requests += premium.unwrap_or(0.0);
+        if let Some(d) = duration {
+            self.duration_ms += d;
+            self.turns_with_duration += 1;
+        }
+    }
+
     /// 按模型拆分时的累加：一个模型在一轮里算一次调用。
     fn add_model(&mut self, m: &ModelUse, is_error: bool) {
         self.turns += 1;

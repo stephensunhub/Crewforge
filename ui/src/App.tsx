@@ -4,7 +4,7 @@ import { COMPANY_TABS, CompanyView, type CompanyTab } from "./CompanyView";
 import { PROJECT_TABS, ProjectView, type ProjectTab } from "./ProjectView";
 import { SettingsView } from "./SettingsView";
 import { ModelsView } from "./ModelsView";
-import { CostView } from "./CostView";
+import { UsageView } from "./UsageView";
 import { formatApprovalInput, hhmm, short } from "./common";
 import type { ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
 
@@ -267,7 +267,7 @@ export default function App() {
             onDecide={(a, allow) => void decide(a, allow)} onChanged={() => void reloadStatic()} onError={setError}
             onLeave={() => setScope({ kind: "company" })} />
         )}
-        {scope.kind === "cost" && <CostView events={events} onError={setError} />}
+        {scope.kind === "cost" && <UsageView events={events} onError={setError} />}
         {scope.kind === "models" && <ModelsView onError={setError} />}
         {scope.kind === "settings" && <SettingsView sched={sched} onConcurrency={(n) => void changeConcurrency(n)} onAction={schedAction} />}
       </main>

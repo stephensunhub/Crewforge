@@ -19,4 +19,5 @@ pub mod runner;
 pub mod scheduler;
 pub mod standup;
 pub mod shell_env;
+pub mod usage;
 pub mod workspace;

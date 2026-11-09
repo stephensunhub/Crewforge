@@ -811,6 +811,22 @@ pub fn set_copilot_program(state: State<'_, AppState>, path: String) -> CmdResul
     state.db.set_setting("copilot_program", path.trim()).map_err(err)
 }
 
+// ================= 用量页（参照 CC Switch） =================
+#[tauri::command]
+pub fn usage_overview(state: State<'_, AppState>, filter: crewforge_core::usage::UsageFilter, tz_offset_minutes: i64) -> CmdResult<crewforge_core::usage::UsageOverview> {
+    state.db.usage_overview(&filter, tz_offset_minutes).map_err(err)
+}
+
+#[tauri::command]
+pub fn usage_stats(state: State<'_, AppState>, filter: crewforge_core::usage::UsageFilter, dim: String) -> CmdResult<Vec<crewforge_core::cost::Group>> {
+    state.db.usage_stats(&filter, &dim).map_err(err)
+}
+
+#[tauri::command]
+pub fn usage_calls(state: State<'_, AppState>, filter: crewforge_core::usage::UsageFilter, page: usize, page_size: usize) -> CmdResult<crewforge_core::usage::UsagePage> {
+    state.db.usage_calls(&filter, page, page_size).map_err(err)
+}
+
 // ================= 成本与额度 =================
 /// 调用明细：每次模型调用一行，最新的在前，可过滤与分页。
 #[tauri::command]

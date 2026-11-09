@@ -299,3 +299,21 @@ export interface PlanItemInput { title: string; description: string; acceptance:
 export interface ModelEntry { provider: string; model_id: string; label: string; note: string; enabled: boolean; builtin: boolean }
 export interface ProviderStatus { provider: string; label: string; enabled: boolean; installed: boolean; version: string; program: string; employees: number }
 export interface ModelsOverview { providers: ProviderStatus[]; models: ModelEntry[]; purposes: [string, string, Record<string, string>][] }
+
+export interface UsageFilter {
+  since?: number | null; until?: number | null; provider?: string | null; employeeId?: string | null; projectId?: string | null;
+  model?: string | null; purpose?: string | null; status?: "ok" | "error" | null;
+}
+export interface SeriesPoint { label: string; ts: number; totals: Totals }
+export interface UsageOverview {
+  summary: Totals; granularity: "hour" | "day"; series: SeriesPoint[]; heatmap: SeriesPoint[]; latency: Latency;
+  providers: CostGroup[]; models: CostGroup[]; employees: CostGroup[]; projects: CostGroup[]; median_speed: number | null;
+}
+export interface CallRec {
+  event_id: number; ts: number; session_id: string | null; employee_id: string; employee: string; project_id: string; project: string;
+  purpose: string; purpose_label: string; task_id: string | null; meeting_id: string | null; subject: string; provider: string;
+  models: ModelUse[]; model: string | null; cost_usd: number | null; input_tokens: number | null; output_tokens: number | null;
+  cache_read_tokens: number | null; cache_creation_tokens: number | null; premium_requests: number | null;
+  duration_ms: number | null; ttft_ms: number | null; is_error: boolean; subtype: string;
+}
+export interface UsagePageData { total: number; rows: CallRec[] }

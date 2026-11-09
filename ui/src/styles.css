@@ -333,3 +333,47 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .badge.ps-blocked { color: var(--bad); border-color: var(--bad); }
 .badge.ps-proposed { color: var(--warn); border-color: var(--warn); }
 .row-bad td { background: color-mix(in srgb, var(--bad) 8%, transparent); } .cost-table .bad, span.bad { color: var(--bad); }
+
+/* ===== 用量页（参照 CC Switch） ===== */
+.page.wide.usage-page { display: flex; flex-direction: column; gap: 12px; max-width: 1240px; }
+.usage-page > * { flex: none; }
+.usage-page .panel-box { margin-bottom: 0; }
+.u-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.u-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.u-seg button { background: none; border: none; padding: 6px 12px; color: var(--muted); border-right: 1px solid var(--line); white-space: nowrap; }
+.u-seg button:last-child { border-right: none; }
+.u-seg button:hover { color: var(--text); }
+.u-seg button.on { background: color-mix(in srgb, var(--accent) 18%, var(--panel)); color: var(--text); font-weight: 600; }
+.u-pill { width: auto; border-radius: 999px; padding: 5px 12px; background: var(--panel); }
+.u-pill.active { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+.u-overview { padding: 0; overflow: hidden; }
+.u-cells { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.u-cell { position: relative; display: grid; gap: 2px; align-content: start; text-align: left; background: none; border: none; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 12px 14px; color: var(--text); }
+.u-cell.static { cursor: default; }
+button.u-cell:hover { background: var(--panel-2); }
+.u-cell.on { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); box-shadow: inset 0 -2px 0 var(--accent); }
+.u-cell-label { font-size: 12px; color: var(--muted); }
+.u-cell-value { font-size: 20px; line-height: 1.2; }
+.u-cell-sub { font-size: 11px; color: var(--muted); }
+.u-q { margin-left: 4px; display: inline-block; width: 13px; height: 13px; line-height: 13px; text-align: center; border: 1px solid var(--line); border-radius: 50%; font-style: normal; font-size: 9px; }
+.u-chart-head { padding: 12px 16px 0; }
+.u-chart { width: 100%; height: auto; display: block; padding: 6px 12px 0; }
+.u-legend { display: flex; gap: 14px; padding: 0 16px 10px; font-size: 11px; color: var(--muted); }
+.u-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 4px; margin-right: 4px; }
+.u-tip { position: absolute; top: 4px; z-index: 5; min-width: 190px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.35); pointer-events: none; }
+.u-tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.u-tabs button { background: none; border: none; border-bottom: 2px solid transparent; padding: 10px 12px; color: var(--muted); white-space: nowrap; }
+.u-tabs button:hover { color: var(--text); }
+.u-tabs button.on { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.u-count { margin-left: 6px; padding: 0 6px; border-radius: 4px; background: var(--panel-2); font-size: 11px; color: var(--muted); font-weight: 500; }
+.u-toolbar { display: flex; gap: 8px; justify-content: flex-end; padding: 8px 12px 0; }
+.u-menu { position: absolute; right: 0; top: 100%; z-index: 10; min-width: 160px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 6px; display: grid; gap: 2px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.u-menu label { display: flex; gap: 8px; align-items: center; padding: 4px 8px; border-radius: 6px; }
+.u-menu label:hover { background: var(--panel); }
+.u-table th, .u-table td { white-space: nowrap; }
+.u-table tr.clickable { cursor: pointer; }
+.u-table tr.clickable:hover td { background: var(--panel-2); }
+.u-pager { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--line); }
+.u-pager select { width: auto; }
+.u-drawer-wrap { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.45); display: flex; justify-content: flex-end; }
+.u-drawer { width: min(520px, 100%); height: 100%; overflow: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 16px 18px; display: grid; gap: 8px; align-content: start; }
