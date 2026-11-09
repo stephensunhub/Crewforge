@@ -398,3 +398,52 @@ mod tests {
         assert_eq!(db.usage_calls(&UsageFilter { since: Some(now - 2 * 86_400_000), until: Some(now - 1_000_000), ..all }, 0, 10).unwrap().total, 2);
     }
 }
+
+
+/// 员工会话的当前上下文：用来发现哪个员工的会话快撑爆了。
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionCtx {
+    pub session_id: String,
+    pub employee_id: String,
+    pub employee: String,
+    pub provider: String,
+    /// 会话所在目录（任务 worktree 或项目目录）
+    pub path: String,
+    pub status: String,
+    /// 最近一次模型调用时的上下文大小；引擎不提供或还没跑过为 None
+    pub context_tokens: Option<u64>,
+    pub updated_at: i64,
+    /// 该员工因上下文过大被换新会话的次数
+    pub rotations: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionsView {
+    /// 超过这个值，下次任务会换新会话；0 表示不限
+    pub limit: u64,
+    pub sessions: Vec<SessionCtx>,
+}
+
+impl Db {
+    pub fn session_contexts(&self) -> Result<SessionsView> {
+        let limit = crate::runner::context_limit(self);
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.employee_id, e.name, e.provider, s.project_path, s.status, s.updated_at,
+                    (SELECT json_extract(t.payload,'$.context_tokens') FROM events t
+                      WHERE t.session_id = s.id AND t.kind = 'turn_result' ORDER BY t.id DESC LIMIT 1),
+                    (SELECT COUNT(*) FROM events r WHERE r.employee_id = s.employee_id AND r.kind = 'session_rotated')
+             FROM sessions s JOIN employees e ON e.id = s.employee_id
+             WHERE e.archived = 0
+             ORDER BY s.updated_at DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SessionCtx {
+                session_id: r.get(0)?, employee_id: r.get(1)?, employee: r.get(2)?, provider: r.get(3)?,
+                path: r.get(4)?, status: r.get(5)?, updated_at: r.get(6)?,
+                context_tokens: r.get::<_, Option<i64>>(7)?.map(|n| n.max(0) as u64),
+                rotations: r.get::<_, i64>(8)?.max(0) as u64,
+            })
+        })?;
+        Ok(SessionsView { limit, sessions: rows.collect::<std::result::Result<_, _>>()? })
+    }
+}

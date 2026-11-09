@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { CallRec, CostGroup, CostReport, EventRow, SeriesPoint, Totals, UsageFilter, UsageOverview, UsagePageData } from "./types";
+import type { CallRec, CostGroup, CostReport, EventRow, SeriesPoint, Totals, UsageFilter, UsageOverview, UsagePageData, SessionsView } from "./types";
 
 // ---------- 格式化 ----------
 const fmtInt = (n: number) => n.toLocaleString("zh-CN");
@@ -342,8 +342,42 @@ function Efficiency({ days }: { days: number | null }) {
 }
 
 // ---------- 页面 ----------
-type Tab = "logs" | "model" | "employee" | "project" | "purpose" | "efficiency";
-const TABS: [Tab, string][] = [["logs", "请求明细"], ["model", "模型"], ["employee", "员工"], ["project", "项目"], ["purpose", "用途"], ["efficiency", "效率与额度"]];
+type Tab = "logs" | "sessions" | "model" | "employee" | "project" | "purpose" | "efficiency";
+function SessionsTable({ refreshKey, onError }: { refreshKey: number; onError: (m: string) => void }) {
+  const [v, setV] = useState<SessionsView | null>(null);
+  useEffect(() => { void api.usageSessions().then(setV).catch((e) => onError(String(e))); }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!v) return <div className="empty" style={{ padding: 16 }}>加载中…</div>;
+  if (v.sessions.length === 0) return <div className="empty" style={{ padding: 16 }}>还没有员工会话。</div>;
+  const base = (p: string) => p.split("/").filter(Boolean).slice(-2).join("/");
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <div className="muted" style={{ padding: "8px 12px", fontSize: 12 }}>
+        {v.limit > 0 ? `上下文超过 ${fmtTok(v.limit)} 后，该员工的下一次任务会换成新会话（设置项 context_limit，0 为不限）。` : "未设置上下文上限（context_limit = 0）。"}
+        上下文越大，每一步越贵。
+      </div>
+      <table className="cost-table u-table">
+        <thead><tr><th>员工</th><th>目录</th><th>状态</th><th>当前上下文</th><th>占上限</th><th>最近活动</th><th>已换新</th></tr></thead>
+        <tbody>{v.sessions.map((x) => {
+          const c = x.context_tokens, ratio = c != null && v.limit > 0 ? c / v.limit : null;
+          const cls = ratio == null ? "" : ratio >= 1 ? "bad" : ratio >= 0.7 ? "warn" : "";
+          return (
+            <tr key={x.session_id}>
+              <td><b>{x.employee}</b> <span className="muted">{x.provider}</span></td>
+              <td title={x.path}>{base(x.path)}</td>
+              <td>{x.status === "running" ? "运行中" : "空闲"}</td>
+              <td className={cls}>{c == null ? (x.provider === "copilot" ? "不提供" : "—") : fmtTok(c)}</td>
+              <td className={cls}>{ratio == null ? "—" : `${Math.round(ratio * 100)}%${ratio >= 1 ? "（下次换新）" : ""}`}</td>
+              <td>{new Date(x.updated_at).toLocaleString("zh-CN", { hour12: false })}</td>
+              <td>{x.rotations > 0 ? `${x.rotations} 次` : "—"}</td>
+            </tr>
+          );
+        })}</tbody>
+      </table>
+    </div>
+  );
+}
+
+const TABS: [Tab, string][] = [["logs", "请求明细"], ["sessions", "员工会话"], ["model", "模型"], ["employee", "员工"], ["project", "项目"], ["purpose", "用途"], ["efficiency", "效率与额度"]];
 const PURPOSES: [string, string][] = [["task", "开发任务"], ["meeting", "会议发言"], ["minutes", "纪要起草"], ["onboarding", "导入评估"]];
 
 export function UsageView({ events, onError }: { events: EventRow[]; onError: (m: string) => void }) {
@@ -374,7 +408,7 @@ export function UsageView({ events, onError }: { events: EventRow[]; onError: (m
   }, [fkey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { void load(); }, [load, lastEvent, tick]);
   useEffect(() => {
-    if (tab === "logs" || tab === "efficiency") return;
+    if (tab === "logs" || tab === "efficiency" || tab === "sessions") return;
     void api.usageStats(filter, tab).then(setStats).catch((e) => onError(String(e)));
   }, [tab, fkey, lastEvent, tick]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (refreshMs <= 0) return; const t = window.setInterval(() => setTick((x) => x + 1), refreshMs); return () => window.clearInterval(t); }, [refreshMs]);
@@ -383,7 +417,7 @@ export function UsageView({ events, onError }: { events: EventRow[]; onError: (m
 
   if (!ov) return <div className="hint" style={{ padding: 20 }}>加载中…</div>;
   const t = ov.summary;
-  const counts: Record<Tab, number | null> = { logs: t.turns, model: ov.models.length, employee: ov.employees.length, project: ov.projects.length, purpose: null, efficiency: null };
+  const counts: Record<Tab, number | null> = { logs: t.turns, sessions: null, model: ov.models.length, employee: ov.employees.length, project: ov.projects.length, purpose: null, efficiency: null };
   const clearAll = () => { setProvider(null); setEmployee(null); setProject(null); setModel(null); setPurpose(null); setStatus(null); };
   const anyFilter = provider || employee || project || model || purpose || status;
 
@@ -468,6 +502,7 @@ export function UsageView({ events, onError }: { events: EventRow[]; onError: (m
           ))}
         </div>
         {tab === "logs" && <LogTable filter={filter} refreshKey={lastEvent + tick} onOpen={setDetail} />}
+        {tab === "sessions" && <SessionsTable refreshKey={lastEvent + tick} onError={onError} />}
         {tab === "model" && <StatsTable groups={stats} nameLabel="模型" />}
         {tab === "employee" && <StatsTable groups={stats} nameLabel="员工" />}
         {tab === "project" && <StatsTable groups={stats} nameLabel="项目" />}

@@ -59,6 +59,10 @@ async fn rotates_session_when_context_exceeds_limit() {
     run_turn(&db, &e, &cfg(&work, fake(d.path(), 50_000)), "任务三", &Deny, &NoopObserver).await.unwrap();
     let third = db.get_or_create_session(&e.id, &work.to_string_lossy()).unwrap().id;
     assert_eq!(second, third);
+    let v = db.session_contexts().unwrap();
+    assert_eq!(v.limit, 100_000);
+    assert_eq!(v.sessions.len(), 1);
+    assert_eq!((v.sessions[0].context_tokens, v.sessions[0].rotations), (Some(50_010), 1));
     assert_eq!(db.recent_events(50).unwrap().iter().filter(|x| x.kind == "session_rotated").count(), 1);
 }
 

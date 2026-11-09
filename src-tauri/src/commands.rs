@@ -940,6 +940,11 @@ pub fn usage_stats(state: State<'_, AppState>, filter: crewforge_core::usage::Us
 }
 
 #[tauri::command]
+pub fn usage_sessions(state: State<'_, AppState>) -> CmdResult<crewforge_core::usage::SessionsView> {
+    state.db.session_contexts().map_err(err)
+}
+
+#[tauri::command]
 pub fn usage_calls(state: State<'_, AppState>, filter: crewforge_core::usage::UsageFilter, page: usize, page_size: usize) -> CmdResult<crewforge_core::usage::UsagePage> {
     state.db.usage_calls(&filter, page, page_size).map_err(err)
 }

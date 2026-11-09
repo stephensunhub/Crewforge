@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView,
 } from "./types";
 
 export const api = {
@@ -40,6 +40,7 @@ export const api = {
   setCopilotProgram: (path: string) => invoke<void>("set_copilot_program", { path }),
   usageOverview: (filter: UsageFilter) => invoke<UsageOverview>("usage_overview", { filter, tzOffsetMinutes: -new Date().getTimezoneOffset() }),
   usageStats: (filter: UsageFilter, dim: string) => invoke<CostGroup[]>("usage_stats", { filter, dim }),
+  usageSessions: () => invoke<SessionsView>("usage_sessions"),
   usageCalls: (filter: UsageFilter, page: number, pageSize: number) => invoke<UsagePageData>("usage_calls", { filter, page, pageSize }),
   listDocs: (projectId: string) => invoke<DocFile[]>("list_docs", { projectId }),
   readDoc: (projectId: string, path: string) => invoke<string>("read_doc", { projectId, path }),

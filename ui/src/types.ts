@@ -327,3 +327,9 @@ export interface AutopilotStatus { run: AutopilotRun | null; live: boolean }
 export interface DocFile { path: string; size: number; managed: boolean }
 export interface DocsPublish { files: number; commit: string | null; note: string }
 export interface Curated { verified: string[]; expired: string[]; merged: string[]; rejected: string[]; escalate: string | null; summary: string }
+
+export interface SessionCtx {
+  session_id: string; employee_id: string; employee: string; provider: string; path: string; status: string;
+  context_tokens: number | null; updated_at: number; rotations: number;
+}
+export interface SessionsView { limit: number; sessions: SessionCtx[] }

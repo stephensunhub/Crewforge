@@ -78,6 +78,7 @@ pub fn run() {
             commands::usage_overview,
             commands::usage_stats,
             commands::usage_calls,
+            commands::usage_sessions,
             commands::models_overview,
             commands::set_provider_enabled,
             commands::add_model,

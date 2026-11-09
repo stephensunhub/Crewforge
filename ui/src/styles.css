@@ -332,7 +332,7 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .badge.ps-done { color: var(--ok); border-color: var(--ok); }
 .badge.ps-blocked { color: var(--bad); border-color: var(--bad); }
 .badge.ps-proposed { color: var(--warn); border-color: var(--warn); }
-.row-bad td { background: color-mix(in srgb, var(--bad) 8%, transparent); } .cost-table .bad, span.bad { color: var(--bad); }
+.row-bad td { background: color-mix(in srgb, var(--bad) 8%, transparent); } .cost-table .bad, span.bad { color: var(--bad); } .cost-table .warn { color: var(--warn); }
 
 /* ===== 用量页（参照 CC Switch） ===== */
 .page.wide.usage-page { display: flex; flex-direction: column; gap: 12px; max-width: 1240px; }
