@@ -14,7 +14,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 迁移列表：下标 + 1 即版本号。只能追加，不能修改已发布的迁移。
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10];
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10, MIGRATION_11];
+
+/// 员工使用的执行引擎：claude（默认）或 copilot
+const MIGRATION_11: &str = "ALTER TABLE employees ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';";
+
+pub const PROVIDERS: &[&str] = &["claude", "copilot"];
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE employees (
@@ -113,6 +118,8 @@ pub struct Employee {
     pub role: String,
     pub persona: String,
     pub archived: bool,
+    /// 执行引擎：claude | copilot
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -267,7 +274,15 @@ impl Db {
     }
 
     pub fn add_employee(&self, name: &str, role: &str, persona: &str) -> Result<Employee> {
+        self.add_employee_with(name, role, persona, "claude")
+    }
+
+    pub fn add_employee_with(&self, name: &str, role: &str, persona: &str, provider: &str) -> Result<Employee> {
+        if !PROVIDERS.contains(&provider) {
+            anyhow::bail!("未知的执行引擎：{provider}（可选：{}）", PROVIDERS.join("、"));
+        }
         let e = Employee {
+            provider: provider.into(),
             id: uuid::Uuid::new_v4().to_string(),
             name: name.into(),
             role: role.into(),
@@ -275,10 +290,10 @@ impl Db {
             archived: false,
         };
         self.conn.lock().unwrap().execute(
-            "INSERT INTO employees (id, name, role, persona, created_at) VALUES (?1,?2,?3,?4,?5)",
-            params![e.id, e.name, e.role, e.persona, now_ms()],
+            "INSERT INTO employees (id, name, role, persona, created_at, provider) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![e.id, e.name, e.role, e.persona, now_ms(), e.provider],
         )?;
-        self.append_event("employee_created", Some(&e.id), None, &json!({"name": e.name, "role": e.role}))?;
+        self.append_event("employee_created", Some(&e.id), None, &json!({"name": e.name, "role": e.role, "provider": e.provider}))?;
         Ok(e)
     }
 
@@ -288,7 +303,7 @@ impl Db {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id, name, role, persona, archived FROM employees WHERE name = ?1",
+                "SELECT id, name, role, persona, archived, provider FROM employees WHERE name = ?1",
                 [name],
                 row_to_employee,
             )
@@ -301,7 +316,7 @@ impl Db {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id, name, role, persona, archived FROM employees WHERE id = ?1",
+                "SELECT id, name, role, persona, archived, provider FROM employees WHERE id = ?1",
                 [id],
                 row_to_employee,
             )
@@ -310,7 +325,7 @@ impl Db {
 
     pub fn list_employees(&self) -> Result<Vec<Employee>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, role, persona, archived FROM employees WHERE archived = 0 AND role != 'guest' ORDER BY created_at")?;
+        let mut stmt = conn.prepare("SELECT id, name, role, persona, archived, provider FROM employees WHERE archived = 0 AND role != 'guest' ORDER BY created_at")?;
         let rows = stmt.query_map([], row_to_employee)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -787,7 +802,7 @@ impl Db {
 }
 
 fn row_to_employee(r: &rusqlite::Row<'_>) -> rusqlite::Result<Employee> {
-    Ok(Employee { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, persona: r.get(3)?, archived: r.get::<_, i64>(4)? != 0 })
+    Ok(Employee { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, persona: r.get(3)?, archived: r.get::<_, i64>(4)? != 0, provider: r.get(5)? })
 }
 
 fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {

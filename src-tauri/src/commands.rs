@@ -27,12 +27,12 @@ pub fn list_employees(state: State<'_, AppState>) -> CmdResult<Vec<Employee>> {
 }
 
 #[tauri::command]
-pub fn add_employee(state: State<'_, AppState>, name: String, role: String, persona: String) -> CmdResult<Employee> {
+pub fn add_employee(state: State<'_, AppState>, name: String, role: String, persona: String, provider: Option<String>) -> CmdResult<Employee> {
     let name = name.trim();
     if name.is_empty() || name.contains(char::is_whitespace) || name.contains('@') {
         return Err("员工名称不能为空，且不能包含空格或 @".into());
     }
-    state.db.add_employee(name, role.trim(), persona.trim()).map_err(err)
+    state.db.add_employee_with(name, role.trim(), persona.trim(), provider.as_deref().unwrap_or("claude")).map_err(err)
 }
 
 #[tauri::command]

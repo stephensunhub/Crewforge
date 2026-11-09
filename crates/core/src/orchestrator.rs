@@ -27,6 +27,8 @@ pub struct Orchestrator {
     pub ws: Arc<WorkspaceManager>,
     /// CLI 可执行文件，默认 `claude`；测试中替换为假的 CLI
     pub program: String,
+    /// Copilot 员工使用的 CLI，默认 `copilot`；测试中替换为假的
+    pub copilot_program: String,
     /// 提供团队协作工具（MCP）所用的可执行文件：就是应用或命令行自身的 `mcp-serve` 子命令；None 表示不提供
     pub mcp_exe: Option<std::path::PathBuf>,
 }
@@ -63,7 +65,7 @@ fn title_of(prompt: &str) -> String {
 
 impl Orchestrator {
     pub fn new(db: Arc<Db>, ws: Arc<WorkspaceManager>) -> Self {
-        Self { db, ws, program: "claude".into(), mcp_exe: std::env::current_exe().ok() }
+        Self { db, ws, program: "claude".into(), copilot_program: "copilot".into(), mcp_exe: std::env::current_exe().ok() }
     }
 
     /// 给员工分配工作：继续其进行中的任务，没有则新建任务和分支。
@@ -129,6 +131,7 @@ impl Orchestrator {
             // 事件里只记录原始任务，不重复存注入的记忆（注入量见 memory_injected 事件）
             log_prompt: injected.then(|| prompt.to_string()),
             program: self.program.clone(),
+            copilot_program: self.copilot_program.clone(),
         };
         let result = run_turn(&self.db, employee, &cfg, &full_prompt, approver, observer).await;
         if let Ok(r) = &result {

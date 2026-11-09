@@ -130,6 +130,11 @@ pub struct TurnResult {
     pub models: Vec<ModelUse>,
     /// 首个内容帧的耗时（毫秒）
     pub ttft_ms: Option<u64>,
+    /// 执行引擎（claude / copilot）、实际使用的模型；Copilot 按“高级请求”和 AIU 计量，没有 token 与美元费用
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub premium_requests: Option<f64>,
+    pub nano_aiu: Option<u64>,
 }
 
 /// 一个模型在本轮里的用量与费用。
@@ -228,6 +233,8 @@ pub fn parse_line(line: &str) -> Vec<AgentEvent> {
                     }).collect()
                 }).unwrap_or_default(),
                 ttft_ms: v["ttft_ms"].as_u64(),
+                provider: Some("claude".into()),
+                ..Default::default()
             })]
         }
         _ => vec![],

@@ -1325,3 +1325,13 @@ QA 的测试经验可以被全栈工程师检索。
 - 参考对象：本机 CC Switch 的用量页与数据模型（请求日志表含模型、四类 token、拆分成本、耗时与首字时间；按天汇总；模型价格表）。只看了表结构，没有读取其中的账号数据。
 - 新增：① 按模型的维度（CLI 的 `modelUsage` 写入 `turn_result`；一次调用用了多个模型时各算一次；旧事件归为“未记录模型”）；② 调用明细（每次调用一行：时间、员工、用途和任务/会议标题、模型、输入/输出/缓存读写、费用、耗时、首字时间；按员工、用途、是否出错过滤，分页）；③ token 构成条（缓存读 / 缓存写 / 未缓存输入 / 输出）；④ 耗时分布（中位、P95、首字平均）；⑤ “今天”按小时显示。
 - 与 CC Switch 的差异：不自带价格表——费用沿用 CLI 报告的等值估算，不自己按单价重算；不解析本机其他 Claude Code 会话日志（那是 CC Switch 用来统计非代理流量的做法）。因此看不到“我自己的会话占了多少额度”，只能从共享额度窗口的变化推断。
+
+### 20.26 Copilot CLI 适配
+
+- 员工可以选执行引擎：`claude`（默认）或 `copilot`（创建时选，不可改；命令行 `crewforge employee add 名 岗位 说明 --provider copilot`，界面“新员工”里有下拉）。运行器按员工的引擎启动对应进程，两者给出同一种事件流，上层（任务、会议、检查点、成本）不关心是谁。
+- 调用方式：`copilot -p <提示> --output-format json --session-id <我们的会话 id>`，每行一个 JSON 事件（`assistant.message`、`tool.execution_*`、`session.usage_checkpoint`、`result`）。会话 id 复用，所以追加消息接续同一会话；角色设定放在新会话第一条消息开头（没有单独的系统提示参数）；`--no-custom-instructions` 避免用户或仓库的指令文件干扰；`--disable-builtin-mcps` 关闭内置的 GitHub MCP。
+- **权限与 Claude 不同**：Copilot 非交互模式没有“边跑边问人”的通道，所以权限在启动时一次定好：开发任务允许写入（路径校验只放行工作区与临时目录，不放宽）与一份开发命令清单（git add/commit/status/diff…、cargo、npm、python3、go、make 等）；`git push`、`sudo`、`ssh`、`curl`、`wget`、`rm` 等永远拒绝（拒绝优先于一切允许）；清单之外的命令被直接拒绝，模型能看到原因并改用别的办法。因此 Copilot 员工不会产生审批请求，也不能删除文件。会议里是只读：拒绝所有写入，只允许 ls/cat/grep/git diff 等查看命令。不使用任何 `allow-all`。
+- 团队协作工具：同一个 `crewforge mcp-serve`，通过 `--additional-mcp-config` 提供并放行。
+- 用量：Copilot 按“高级请求”和 AIU 计量，没有 token 与美元费用——这些记为“未知”，不会当成 0。成本页新增“Copilot 高级请求”卡片，按模型分组时标注“（Copilot）”，调用明细里费用列显示“n 高级请求”。Copilot 没有 5 小时/7 天额度读数，调度器的额度分级对它不起作用（并发上限仍然有效）。
+- 验证：解析器与参数的单元测试（含真实输出样例）、假 Copilot 的端到端测试（权限参数、会话复用、不重复角色设定、无审批请求、用量口径）、真实 Copilot 冒烟（`crates/cli/tests/real_copilot.rs`，约 3 次高级请求）：任务在员工 worktree 里创建了文件、主工作区未被改动，`git push` 被规则拒绝，会议里调用了 `crewforge` 的 `list_issues`；只读规则单独用真实 CLI 验证：`--deny-tool=write` 下创建文件返回 denied。
+- 已知局限：不能在运行中向人请求权限（要用某个清单之外的命令只能先改清单）；没有 Copilot 的额度读数，无法按额度调度；沙箱（Copilot 自带的命令沙箱）没有启用；模型选择用 Copilot 的默认值。

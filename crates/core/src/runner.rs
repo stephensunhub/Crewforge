@@ -2,7 +2,9 @@
 
 use crate::db::{Db, Employee};
 use crate::policy::{Policy, PolicyDecision};
+use crate::provider::AgentProcess;
 use crate::provider::claude::{AgentEvent, ApprovalRequest, ClaudeProcess, ClaudeSpec, Decision, TurnResult};
+use crate::provider::copilot::{CopilotProcess, CopilotSpec};
 use anyhow::{Result, bail};
 use serde_json::json;
 use std::path::PathBuf;
@@ -44,6 +46,8 @@ pub struct TurnConfig {
     pub mcp: Option<crate::provider::claude::McpLaunch>,
     /// 测试时可替换为假的 CLI
     pub program: String,
+    /// Copilot 员工使用的 CLI，默认 `copilot`
+    pub copilot_program: String,
 }
 
 pub async fn run_turn<A: Approver, O: Observer>(
@@ -76,7 +80,8 @@ pub async fn run_turn<A: Approver, O: Observer>(
         spec.persona = format!("{}\n\n{}", spec.persona, crate::mcp::TEAM_TOOLS_HINT);
         spec.mcp = cfg.mcp.clone();
     }
-    if !cfg.read_only && db.get_setting("sandbox")?.as_deref() != Some("off") {
+    let copilot = employee.provider == "copilot";
+    if !copilot && !cfg.read_only && db.get_setting("sandbox")?.as_deref() != Some("off") {
         spec.sandbox = Some(sandbox_writable_dirs(&cfg.project_path));
     }
     if crate::protocol::enabled(db) {
@@ -96,7 +101,17 @@ pub async fn run_turn<A: Approver, O: Observer>(
     }))?;
 
     let started_at = std::time::Instant::now();
-    let mut proc = match ClaudeProcess::spawn(&spec, &effective_prompt).await {
+    let spawned: Result<AgentProcess> = if copilot {
+        // Copilot：权限在启动时定好（见 provider::copilot），没有审批通道；设定、协作工具、规范与 Claude 员工一致
+        let mut cs = CopilotSpec::new(session.id.clone(), session.started, spec.persona.clone(), cfg.project_path.clone());
+        cs.program = cfg.copilot_program.clone();
+        cs.mcp = spec.mcp.clone();
+        cs.read_only = cfg.read_only;
+        CopilotProcess::spawn(&cs, &effective_prompt).await.map(AgentProcess::Copilot)
+    } else {
+        ClaudeProcess::spawn(&spec, &effective_prompt).await.map(AgentProcess::Claude)
+    };
+    let mut proc = match spawned {
         Ok(p) => p,
         Err(e) => {
             db.set_session_status(&session.id, "idle")?;
@@ -148,6 +163,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
                         "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
                         "cache_read_tokens": r.cache_read_tokens, "cache_creation_tokens": r.cache_creation_tokens,
                         "models": r.models, "ttft_ms": r.ttft_ms,
+                        "provider": r.provider, "model": r.model, "premium_requests": r.premium_requests, "nano_aiu": r.nano_aiu,
                     }))?;
                     return Ok(r.clone());
                 }

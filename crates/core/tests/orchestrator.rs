@@ -204,3 +204,71 @@ async fn events_of_a_registered_project_carry_its_id() {
     }
     assert!(e.db.recent_events_for_project(&other.id, 100).unwrap().iter().all(|x| x.kind == "project_created"), "别的项目看不到这些事件");
 }
+
+/// 假 Copilot：把收到的参数追加到 args.log（每次调用一段），在工作目录写文件，输出 Copilot 风格的 JSONL。
+fn fake_copilot(dir: &Path, log: &Path) -> String {
+    let path = dir.join("copilot");
+    std::fs::write(&path, format!(
+        r#"#!/bin/sh
+{{ echo "=== call"; for a in "$@"; do printf '%s\n' "$a"; done; }} >> '{log}'
+echo copilot-was-here > made-by-copilot.txt
+echo '{{"type":"session.mcp_server_status_changed","data":{{}},"ephemeral":true}}'
+echo '{{"type":"assistant.message","data":{{"model":"claude-sonnet-5.5","content":"","toolRequests":[{{"toolCallId":"t1","name":"bash","arguments":{{"command":"ls"}}}}]}}}}'
+echo '{{"type":"assistant.message","data":{{"model":"claude-sonnet-5.5","content":"Copilot 做完了","toolRequests":[]}}}}'
+echo '{{"type":"session.usage_checkpoint","data":{{"totalNanoAiu":7000000000,"totalPremiumRequests":1}}}}'
+echo '{{"type":"result","exitCode":0,"usage":{{"premiumRequests":1,"totalApiDurationMs":900}}}}'
+"#, log = log.display())).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+struct MustNotAsk;
+impl Approver for MustNotAsk {
+    async fn ask(&self, _: &str, _: &ApprovalRequest, _: &str) -> Decision {
+        panic!("Copilot 员工不应产生审批请求");
+    }
+}
+
+#[tokio::test]
+async fn copilot_employee_runs_with_preset_permissions_and_metering_in_premium_requests() {
+    let mut e = setup().await;
+    let log = e.tools.join("args.log");
+    e.orch.copilot_program = fake_copilot(&e.tools, &log);
+    assert!(e.db.add_employee_with("x", "r", "p", "gemini").is_err(), "未知引擎要被拒绝");
+    let dave = e.db.add_employee_with("dave", "全栈", "你是 Dave", "copilot").unwrap();
+    assert_eq!(e.db.employee_by_name("dave").unwrap().unwrap().provider, "copilot");
+    assert_eq!(e.db.add_employee("erin", "全栈", "p").unwrap().provider, "claude");
+
+    let r = e.orch.assign(&dave, &e.repo, "实现登录", &MustNotAsk, &NoopObserver).await.unwrap();
+    assert_eq!(r.text, "Copilot 做完了");
+    assert_eq!((r.provider.as_deref(), r.model.as_deref(), r.premium_requests), (Some("copilot"), Some("claude-sonnet-5.5"), Some(1.0)));
+
+    // 员工在自己的 worktree 里改了文件，检查点已提交，主工作区干净
+    let views = e.orch.task_views(&e.repo).await.unwrap();
+    assert!(views[0].files.iter().any(|f| f.path == "made-by-copilot.txt"));
+    assert_eq!(sh(&e.repo, &["status", "--porcelain"]), "");
+
+    // 第一次调用：权限与角色设定
+    let first = std::fs::read_to_string(&log).unwrap();
+    assert!(first.contains("--allow-tool=write") && first.contains("--allow-tool=shell(cargo:*)") && first.contains("--deny-tool=shell(git push:*)"));
+    assert!(!first.contains("allow-all"));
+    assert!(first.contains("[你的角色设定]\n你是 Dave") && first.contains("实现登录"));
+    let sid = e.db.list_sessions().unwrap()[0].id.clone();
+    assert!(first.contains(&sid), "使用我们自己的会话 id");
+
+    // 追加消息：同一会话，不重复角色设定
+    e.orch.assign(&dave, &e.repo, "再加一个注册", &MustNotAsk, &NoopObserver).await.unwrap();
+    let all = std::fs::read_to_string(&log).unwrap();
+    let second = all.rsplit("=== call").next().unwrap();
+    assert!(second.contains(&sid) && !second.contains("[你的角色设定]") && second.contains("再加一个注册"));
+
+    // 用量：没有 token 与美元费用（未知，不是 0），有高级请求数与模型
+    let rep = e.db.cost_report(None, 0).unwrap();
+    assert_eq!((rep.totals.turns, rep.totals.turns_with_cost, rep.totals.turns_with_tokens), (2, 0, 0));
+    assert_eq!(rep.totals.premium_requests, 2.0);
+    assert!(rep.by_model.iter().any(|g| g.label == "claude-sonnet-5.5（Copilot）" && g.totals.turns == 2));
+    let calls = e.db.cost_calls(None, &Default::default(), 10, 0).unwrap();
+    assert_eq!((calls.rows[0].provider.as_str(), calls.rows[0].premium_requests), ("copilot", Some(1.0)));
+    let kinds: Vec<String> = e.db.recent_events(300).unwrap().into_iter().map(|x| x.kind).collect();
+    assert!(kinds.contains(&"tool_use".into()) && !kinds.contains(&"approval_requested".into()));
+}

@@ -85,9 +85,14 @@ async fn main() -> Result<()> {
             let e = db.add_employee(name, role, persona)?;
             println!("已创建员工 {} ({})", e.name, e.id);
         }
+        // 指定执行引擎：claude（默认）或 copilot
+        ["employee", "add", name, role, persona, "--provider", provider] => {
+            let e = db.add_employee_with(name, role, persona, provider)?;
+            println!("已创建员工 {}（{}）({})", e.name, e.provider, e.id);
+        }
         ["employee", "list"] => {
             for e in db.list_employees()? {
-                println!("{:<10} {:<10} {}", e.name, e.role, e.persona);
+                println!("{:<10} {:<10} {:<8} {}", e.name, e.role, e.provider, e.persona);
             }
         }
         ["sessions"] => {

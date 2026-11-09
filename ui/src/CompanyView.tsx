@@ -12,13 +12,14 @@ export const COMPANY_TABS: [CompanyTab, string][] = [
 const ROLES = ["全栈工程师", "QA 测试工程师", "架构师 / CTO", "其他"];
 
 function EmployeeForm({ initial, onSubmit, onClose }: {
-  initial?: { name: string; role: string; persona: string };
-  onSubmit: (name: string, role: string, persona: string) => Promise<void>;
+  initial?: { name: string; role: string; persona: string; provider?: string };
+  onSubmit: (name: string, role: string, persona: string, provider: string) => Promise<void>;
   onClose: () => void;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [role, setRole] = useState(initial?.role ?? ROLES[0]);
   const [persona, setPersona] = useState(initial?.persona ?? "");
+  const [provider, setProvider] = useState(initial?.provider ?? "claude");
   const [busy, setBusy] = useState(false);
   const valid = name.trim() !== "" && !/[\s@]/.test(name);
   return (
@@ -32,13 +33,18 @@ function EmployeeForm({ initial, onSubmit, onClose }: {
             {[...new Set([role, ...ROLES])].map((r) => <option key={r}>{r}</option>)}
           </select>
         </Field>
+        <Field label="执行引擎" hint={initial ? "创建后不可修改" : "Claude：可以边做边向你请求权限，按订阅额度计量。Copilot：权限在启动时一次定好（没有列入的命令会被直接拒绝，不会来问你），按 Copilot 高级请求计量。"}>
+          <select value={provider} disabled={!!initial} onChange={(e) => setProvider(e.target.value)}>
+            <option value="claude">Claude Code</option><option value="copilot">GitHub Copilot CLI</option>
+          </select>
+        </Field>
         <Field label="身份说明" hint="告诉 TA 是谁、怎么沟通、擅长什么。留空会使用默认说明。">
           <textarea rows={5} value={persona} onChange={(e) => setPersona(e.target.value)} />
         </Field>
         <div className="form-btns">
           <button className="btn primary" disabled={!valid || busy} onClick={async () => {
             setBusy(true);
-            try { await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`); } finally { setBusy(false); }
+            try { await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`, provider); } finally { setBusy(false); }
           }}>{initial ? "保存" : "创建"}</button>
         </div>
       </div>
@@ -129,7 +135,7 @@ export function CompanyView({
                   <Avatar name={c.employee.name} size={38} />
                   <div style={{ minWidth: 0 }}>
                     <b>{c.employee.name}</b>
-                    <div className="hint">{c.employee.role}</div>
+                    <div className="hint">{c.employee.role}{c.employee.provider === "copilot" && <span className="badge" style={{ marginLeft: 6 }}>Copilot</span>}</div>
                   </div>
                   <span className={`status ${busy ? "run" : ""}`}>{busy ? "● 工作中" : "○ 空闲"}</span>
                 </div>
@@ -153,7 +159,7 @@ export function CompanyView({
             );
           })}
         </div>
-        {modal === "new-emp" && <EmployeeForm onClose={() => setModal(null)} onSubmit={async (n, r, p) => { if (await guard(() => api.addEmployee(n, r, p))) setModal(null); }} />}
+        {modal === "new-emp" && <EmployeeForm onClose={() => setModal(null)} onSubmit={async (n, r, p, pv) => { if (await guard(() => api.addEmployee(n, r, p, pv))) setModal(null); }} />}
         {modal && typeof modal === "object" && "memory" in modal && (
           <Modal title={`${modal.memory.employee.name} 的个人记忆`} onClose={() => setModal(null)} width={760}>
             <MemoryView embedded scope={{ layer: "employee", employeeId: modal.memory.employee.id, name: modal.memory.employee.name }} events={events} onError={onError} />

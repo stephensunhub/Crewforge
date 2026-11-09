@@ -26,6 +26,8 @@ pub struct Totals {
     pub turns_with_tokens: u64,
     pub duration_ms: u64,
     pub turns_with_duration: u64,
+    /// Copilot 计量：高级请求数（Copilot 没有 token 和美元费用）
+    pub premium_requests: f64,
 }
 
 impl Totals {
@@ -43,6 +45,7 @@ impl Totals {
         self.output_tokens += r.output.unwrap_or(0);
         self.cache_read_tokens += r.cache_read.unwrap_or(0);
         self.cache_creation_tokens += r.cache_creation.unwrap_or(0);
+        self.premium_requests += r.premium.unwrap_or(0.0);
         if let Some(d) = r.duration {
             self.duration_ms += d;
             self.turns_with_duration += 1;
@@ -160,6 +163,10 @@ pub struct CallRow {
     pub ttft_ms: Option<u64>,
     pub is_error: bool,
     pub subtype: String,
+    /// 执行引擎；没有按模型拆分的数据（如 Copilot）时，用这里的单个模型名
+    pub provider: String,
+    pub model: Option<String>,
+    pub premium_requests: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -210,6 +217,9 @@ struct Row {
     is_error: bool,
     models: Vec<ModelUse>,
     ttft: Option<u64>,
+    model: Option<String>,
+    provider: Option<String>,
+    premium: Option<f64>,
 }
 
 pub fn purpose_label(p: &str) -> &'static str {
@@ -283,7 +293,8 @@ impl Db {
                     json_extract(e.payload,'$.purpose'), json_extract(e.payload,'$.project_id'), json_extract(e.payload,'$.cost_usd'),
                     json_extract(e.payload,'$.input_tokens'), json_extract(e.payload,'$.output_tokens'), json_extract(e.payload,'$.cache_read_tokens'),
                     json_extract(e.payload,'$.cache_creation_tokens'), json_extract(e.payload,'$.duration_ms'), json_extract(e.payload,'$.is_error'),
-                    json_extract(e.payload,'$.models'), json_extract(e.payload,'$.ttft_ms'), json_extract(e.payload,'$.subtype')
+                    json_extract(e.payload,'$.models'), json_extract(e.payload,'$.ttft_ms'), json_extract(e.payload,'$.subtype'),
+                    json_extract(e.payload,'$.model'), json_extract(e.payload,'$.provider'), json_extract(e.payload,'$.premium_requests')
              FROM events e WHERE e.kind = 'turn_result' AND e.ts >= ?1 ORDER BY e.id DESC")?;
         let u = |v: Option<i64>| v.map(|x| x.max(0) as u64);
         let mut all: Vec<CallRow> = Vec::new();
@@ -292,10 +303,11 @@ impl Db {
                 (r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?);
             Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, eid, task, meeting, purpose, project, r.get::<_, Option<f64>>(7)?,
                 [r.get::<_, Option<i64>>(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?], r.get::<_, Option<i64>>(13)?.unwrap_or(0) != 0,
-                r.get::<_, Option<String>>(14)?, r.get::<_, Option<i64>>(15)?, r.get::<_, Option<String>>(16)?))
+                r.get::<_, Option<String>>(14)?, r.get::<_, Option<i64>>(15)?, r.get::<_, Option<String>>(16)?,
+                r.get::<_, Option<String>>(17)?, r.get::<_, Option<String>>(18)?, r.get::<_, Option<f64>>(19)?))
         })?;
         for row in it {
-            let (id, ts, eid, task, meeting, purpose, project, cost, n, is_error, models, ttft, subtype) = row?;
+            let (id, ts, eid, task, meeting, purpose, project, cost, n, is_error, models, ttft, subtype, model, provider, premium) = row?;
             let project_id = project.clone()
                 .or_else(|| task.as_ref().and_then(|t| task_project.get(t)).cloned())
                 .or_else(|| meeting.as_ref().and_then(|m| meeting_project.get(m)).cloned());
@@ -312,6 +324,7 @@ impl Db {
                 models: models.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(), cost_usd: cost,
                 input_tokens: u(n[0]), output_tokens: u(n[1]), cache_read_tokens: u(n[2]), cache_creation_tokens: u(n[3]), duration_ms: u(n[4]),
                 ttft_ms: ttft.map(|v| v.max(0) as u64), is_error, subtype: subtype.unwrap_or_default(),
+                provider: provider.unwrap_or_else(|| "claude".into()), model, premium_requests: premium,
             });
         }
         let total = all.len();
@@ -350,7 +363,8 @@ impl Db {
                         json_extract(e.payload,'$.cost_usd'), json_extract(e.payload,'$.input_tokens'),
                         json_extract(e.payload,'$.output_tokens'), json_extract(e.payload,'$.cache_read_tokens'),
                         json_extract(e.payload,'$.cache_creation_tokens'), json_extract(e.payload,'$.duration_ms'),
-                        json_extract(e.payload,'$.is_error'), json_extract(e.payload,'$.models'), json_extract(e.payload,'$.ttft_ms')
+                        json_extract(e.payload,'$.is_error'), json_extract(e.payload,'$.models'), json_extract(e.payload,'$.ttft_ms'),
+                        json_extract(e.payload,'$.model'), json_extract(e.payload,'$.provider'), json_extract(e.payload,'$.premium_requests')
                  FROM events e WHERE e.kind = 'turn_result' AND e.ts >= ?1 ORDER BY e.id",
             )?;
             let it = s.query_map([since_v], |r| {
@@ -362,6 +376,7 @@ impl Db {
                     is_error: r.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
                     models: r.get::<_, Option<String>>(13)?.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
                     ttft: r.get::<_, Option<i64>>(14)?.map(|v| v.max(0) as u64),
+                    model: r.get(15)?, provider: r.get(16)?, premium: r.get(17)?,
                 })
             })?;
             it.collect::<std::result::Result<_, _>>()?
@@ -398,7 +413,12 @@ impl Db {
                 let hour = format!("{} {:02}", &days_to_ymd(local.div_euclid(86_400_000))[5..], local.rem_euclid(86_400_000) / 3_600_000);
                 by_hour.entry(hour).or_default().add(r);
             }
-            if r.models.is_empty() {
+            if r.models.is_empty() && r.model.is_some() {
+                // 没有按模型拆分的数据（如 Copilot）：按单个模型归类，token 与费用保持未知
+                let m = r.model.clone().unwrap();
+                let label = if r.provider.as_deref() == Some("copilot") { format!("{m}（Copilot）") } else { m.clone() };
+                by_model.entry(format!("{}:{m}", r.provider.clone().unwrap_or_default())).or_insert_with(|| (label, Totals::default())).1.add(r);
+            } else if r.models.is_empty() {
                 by_model.entry("unknown".into()).or_insert_with(|| ("（未记录模型）".into(), Totals::default())).1.add(r);
             } else {
                 for m in &r.models {

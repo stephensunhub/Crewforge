@@ -153,10 +153,10 @@ function CallLog({ days, employees, onError, refreshKey }: { days: number | null
             <tr key={r.event_id} className={r.is_error ? "row-bad" : ""}>
               <td className="hint">{hm(r.ts)}</td><td><b>{r.employee}</b></td>
               <td>{r.purpose_label}{r.subject && <div className="hint" title={r.subject}>{r.subject.length > 28 ? `${r.subject.slice(0, 28)}…` : r.subject}</div>}{r.is_error && <span className="bad"> · 出错 {r.subtype}</span>}</td>
-              <td className="hint">{r.models.length === 0 ? "未记录" : r.models.map((m) => m.model.replace(/^claude-/, "")).join("、")}</td>
+              <td className="hint">{r.models.length > 0 ? r.models.map((m) => m.model.replace(/^claude-/, "")).join("、") : r.model ? `${r.model}${r.provider === "copilot" ? "（Copilot）" : ""}` : "未记录"}</td>
               <td>{r.input_tokens == null ? "" : fmtNum(r.input_tokens)}</td><td>{r.output_tokens == null ? "" : fmtNum(r.output_tokens)}</td>
               <td>{r.cache_read_tokens == null ? "" : `${fmtNum(r.cache_read_tokens)} / ${fmtNum(r.cache_creation_tokens ?? 0)}`}</td>
-              <td>{r.cost_usd == null ? <span className="hint">未知</span> : fmtCost(r.cost_usd)}</td>
+              <td>{r.cost_usd != null ? fmtCost(r.cost_usd) : r.premium_requests != null ? <span className="hint">{r.premium_requests} 高级请求</span> : <span className="hint">未知</span>}</td>
               <td>{r.duration_ms == null ? "" : secs(r.duration_ms)}{r.ttft_ms != null && <div className="hint">首字 {secs(r.ttft_ms)}</div>}</td>
             </tr>))}</tbody>
         </table>
@@ -213,6 +213,7 @@ export function CostView({ events, onError }: { events: EventRow[]; onError: (m:
         <div className="stat"><span>估算费用</span><b>{t.turns_with_cost === 0 ? "未知" : fmtCost(t.cost_usd)}</b>{t.turns_with_cost < t.turns && t.turns > 0 && <i>{t.turns - t.turns_with_cost} 轮无费用数据</i>}</div>
         <div className="stat"><span>处理的上下文 token</span><b>{t.turns_with_tokens === 0 ? "未知" : fmtNum(ctx)}</b><i>含缓存读写</i></div>
         <div className="stat"><span>输出 token</span><b>{t.turns_with_tokens === 0 ? "未知" : fmtNum(t.output_tokens)}</b></div>
+        {t.premium_requests > 0 && <div className="stat"><span>Copilot 高级请求</span><b>{t.premium_requests}</b><i>Copilot 按请求数计量，没有 token 和费用数据</i></div>}
         <div className="stat"><span>耗时（中位 / P95）</span><b>{r.latency.p50_ms == null ? "未知" : `${secs(r.latency.p50_ms)} / ${secs(r.latency.p95_ms ?? 0)}`}</b>
           {r.latency.avg_ttft_ms != null && <i>首字平均 {secs(r.latency.avg_ttft_ms)}（{r.latency.ttft_samples} 次）</i>}</div>
       </div>

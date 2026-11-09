@@ -5,6 +5,7 @@ export interface Employee {
   role: string;
   persona: string;
   archived: boolean;
+  provider: "claude" | "copilot";
 }
 export interface Company {
   name: string;
@@ -247,6 +248,7 @@ export interface StoredCheck { created_at: number; report: CheckReport }
 export interface Totals {
   turns: number; errors: number; cost_usd: number; turns_with_cost: number; input_tokens: number; output_tokens: number;
   cache_read_tokens: number; cache_creation_tokens: number; turns_with_tokens: number; duration_ms: number; turns_with_duration: number;
+  premium_requests: number;
 }
 export interface CostGroup { key: string; label: string; totals: Totals }
 export interface CostDay { day: string; totals: Totals }
@@ -264,6 +266,7 @@ export interface CallRow {
   event_id: number; ts: number; employee: string; project: string; purpose: string; purpose_label: string; subject: string; models: ModelUse[];
   cost_usd: number | null; input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; cache_creation_tokens: number | null;
   duration_ms: number | null; ttft_ms: number | null; is_error: boolean; subtype: string;
+  provider: string; model: string | null; premium_requests: number | null;
 }
 export interface CallPage { total: number; rows: CallRow[] }
 export interface CostReport {
