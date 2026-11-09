@@ -14,10 +14,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 迁移列表：下标 + 1 即版本号。只能追加，不能修改已发布的迁移。
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10, MIGRATION_11];
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10, MIGRATION_11, MIGRATION_12];
 
 /// 员工使用的执行引擎：claude（默认）或 copilot
 const MIGRATION_11: &str = "ALTER TABLE employees ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';";
+
+/// 员工使用的模型（空 = 引擎默认）
+const MIGRATION_12: &str = "ALTER TABLE employees ADD COLUMN model TEXT NOT NULL DEFAULT '';";
 
 pub const PROVIDERS: &[&str] = &["claude", "copilot"];
 
@@ -120,6 +123,8 @@ pub struct Employee {
     pub archived: bool,
     /// 执行引擎：claude | copilot
     pub provider: String,
+    /// 指定模型（传给 CLI 的 --model）；空表示用引擎默认
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -283,6 +288,7 @@ impl Db {
         }
         let e = Employee {
             provider: provider.into(),
+            model: String::new(),
             id: uuid::Uuid::new_v4().to_string(),
             name: name.into(),
             role: role.into(),
@@ -303,7 +309,7 @@ impl Db {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id, name, role, persona, archived, provider FROM employees WHERE name = ?1",
+                "SELECT id, name, role, persona, archived, provider, model FROM employees WHERE name = ?1",
                 [name],
                 row_to_employee,
             )
@@ -316,7 +322,7 @@ impl Db {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id, name, role, persona, archived, provider FROM employees WHERE id = ?1",
+                "SELECT id, name, role, persona, archived, provider, model FROM employees WHERE id = ?1",
                 [id],
                 row_to_employee,
             )
@@ -325,7 +331,7 @@ impl Db {
 
     pub fn list_employees(&self) -> Result<Vec<Employee>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, role, persona, archived, provider FROM employees WHERE archived = 0 AND role != 'guest' ORDER BY created_at")?;
+        let mut stmt = conn.prepare("SELECT id, name, role, persona, archived, provider, model FROM employees WHERE archived = 0 AND role != 'guest' ORDER BY created_at")?;
         let rows = stmt.query_map([], row_to_employee)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -575,12 +581,30 @@ impl Db {
     // ---------- 员工（公司级） ----------
     /// 修改岗位与身份说明。名称不可改：它决定 worktree 目录与分支名。
     pub fn update_employee(&self, id: &str, role: &str, persona: &str) -> Result<()> {
-        let n = self.conn.lock().unwrap().execute(
-            "UPDATE employees SET role = ?2, persona = ?3 WHERE id = ?1",
-            params![id, role, persona],
-        )?;
-        if n == 0 {
-            anyhow::bail!("员工不存在");
+        let e = self.employee_by_id(id)?.ok_or_else(|| anyhow::anyhow!("员工不存在"))?;
+        self.update_employee_full(id, role, persona, &e.provider, &e.model)
+    }
+
+    /// 修改岗位、身份说明、执行引擎和模型。切换引擎时清掉 TA 的会话（两个引擎的会话互不通用），
+    /// 之前的对话上下文不会带过去；任务分支、工作区、历史事件与记忆都保留。
+    pub fn update_employee_full(&self, id: &str, role: &str, persona: &str, provider: &str, model: &str) -> Result<()> {
+        if !PROVIDERS.contains(&provider) {
+            anyhow::bail!("未知的执行引擎：{provider}（可选：{}）", PROVIDERS.join("、"));
+        }
+        let old = self.employee_by_id(id)?.ok_or_else(|| anyhow::anyhow!("员工不存在"))?;
+        let model = model.trim();
+        if model.contains(char::is_whitespace) {
+            anyhow::bail!("模型名不能包含空格");
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE employees SET role = ?2, persona = ?3, provider = ?4, model = ?5 WHERE id = ?1", params![id, role, persona, provider, model])?;
+        let reset = old.provider != provider;
+        if reset {
+            conn.execute("DELETE FROM sessions WHERE employee_id = ?1", params![id])?;
+        }
+        drop(conn);
+        if reset || old.model != model {
+            self.append_event("employee_updated", Some(id), None, &json!({"provider": [old.provider, provider], "model": [old.model, model], "sessions_reset": reset}))?;
         }
         Ok(())
     }
@@ -802,7 +826,7 @@ impl Db {
 }
 
 fn row_to_employee(r: &rusqlite::Row<'_>) -> rusqlite::Result<Employee> {
-    Ok(Employee { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, persona: r.get(3)?, archived: r.get::<_, i64>(4)? != 0, provider: r.get(5)? })
+    Ok(Employee { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, persona: r.get(3)?, archived: r.get::<_, i64>(4)? != 0, provider: r.get(5)?, model: r.get(6)? })
 }
 
 fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
@@ -952,6 +976,20 @@ mod tests {
         assert!(db.list_employees().unwrap().is_empty());
         assert!(db.employee_by_id(&a.id).unwrap().unwrap().archived, "归档后仍可查到历史");
         assert!(db.update_employee("nope", "r", "p").is_err());
+
+        // 切换执行引擎与模型：会话被清掉（引擎之间不通用），历史与员工本身保留；非法引擎和带空格的模型名被拒绝
+        let s = db.get_or_create_session(&a.id, "/proj").unwrap();
+        db.update_employee_full(&a.id, "架构师", "新的身份", "claude", "sonnet").unwrap();
+        assert_eq!(db.get_or_create_session(&a.id, "/proj").unwrap().id, s.id, "只改模型，会话保留");
+        db.update_employee_full(&a.id, "架构师", "新的身份", "copilot", "claude-sonnet-5.5").unwrap();
+        let e = db.employee_by_id(&a.id).unwrap().unwrap();
+        assert_eq!((e.provider.as_str(), e.model.as_str()), ("copilot", "claude-sonnet-5.5"));
+        assert_ne!(db.get_or_create_session(&a.id, "/proj").unwrap().id, s.id, "切换引擎后是全新的会话");
+        assert!(db.update_employee_full(&a.id, "r", "p", "gemini", "").is_err());
+        assert!(db.update_employee_full(&a.id, "r", "p", "claude", "a b").is_err());
+        // update_employee 不改引擎和模型
+        db.update_employee(&a.id, "新岗位", "p").unwrap();
+        assert_eq!(db.employee_by_id(&a.id).unwrap().unwrap().provider, "copilot");
     }
 
     #[test]

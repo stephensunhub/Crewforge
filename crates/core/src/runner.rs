@@ -76,6 +76,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
 
     let mut spec = ClaudeSpec::new(session.id.clone(), session.started, employee.persona.clone(), cfg.project_path.clone());
     spec.program = cfg.program.clone();
+    spec.model = Some(employee.model.clone()).filter(|m| !m.is_empty());
     if cfg.mcp.is_some() {
         spec.persona = format!("{}\n\n{}", spec.persona, crate::mcp::TEAM_TOOLS_HINT);
         spec.mcp = cfg.mcp.clone();
@@ -107,6 +108,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
         // 设置里指定了路径（应用自带安装的 copilot）就用它，否则用默认的 `copilot`（需要在 PATH 里）
         cs.program = db.get_setting("copilot_program")?.filter(|p| !p.trim().is_empty()).unwrap_or_else(|| cfg.copilot_program.clone());
         cs.mcp = spec.mcp.clone();
+        cs.model = spec.model.clone();
         cs.read_only = cfg.read_only;
         CopilotProcess::spawn(&cs, &effective_prompt).await.map(AgentProcess::Copilot)
     } else {

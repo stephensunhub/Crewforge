@@ -27,12 +27,16 @@ pub fn list_employees(state: State<'_, AppState>) -> CmdResult<Vec<Employee>> {
 }
 
 #[tauri::command]
-pub fn add_employee(state: State<'_, AppState>, name: String, role: String, persona: String, provider: Option<String>) -> CmdResult<Employee> {
+pub fn add_employee(state: State<'_, AppState>, name: String, role: String, persona: String, provider: Option<String>, model: Option<String>) -> CmdResult<Employee> {
     let name = name.trim();
     if name.is_empty() || name.contains(char::is_whitespace) || name.contains('@') {
         return Err("员工名称不能为空，且不能包含空格或 @".into());
     }
-    state.db.add_employee_with(name, role.trim(), persona.trim(), provider.as_deref().unwrap_or("claude")).map_err(err)
+    let e = state.db.add_employee_with(name, role.trim(), persona.trim(), provider.as_deref().unwrap_or("claude")).map_err(err)?;
+    match model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => { state.db.update_employee_full(&e.id, &e.role, &e.persona, &e.provider, m).map_err(err)?; Ok(state.db.employee_by_id(&e.id).map_err(err)?.unwrap_or(e)) }
+        None => Ok(e),
+    }
 }
 
 #[tauri::command]
@@ -67,8 +71,12 @@ pub fn employee_cards(state: State<'_, AppState>) -> CmdResult<Vec<EmployeeCard>
 }
 
 #[tauri::command]
-pub fn update_employee(state: State<'_, AppState>, id: String, role: String, persona: String) -> CmdResult<()> {
-    state.db.update_employee(&id, role.trim(), persona.trim()).map_err(err)
+pub fn update_employee(state: State<'_, AppState>, id: String, role: String, persona: String, provider: String, model: String) -> CmdResult<()> {
+    let emp = state.db.employee_by_id(&id).map_err(err)?.ok_or("员工不存在")?;
+    if emp.provider != provider && state.running.lock().unwrap().contains(&emp.name) {
+        return Err("该员工正在执行任务，等 TA 完成后再切换执行引擎".into());
+    }
+    state.db.update_employee_full(&id, role.trim(), persona.trim(), &provider, model.trim()).map_err(err)
 }
 
 #[tauri::command]

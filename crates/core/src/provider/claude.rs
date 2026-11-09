@@ -31,6 +31,8 @@ pub struct ClaudeSpec {
     pub program: String,
     /// 提供给员工的团队协作工具（MCP 服务器）；None 表示不提供
     pub mcp: Option<McpLaunch>,
+    /// 指定模型（--model）；None 用 CLI 默认
+    pub model: Option<String>,
     /// 命令沙箱（macOS Seatbelt，由 CLI 自带）：沙箱内的命令不再逐条审批，
     /// 工作区之外的写入由系统拦截。值为除工作区外额外可写的目录（如 git 公共目录、包缓存）。
     pub sandbox: Option<Vec<PathBuf>>,
@@ -57,7 +59,7 @@ impl McpLaunch {
 
 impl ClaudeSpec {
     pub fn new(session_id: String, resume: bool, persona: String, cwd: PathBuf) -> Self {
-        Self { session_id, resume, persona, cwd, program: "claude".into(), mcp: None, sandbox: None }
+        Self { session_id, resume, persona, cwd, program: "claude".into(), mcp: None, model: None, sandbox: None }
     }
 
     pub fn args(&self) -> Vec<String> {
@@ -77,6 +79,10 @@ impl ClaudeSpec {
         // 总是传 --mcp-config：配合 --strict-mcp-config，既屏蔽用户自己的 MCP 服务器，又只开放我们提供的
         a.push("--mcp-config".into());
         a.push(self.mcp.as_ref().map(McpLaunch::config_json).unwrap_or_else(|| r#"{"mcpServers":{}}"#.into()));
+        if let Some(m) = self.model.as_deref().filter(|m| !m.is_empty()) {
+            a.push("--model".into());
+            a.push(m.into());
+        }
         if let Some(extra) = &self.sandbox {
             a.push("--settings".into());
             a.push(sandbox_settings(extra));
@@ -357,6 +363,15 @@ pub async fn detect(program: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_is_passed_only_when_set() {
+        let mut s = ClaudeSpec::new("sid".into(), false, String::new(), ".".into());
+        assert!(!s.args().contains(&"--model".to_string()));
+        s.model = Some("sonnet".into());
+        let a = s.args();
+        assert!(a.windows(2).any(|w| w == ["--model", "sonnet"]));
+    }
 
     #[test]
     fn sandbox_adds_settings() {

@@ -6,6 +6,7 @@ export interface Employee {
   persona: string;
   archived: boolean;
   provider: "claude" | "copilot";
+  model: string;
 }
 export interface Company {
   name: string;

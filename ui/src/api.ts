@@ -14,8 +14,8 @@ export const api = {
   // 员工（公司级）
   employees: () => invoke<Employee[]>("list_employees"),
   employeeCards: () => invoke<EmployeeCard[]>("employee_cards"),
-  addEmployee: (name: string, role: string, persona: string, provider?: string) => invoke<Employee>("add_employee", { name, role, persona, provider: provider ?? null }),
-  updateEmployee: (id: string, role: string, persona: string) => invoke<void>("update_employee", { id, role, persona }),
+  addEmployee: (name: string, role: string, persona: string, provider?: string, model?: string) => invoke<Employee>("add_employee", { name, role, persona, provider: provider ?? null, model: model ?? null }),
+  updateEmployee: (id: string, role: string, persona: string, provider: string, model: string) => invoke<void>("update_employee", { id, role, persona, provider, model }),
   archiveEmployee: (id: string) => invoke<void>("archive_employee", { id }),
   // 项目
   projects: () => invoke<ProjectSummary[]>("list_projects"),

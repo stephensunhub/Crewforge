@@ -26,6 +26,8 @@ pub struct CopilotSpec {
     /// 可执行文件，默认 `copilot`
     pub program: String,
     pub mcp: Option<McpLaunch>,
+    /// 指定模型（--model）；None 用 Copilot 默认
+    pub model: Option<String>,
     /// 只读（会议）：不允许写入，只允许查看类命令
     pub read_only: bool,
 }
@@ -43,7 +45,7 @@ const ALWAYS_DENY: &[&str] = &["git push", "sudo", "ssh", "scp", "curl", "wget",
 
 impl CopilotSpec {
     pub fn new(session_id: String, resume: bool, persona: String, cwd: PathBuf) -> Self {
-        Self { session_id, resume, persona, cwd, program: "copilot".into(), mcp: None, read_only: false }
+        Self { session_id, resume, persona, cwd, program: "copilot".into(), mcp: None, model: None, read_only: false }
     }
 
     /// 权限参数：见模块说明。
@@ -82,6 +84,10 @@ impl CopilotSpec {
         .into();
         a.push("--session-id".into());
         a.push(self.session_id.clone());
+        if let Some(m) = self.model.as_deref().filter(|m| !m.is_empty()) {
+            a.push("--model".into());
+            a.push(m.into());
+        }
         if let Some(m) = &self.mcp {
             a.push("--additional-mcp-config".into());
             a.push(m.config_json());
@@ -274,6 +280,14 @@ mod tests {
         assert!(a.contains(&"--deny-tool=write".to_string()) && !a.contains(&"--allow-tool=write".to_string()));
         assert!(!a.contains(&"--allow-tool=shell(cargo:*)".to_string()), "会议里不能跑构建");
         assert!(a.contains(&"--allow-tool=shell(git diff:*)".to_string()));
+    }
+
+    #[test]
+    fn model_is_passed_only_when_set() {
+        let mut s = spec();
+        assert!(!s.args("x").contains(&"--model".to_string()));
+        s.model = Some("claude-sonnet-5.5".into());
+        assert!(s.args("x").windows(2).any(|w| w == ["--model", "claude-sonnet-5.5"]));
     }
 
     #[test]

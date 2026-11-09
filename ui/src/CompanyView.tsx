@@ -12,14 +12,15 @@ export const COMPANY_TABS: [CompanyTab, string][] = [
 const ROLES = ["全栈工程师", "QA 测试工程师", "架构师 / CTO", "其他"];
 
 function EmployeeForm({ initial, onSubmit, onClose }: {
-  initial?: { name: string; role: string; persona: string; provider?: string };
-  onSubmit: (name: string, role: string, persona: string, provider: string) => Promise<void>;
+  initial?: { name: string; role: string; persona: string; provider?: string; model?: string };
+  onSubmit: (name: string, role: string, persona: string, provider: string, model: string) => Promise<void>;
   onClose: () => void;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [role, setRole] = useState(initial?.role ?? ROLES[0]);
   const [persona, setPersona] = useState(initial?.persona ?? "");
   const [provider, setProvider] = useState(initial?.provider ?? "claude");
+  const [model, setModel] = useState(initial?.model ?? "");
   const [busy, setBusy] = useState(false);
   const valid = name.trim() !== "" && !/[\s@]/.test(name);
   return (
@@ -33,10 +34,17 @@ function EmployeeForm({ initial, onSubmit, onClose }: {
             {[...new Set([role, ...ROLES])].map((r) => <option key={r}>{r}</option>)}
           </select>
         </Field>
-        <Field label="执行引擎" hint={initial ? "创建后不可修改" : "Claude：可以边做边向你请求权限，按订阅额度计量。Copilot：权限在启动时一次定好（没有列入的命令会被直接拒绝，不会来问你），按 Copilot 高级请求计量。"}>
-          <select value={provider} disabled={!!initial} onChange={(e) => setProvider(e.target.value)}>
+        <Field label="执行引擎" hint={initial
+          ? (provider !== initial.provider ? "⚠ 切换后 TA 之前的对话上下文不会带过去（任务分支、工作区、历史记录和记忆都保留）；TA 正在工作时不能切换。" : "可以随时切换，下次执行时生效。")
+          : "Claude：可以边做边向你请求权限，按订阅额度计量。Copilot：权限在启动时一次定好（没有列入的命令会被直接拒绝，不会来问你），按 Copilot 高级请求计量。"}>
+          <select value={provider} onChange={(e) => { setProvider(e.target.value); setModel(""); }}>
             <option value="claude">Claude Code</option><option value="copilot">GitHub Copilot CLI</option>
           </select>
+        </Field>
+        <Field label="模型" hint="留空使用引擎默认。可填别名或完整模型名；名称不对时 TA 会在下次执行时报错，改回即可。">
+          <input list={`models-${provider}`} value={model} placeholder="默认" onChange={(e) => setModel(e.target.value.trim())} />
+          <datalist id="models-claude"><option value="sonnet" /><option value="opus" /><option value="haiku" /></datalist>
+          <datalist id="models-copilot"><option value="auto" /><option value="claude-sonnet-5.5" /></datalist>
         </Field>
         <Field label="身份说明" hint="告诉 TA 是谁、怎么沟通、擅长什么。留空会使用默认说明。">
           <textarea rows={5} value={persona} onChange={(e) => setPersona(e.target.value)} />
@@ -44,7 +52,7 @@ function EmployeeForm({ initial, onSubmit, onClose }: {
         <div className="form-btns">
           <button className="btn primary" disabled={!valid || busy} onClick={async () => {
             setBusy(true);
-            try { await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`, provider); } finally { setBusy(false); }
+            try { await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`, provider, model); } finally { setBusy(false); }
           }}>{initial ? "保存" : "创建"}</button>
         </div>
       </div>
@@ -135,7 +143,7 @@ export function CompanyView({
                   <Avatar name={c.employee.name} size={38} />
                   <div style={{ minWidth: 0 }}>
                     <b>{c.employee.name}</b>
-                    <div className="hint">{c.employee.role}{c.employee.provider === "copilot" && <span className="badge" style={{ marginLeft: 6 }}>Copilot</span>}</div>
+                    <div className="hint">{c.employee.role}{c.employee.provider === "copilot" && <span className="badge" style={{ marginLeft: 6 }}>Copilot</span>}{c.employee.model && <span className="badge" style={{ marginLeft: 6 }}>{c.employee.model}</span>}</div>
                   </div>
                   <span className={`status ${busy ? "run" : ""}`}>{busy ? "● 工作中" : "○ 空闲"}</span>
                 </div>
@@ -159,7 +167,7 @@ export function CompanyView({
             );
           })}
         </div>
-        {modal === "new-emp" && <EmployeeForm onClose={() => setModal(null)} onSubmit={async (n, r, p, pv) => { if (await guard(() => api.addEmployee(n, r, p, pv))) setModal(null); }} />}
+        {modal === "new-emp" && <EmployeeForm onClose={() => setModal(null)} onSubmit={async (n, r, p, pv, md) => { if (await guard(() => api.addEmployee(n, r, p, pv, md))) setModal(null); }} />}
         {modal && typeof modal === "object" && "memory" in modal && (
           <Modal title={`${modal.memory.employee.name} 的个人记忆`} onClose={() => setModal(null)} width={760}>
             <MemoryView embedded scope={{ layer: "employee", employeeId: modal.memory.employee.id, name: modal.memory.employee.name }} events={events} onError={onError} />
@@ -167,9 +175,9 @@ export function CompanyView({
         )}
         {modal && typeof modal === "object" && "edit" in modal && (
           <EmployeeForm
-            initial={{ name: modal.edit.employee.name, role: modal.edit.employee.role, persona: modal.edit.employee.persona }}
+            initial={{ name: modal.edit.employee.name, role: modal.edit.employee.role, persona: modal.edit.employee.persona, provider: modal.edit.employee.provider, model: modal.edit.employee.model }}
             onClose={() => setModal(null)}
-            onSubmit={async (_n, r, p) => { if (await guard(() => api.updateEmployee(modal.edit.employee.id, r, p))) setModal(null); }}
+            onSubmit={async (_n, r, p, pv, md) => { if (await guard(() => api.updateEmployee(modal.edit.employee.id, r, p, pv, md))) setModal(null); }}
           />
         )}
       </div>
