@@ -146,7 +146,9 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT p.id, p.name, COUNT(*) FROM action_items a JOIN projects p ON p.id = a.project_id
-             WHERE a.status IN ('open','working') AND p.status = 'active' GROUP BY p.id, p.name ORDER BY p.name",
+             WHERE a.status IN ('open','working') AND p.status = 'active'
+               AND (a.for_human = 1 OR (a.blocking = 1 AND a.task_id IN (SELECT id FROM tasks WHERE status = 'active')))
+             GROUP BY p.id, p.name ORDER BY p.name",
         )?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)

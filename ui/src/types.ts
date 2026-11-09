@@ -317,3 +317,6 @@ export interface CallRec {
   duration_ms: number | null; ttft_ms: number | null; is_error: boolean; subtype: string;
 }
 export interface UsagePageData { total: number; rows: CallRec[] }
+
+export interface DutyItem { kind: string; title: string; reason: string; goto: string; count: number }
+export interface Duties { items: DutyItem[]; later_actions: number; plan_done: number; plan_total: number; plan_percent: number }

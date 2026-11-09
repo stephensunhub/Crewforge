@@ -377,3 +377,5 @@ button.u-cell:hover { background: var(--panel-2); }
 .u-pager select { width: auto; }
 .u-drawer-wrap { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.45); display: flex; justify-content: flex-end; }
 .u-drawer { width: min(520px, 100%); height: 100%; overflow: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 16px 18px; display: grid; gap: 8px; align-content: start; }
+.duty-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.duty-item .btn { white-space: nowrap; flex: none; }

@@ -102,6 +102,14 @@ async fn main() -> Result<()> {
         }
         ["events"] => print_events(&db, 20)?,
         ["events", n] => print_events(&db, n.parse()?)?,
+        ["duties"] => {
+            for p in db.list_projects()? {
+                let d = db.my_duties(&p.id)?;
+                println!("== {}（计划 {}/{}，另有 {} 条“之后再说”的行动项不在你的待办里）", p.name, d.plan_done, d.plan_total, d.later_actions);
+                if d.items.is_empty() { println!("  没有需要你处理的事"); }
+                for i in d.items { println!("  [{}] {}\n      为什么是你：{}", i.kind, i.title, i.reason); }
+            }
+        }
         ["setting", "get", key] => println!("{}", db.get_setting(key)?.unwrap_or_default()),
         ["setting", "set", key, value] => {
             db.set_setting(key, value)?;

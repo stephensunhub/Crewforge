@@ -64,6 +64,7 @@ pub fn run() {
             commands::start_planning,
             commands::cost_report,
             commands::cost_calls,
+            commands::my_duties,
             commands::usage_overview,
             commands::usage_stats,
             commands::usage_calls,

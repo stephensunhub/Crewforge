@@ -811,6 +811,11 @@ pub fn set_copilot_program(state: State<'_, AppState>, path: String) -> CmdResul
     state.db.set_setting("copilot_program", path.trim()).map_err(err)
 }
 
+#[tauri::command]
+pub fn my_duties(state: State<'_, AppState>, project_id: String) -> CmdResult<crewforge_core::duties::Duties> {
+    state.db.my_duties(&project_id).map_err(err)
+}
+
 // ================= 用量页（参照 CC Switch） =================
 #[tauri::command]
 pub fn usage_overview(state: State<'_, AppState>, filter: crewforge_core::usage::UsageFilter, tz_offset_minutes: i64) -> CmdResult<crewforge_core::usage::UsageOverview> {

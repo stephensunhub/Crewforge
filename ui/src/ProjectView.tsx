@@ -7,17 +7,18 @@ import { IssuesView } from "./IssuesView";
 import { MeetingsView } from "./MeetingsView";
 import { MemoryView } from "./MemoryView";
 import { OnboardingView } from "./OnboardingView";
+import { DutiesPanel } from "./DutiesPanel";
 import { PlanPanel } from "./PlanPanel";
 import type { ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
 
-export type ProjectTab = "onboarding" | "chat" | "plan" | "tasks" | "issues" | "meetings" | "members" | "memory" | "docs";
+export type ProjectTab = "duties" | "onboarding" | "chat" | "plan" | "tasks" | "issues" | "meetings" | "members" | "memory" | "docs";
 export const PROJECT_TABS: [ProjectTab, string][] = [
-  ["onboarding", "导入"], ["chat", "群聊"], ["plan", "计划"], ["tasks", "任务"], ["issues", "议题"], ["meetings", "会议"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
+  ["duties", "职责"], ["onboarding", "导入"], ["chat", "群聊"], ["plan", "计划"], ["tasks", "任务"], ["issues", "议题"], ["meetings", "会议"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
 ];
 const TASK_EVENTS = ["task_created", "checkpoint_committed", "checkpoint_failed", "task_merged", "task_merge_blocked", "task_abandoned", "turn_result", "task_failed", "task_error"];
 
 export function ProjectView({
-  tab, summary, employees, events, nameById, running, approvals, concurrency, meetingFocus, onFocusHandled, onOpenMeeting, onGoOnboarding, onDecide, onChanged, onError, onLeave,
+  tab, summary, employees, events, nameById, running, approvals, concurrency, meetingFocus, onFocusHandled, onOpenMeeting, onGoOnboarding, onGoTab, onDecide, onChanged, onError, onLeave,
 }: {
   tab: ProjectTab;
   summary: ProjectSummary;
@@ -31,6 +32,7 @@ export function ProjectView({
   onFocusHandled: () => void;
   onOpenMeeting: (id: string) => void;
   onGoOnboarding: () => void;
+  onGoTab: (t: ProjectTab) => void;
   onDecide: (a: ApprovalReq, allow: boolean) => void;
   onChanged: () => void;
   onError: (m: string) => void;
@@ -88,6 +90,8 @@ export function ProjectView({
 
   if (tab === "onboarding")
     return <OnboardingView projectId={project.id} members={members} events={events} running={running} onError={onError} onChanged={onChanged} />;
+  if (tab === "duties")
+    return <DutiesPanel projectId={project.id} projectName={project.name} events={events} onGoTab={onGoTab} />;
   if (tab === "plan")
     return <PlanPanel project={project} members={members} events={events} onError={onError} onChanged={onChanged} onOpenMeeting={onOpenMeeting} />;
   if (tab === "chat")

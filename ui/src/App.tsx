@@ -195,43 +195,45 @@ export default function App() {
             {inboxTotal === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
             {planCounts.map(([pid, pname, n]) => (
               <div className="inbox-item" key={`plan-${pid}`}>
-                <div>AI 起草了 <b>{n}</b> 个计划条目，等你确认<span className="hint"> · {pname}</span></div>
+                <div><span className="badge">确认计划</span> AI 起草了 <b>{n}</b> 个计划条目<span className="hint"> · {pname}</span></div>
+                <div className="hint">为什么是你：计划要你批准后才会派活，批准前员工不会开始做。</div>
                 <div className="btns"><button className="btn primary" onClick={() => { openProject(pid, "plan"); setInbox(false); }}>去确认</button></div>
               </div>
             ))}
             {actionCounts.map(([pid, pname, n]) => (
               <div className="inbox-item" key={`act-${pid}`}>
-                <div><b>{n}</b> 条评审行动项还没处理完<span className="hint"> · {pname}</span></div>
-                <div className="hint">标为“合并前”的会拦住对应任务的合并。</div>
-                <div className="btns"><button className="btn primary" onClick={() => { openProject(pid, "meetings"); setInbox(false); }}>去处理</button></div>
+                <div><span className="badge">需要你确认</span> <b>{n}</b> 件事拦着合并或要你来决定<span className="hint"> · {pname}</span></div>
+                <div className="hint">为什么是你：拦合并的评审意见，员工改完后要你确认已解决；或者评审里指明要由人决定的事。“之后再说”的小事不在这里。</div>
+                <div className="btns"><button className="btn primary" onClick={() => { openProject(pid, "duties"); setInbox(false); }}>看详情</button></div>
               </div>
             ))}
             {proposals.map((p) => (
               <div className="inbox-item" key={p.issue.id}>
-                <div>员工提议了议题：<b>{p.issue.title}</b><span className="hint"> · {p.project_name}</span></div>
+                <div><span className="badge">确认议题</span> 员工提议了议题：<b>{p.issue.title}</b><span className="hint"> · {p.project_name}</span></div>
                 {p.issue.summary && <div className="hint">{short(p.issue.summary, 120)}</div>}
-                <div className="hint">确认值得讨论后才会进入讨论；你也可以驳回。</div>
+                <div className="hint">为什么是你：AI 只能提议；是否值得讨论由你确认，确认前不占用大家的额度。你也可以驳回。</div>
                 <div className="btns"><button className="btn primary" onClick={() => { openProject(p.issue.project_id, "issues"); setInbox(false); }}>去处理</button></div>
               </div>
             ))}
             {unverified.map(([pid, pname, n]) => (
               <div className="inbox-item" key={pid}>
-                <div><b>{n}</b> 条经验等待验证<span className="hint"> · {pname}</span></div>
-                <div className="hint">未验证的经验不会被注入给员工。</div>
+                <div><span className="badge">验证经验</span> <b>{n}</b> 条经验等待验证<span className="hint"> · {pname}</span></div>
+                <div className="hint">为什么是你：未验证的经验不会给员工用，你确认它真的有用才会生效。</div>
                 <div className="btns"><button className="btn primary" onClick={() => { openProject(pid, "memory"); setInbox(false); }}>去验证</button></div>
               </div>
             ))}
             {pending.map((p) => (
               <div className="inbox-item" key={p.issue.id}>
-                <div>议题待你裁决：<b>{p.issue.title}</b><span className="hint"> · {p.project_name}</span></div>
+                <div><span className="badge">拍板</span> 议题待你裁决：<b>{p.issue.title}</b><span className="hint"> · {p.project_name}</span></div>
                 {p.issue.summary && <div className="hint">{short(p.issue.summary, 120)}</div>}
+                <div className="hint">为什么是你：{p.issue.high_risk || p.issue.kind === "requirement" ? "需求类或高风险议题，只有你能拍板，AI 没有这个权限。" : "讨论已结束，等有权限者拍板；你始终可以拍板。"}</div>
                 <div className="btns"><button className="btn primary" onClick={() => { openProject(p.issue.project_id, "issues"); setInbox(false); }}>去处理</button></div>
               </div>
             ))}
             {approvals.map((a) => (
               <div className="inbox-item" key={a.id}>
-                <div><b>{a.employee}</b> 请求 <b>{a.tool}</b>{a.project_id && <span className="hint"> · {projectName(a.project_id)}</span>}</div>
-                <div className="hint">{a.reason}</div>
+                <div><span className="badge">越权审批</span> <b>{a.employee}</b> 请求 <b>{a.tool}</b>{a.project_id && <span className="hint"> · {projectName(a.project_id)}</span>}</div>
+                <div className="hint">为什么是你：工作区内的读写自动放行，这次操作超出了范围（{a.reason}）。</div>
                 <code className="hint" style={{ whiteSpace: "pre-wrap" }}>{short(formatApprovalInput(a.tool, a.input), 240)}</code>
                 <div className="btns">
                   <button className="btn primary" onClick={() => void decide(a, true)}>允许</button>
@@ -263,7 +265,7 @@ export default function App() {
         {scope.kind === "project" && currentProject && (
           <ProjectView key={currentProject.project.id} tab={projectTab} summary={currentProject} employees={employees} events={events}
             nameById={nameById} running={running} approvals={approvals} concurrency={concurrency}
-            meetingFocus={meetingFocus} onFocusHandled={() => setMeetingFocus(null)} onOpenMeeting={(id) => { setProjectTab("meetings"); setMeetingFocus(id); }} onGoOnboarding={() => setProjectTab("onboarding")}
+            meetingFocus={meetingFocus} onFocusHandled={() => setMeetingFocus(null)} onOpenMeeting={(id) => { setProjectTab("meetings"); setMeetingFocus(id); }} onGoOnboarding={() => setProjectTab("onboarding")} onGoTab={(t) => setProjectTab(t)}
             onDecide={(a, allow) => void decide(a, allow)} onChanged={() => void reloadStatic()} onError={setError}
             onLeave={() => setScope({ kind: "company" })} />
         )}
