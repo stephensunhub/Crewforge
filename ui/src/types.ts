@@ -318,7 +318,7 @@ export interface CallRec {
 }
 export interface UsagePageData { total: number; rows: CallRec[] }
 
-export interface DutyItem { kind: string; title: string; reason: string; goto: string; count: number }
+export interface DutyItem { kind: string; title: string; reason: string; goto: string; count: number; meeting_id: string | null }
 export interface Duties { items: DutyItem[]; later_actions: number; plan_done: number; plan_total: number; plan_percent: number }
 
 export interface AutopilotRun { id: string; project_id: string; status: string; max_calls: number; max_minutes: number; calls: number; started_at: number; ended_at: number | null; reason: string }

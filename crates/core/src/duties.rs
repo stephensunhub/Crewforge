@@ -18,6 +18,8 @@ pub struct DutyItem {
     /// 应该去的项目页签
     pub goto: String,
     pub count: usize,
+    /// 要去处理的会议（行动项所在的会议）；没有则只跳到页签
+    pub meeting_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,7 +37,7 @@ impl Db {
         let mut items = Vec::new();
         let plan = self.plan_view(project_id)?;
         if plan.counts.proposed > 0 {
-            items.push(DutyItem { kind: "plan".into(), title: format!("AI 起草了 {} 个计划条目", plan.counts.proposed), reason: "计划要你批准后才会派活，批准之前员工不会开始做".into(), goto: "plan".into(), count: plan.counts.proposed });
+            items.push(DutyItem { kind: "plan".into(), title: format!("AI 起草了 {} 个计划条目", plan.counts.proposed), reason: "计划要你批准后才会派活，批准之前员工不会开始做".into(), goto: "plan".into(), count: plan.counts.proposed, meeting_id: None });
         }
         for d in self.pending_decisions()?.into_iter().filter(|d| d.issue.project_id == project_id) {
             let only_human = d.issue.high_risk || d.issue.kind == "requirement";
@@ -46,10 +48,10 @@ impl Db {
             items.push(DutyItem { kind: "decision".into(), title: format!("议题待拍板：{}", d.issue.title),
                 reason: if let Some(r) = lead_reason { format!("负责人没有裁决，交给你：{r}") }
                     else if only_human { "需求类或高风险议题，只有你能拍板（AI 没有拍板权限）".into() }
-                    else { "讨论已结束，等有权限者拍板；你始终可以拍板".into() }, goto: "issues".into(), count: 1 });
+                    else { "讨论已结束，等有权限者拍板；你始终可以拍板".into() }, goto: "issues".into(), count: 1, meeting_id: None });
         }
         for d in self.ai_proposals()?.into_iter().filter(|d| d.issue.project_id == project_id) {
-            items.push(DutyItem { kind: "proposal".into(), title: format!("员工提议了议题：{}", d.issue.title), reason: "AI 只能提议；是否值得讨论由你确认，确认前不会占用大家的额度".into(), goto: "issues".into(), count: 1 });
+            items.push(DutyItem { kind: "proposal".into(), title: format!("员工提议了议题：{}", d.issue.title), reason: "AI 只能提议；是否值得讨论由你确认，确认前不会占用大家的额度".into(), goto: "issues".into(), count: 1, meeting_id: None });
         }
         let conn = self.conn.lock().unwrap();
         // 评审已结束、没有拦合并的行动项：等你确认合并
@@ -60,24 +62,26 @@ impl Db {
             let blocking: i64 = conn.query_row("SELECT COUNT(*) FROM action_items WHERE task_id = ?1 AND blocking = 1 AND status IN ('open','working')", params![tid], |r| r.get(0))?;
             let reviewed: i64 = conn.query_row("SELECT COUNT(*) FROM meetings WHERE task_id = ?1 AND kind = 'code_review' AND status = 'closed'", params![tid], |r| r.get(0))?;
             if blocking > 0 {
-                items.push(DutyItem { kind: "review".into(), title: format!("《{title}》有 {blocking} 条拦合并的评审意见"), reason: "员工改完不等于解决：处理中的意见仍拦着合并，需要你确认已解决（或写明原因后放行）".into(), goto: "meetings".into(), count: blocking as usize });
+                items.push(DutyItem { kind: "review".into(), title: format!("《{title}》有 {blocking} 条拦合并的评审意见"), reason: "员工改完不等于解决：处理中的意见仍拦着合并，需要你确认已解决（或写明原因后放行）".into(), goto: "meetings".into(), count: blocking as usize, meeting_id: None });
             } else if reviewed > 0 {
-                items.push(DutyItem { kind: "merge".into(), title: format!("《{title}》评审已结束，等你确认合并"), reason: "合并到主分支由项目负责人最终确认；负责人是你，所以由你来点合并".into(), goto: "tasks".into(), count: 1 });
+                items.push(DutyItem { kind: "merge".into(), title: format!("《{title}》评审已结束，等你确认合并"), reason: "合并到主分支由项目负责人最终确认；负责人是你，所以由你来点合并".into(), goto: "tasks".into(), count: 1, meeting_id: None });
             }
         }
-        // 明确需要你决定的行动项
-        let mine: Vec<String> = {
-            let mut s = conn.prepare("SELECT text FROM action_items WHERE project_id = ?1 AND for_human = 1 AND status IN ('open','working') ORDER BY created_at")?;
-            s.query_map(params![project_id], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?
+        // 明确需要你决定的行动项：每一条单独列出，并指向它所在的会议（不然只知道“有 2 件事”，却不知道去哪里找）
+        let mine: Vec<(String, String, String)> = {
+            let mut s = conn.prepare("SELECT a.text, a.meeting_id, m.title FROM action_items a JOIN meetings m ON m.id = a.meeting_id
+                WHERE a.project_id = ?1 AND a.for_human = 1 AND a.status IN ('open','working') ORDER BY a.created_at")?;
+            s.query_map(params![project_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?
         };
-        if !mine.is_empty() {
-            let shown: Vec<String> = mine.iter().take(3).map(|t| t.chars().take(40).collect::<String>()).collect();
-            items.push(DutyItem { kind: "action".into(), title: format!("{} 件事需要你决定：{}{}", mine.len(), shown.join("；"), if mine.len() > 3 { " …" } else { "" }),
-                reason: "评审或会议里指明要由人来处理的事项；只有人能关闭行动项".into(), goto: "meetings".into(), count: mine.len() });
+        for (text, meeting_id, meeting_title) in mine {
+            let shown: String = text.chars().take(120).collect();
+            items.push(DutyItem { kind: "action".into(), title: format!("{}{}", shown, if text.chars().count() > 120 { "…" } else { "" }),
+                reason: format!("会议《{meeting_title}》的纪要里指明要由人来决定；只有人能关闭行动项。点“去处理”会打开那场会议，在纪要下方的行动项里点“已处理”（或写明原因后“驳回”）"),
+                goto: "meetings".into(), count: 1, meeting_id: Some(meeting_id) });
         }
         let unverified: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE project_id = ?1 AND status = 'unverified'", params![project_id], |r| r.get(0))?;
         if unverified > 0 {
-            items.push(DutyItem { kind: "memory".into(), title: format!("{unverified} 条 AI 总结的经验等你验证"), reason: "没验证的经验不会注入给员工；你确认它真的有用，员工才会用上".into(), goto: "memory".into(), count: unverified as usize });
+            items.push(DutyItem { kind: "memory".into(), title: format!("{unverified} 条 AI 总结的经验等你验证"), reason: "没验证的经验不会注入给员工；你确认它真的有用，员工才会用上".into(), goto: "memory".into(), count: unverified as usize, meeting_id: None });
         }
         let later: i64 = conn.query_row(
             "SELECT COUNT(*) FROM action_items WHERE project_id = ?1 AND status IN ('open','working') AND for_human = 0
@@ -138,5 +142,19 @@ mod tests {
         // “之后”类、不是你的行动项不进你的待办，只计数
         assert_eq!(d.later_actions, 1, "alice 自己的“之后”事项");
         assert_eq!(db.open_action_counts().unwrap().iter().map(|x| x.2).sum::<i64>(), 2, "收件箱只算拦合并的 1 条和指明给人的 1 条");
+    }
+
+    #[test]
+    fn each_human_action_is_listed_separately_with_the_meeting_to_open() {
+        let db = Db::open_memory().unwrap();
+        let p = db.create_project("P", "", "/r").unwrap();
+        let m = db.create_meeting(&p.id, "retro", "复盘会", None, None, &[], 5).unwrap();
+        db.set_minutes(&m.id, "## 行动项\n- [后续] 人类：决定是否区分胜负\n- [后续] 人类：决定回车是否直接开始\n- [之后] 某人：不是你的事").unwrap();
+        let d = db.my_duties(&p.id).unwrap();
+        let actions: Vec<_> = d.items.iter().filter(|i| i.kind == "action").collect();
+        assert_eq!(actions.len(), 2, "每条单独列出，而不是“2 件事”");
+        assert!(actions.iter().all(|a| a.meeting_id.as_deref() == Some(m.id.as_str()) && a.reason.contains("复盘会")));
+        assert!(actions.iter().any(|a| a.title.contains("区分胜负")) && actions.iter().any(|a| a.title.contains("回车")));
+        assert_eq!(d.items.iter().map(|i| i.count).sum::<usize>(), 2, "和小铃铛的数字一致");
     }
 }

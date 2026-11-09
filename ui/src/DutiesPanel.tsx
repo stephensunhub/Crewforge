@@ -75,7 +75,7 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
   );
 }
 
-export function DutiesPanel({ projectId, projectName, events, onGoTab, onError }: { projectId: string; projectName: string; events: EventRow[]; onGoTab: (t: ProjectTab) => void; onError: (m: string) => void }) {
+export function DutiesPanel({ projectId, projectName, events, onGoTab, onOpenMeeting, onError }: { projectId: string; projectName: string; events: EventRow[]; onGoTab: (t: ProjectTab) => void; onOpenMeeting: (id: string) => void; onError: (m: string) => void }) {
   const [d, setD] = useState<Duties | null>(null);
   const load = useCallback(async () => { try { setD(await api.myDuties(projectId)); } catch { /* 忽略 */ } }, [projectId]);
   const last = useMemo(() => events.reduce((m, e) => (/^(plan_|issue_|action_|memory_|task_|meeting_|agent_proposed)/.test(e.kind) ? Math.max(m, e.id) : m), 0), [events]);
@@ -102,7 +102,7 @@ export function DutiesPanel({ projectId, projectName, events, onGoTab, onError }
                   <span className="badge" style={{ marginRight: 8 }}>{KIND_LABEL[it.kind] ?? it.kind}</span><b>{it.title}</b>
                   <div className="hint" style={{ marginTop: 3 }}>为什么是你：{it.reason}</div>
                 </div>
-                <button className="btn primary" onClick={() => onGoTab(it.goto as ProjectTab)}>去处理</button>
+                <button className="btn primary" onClick={() => (it.meeting_id ? onOpenMeeting(it.meeting_id) : onGoTab(it.goto as ProjectTab))}>去处理</button>
               </div>
             ))}
           </div>
