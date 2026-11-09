@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use crate::approval::UiApprover;
 use crate::state::AppState;
 use crewforge_core::onboarding::{OnboardingState, StoredCheck, DEFAULT_COMMAND_TIMEOUT, baseline::CheckReport, scan::{BaselineCommand, ScanReport}};
@@ -699,6 +700,55 @@ pub fn latest_task_check(state: State<'_, AppState>, task_id: String) -> CmdResu
     state.db.latest_task_check(&task_id).map_err(err)
 }
 
+
+// ================= 自主推进 =================
+/// 开始一个自主推进批次：负责人按依赖派活、验证、评审、合并；预算用完、需要你拍板或反复失败时自动停下。
+/// 点“开始”就是你对计划的最后确认——提议中的计划条目会一并批准。
+#[tauri::command]
+pub fn start_autopilot(app: AppHandle, state: State<'_, AppState>, project_id: String, max_calls: i64, max_minutes: i64) -> CmdResult<crewforge_core::autopilot::AutopilotRun> {
+    let run = crewforge_core::autopilot::Autopilot::<UiApprover>::prepare(&state.orch, &project_id, max_calls, max_minutes).map_err(err)?;
+    let ctl = Arc::new(crewforge_core::autopilot::AutopilotCtl::default());
+    state.autopilots.lock().unwrap().insert(project_id.clone(), ctl.clone());
+    let approver = Arc::new(UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: Some(project_id.clone()) });
+    let (running, autopilots, orch, sched) = (state.running.clone(), state.autopilots.clone(), state.orch.clone(), state.sched.clone());
+    let emit_app = app.clone();
+    let on_busy: Arc<dyn Fn(Vec<String>) + Send + Sync> = Arc::new(move |names| { let _ = emit_app.emit("crewforge://running", names); });
+    let ap = crewforge_core::autopilot::Autopilot::new_with_busy(orch, sched, approver, ctl, &run, running, on_busy).map_err(err)?;
+    let pid = project_id.clone();
+    tauri::async_runtime::spawn(async move {
+        ap.run().await;
+        autopilots.lock().unwrap().remove(&pid);
+    });
+    Ok(run)
+}
+
+/// 暂停：手上正在做的做完就停，不再派新活。
+#[tauri::command]
+pub fn pause_autopilot(state: State<'_, AppState>, project_id: String) -> CmdResult<()> {
+    let ctl = state.autopilots.lock().unwrap().get(&project_id).cloned().ok_or("这个项目现在没有在自主推进")?;
+    ctl.pause.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.db.append_event_for(Some(&project_id), "autopilot_step", None, None, &serde_json::json!({"text": "你请求暂停：手上的做完就停，不再派新活"})).map_err(err)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_autopilot(state: State<'_, AppState>, project_id: String) -> CmdResult<()> {
+    let ctl = state.autopilots.lock().unwrap().get(&project_id).cloned().ok_or("这个项目现在没有在自主推进")?;
+    ctl.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.db.append_event_for(Some(&project_id), "autopilot_step", None, None, &serde_json::json!({"text": "你请求停止"})).map_err(err)?;
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct AutopilotStatus {
+    run: Option<crewforge_core::autopilot::AutopilotRun>,
+    live: bool,
+}
+
+#[tauri::command]
+pub fn autopilot_status(state: State<'_, AppState>, project_id: String) -> CmdResult<AutopilotStatus> {
+    Ok(AutopilotStatus { run: state.db.latest_autopilot_run(&project_id).map_err(err)?, live: state.autopilots.lock().unwrap().contains_key(&project_id) })
+}
 
 // ================= 引擎与模型 =================
 #[derive(serde::Serialize)]

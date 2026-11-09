@@ -19,6 +19,8 @@ pub enum PolicyDecision {
 
 pub struct Policy {
     workdir: PathBuf,
+    /// 工作区解析符号链接后的真实路径（macOS 上 /var 实际是 /private/var，CLI 可能报告任一种写法）
+    real_workdir: Option<PathBuf>,
     read_only: bool,
     /// 命令已在系统沙箱里执行（工作区外不可写、网络只通白名单域名），可放宽对 Shell 的限制
     sandboxed: bool,
@@ -40,12 +42,17 @@ const SHELL_META: &[char] = &[';', '&', '|', '<', '>', '`', '$', '(', ')', '\n',
 
 impl Policy {
     pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self { workdir: normalize(&workdir.into()), read_only: false, sandboxed: false }
+        Self::build(workdir.into(), false)
+    }
+
+    fn build(workdir: PathBuf, read_only: bool) -> Self {
+        let real = std::fs::canonicalize(&workdir).ok().map(|p| normalize(&p));
+        Self { workdir: normalize(&workdir), real_workdir: real, read_only, sandboxed: false }
     }
 
     /// 只读策略：会议讨论等场景，员工只能查看代码，任何写入或其他操作都被直接拒绝。
     pub fn read_only(workdir: impl Into<PathBuf>) -> Self {
-        Self { workdir: normalize(&workdir.into()), read_only: true, sandboxed: false }
+        Self::build(workdir.into(), true)
     }
 
     /// 命令在沙箱里运行：CLI 对循环、变量、命令替换等复合命令不会自动放行，但它们在沙箱里无法写工作区之外、
@@ -98,7 +105,12 @@ impl Policy {
     fn inside_workdir(&self, p: &str) -> bool {
         let path = Path::new(p);
         let abs = if path.is_absolute() { path.to_path_buf() } else { self.workdir.join(path) };
-        normalize(&abs).starts_with(&self.workdir)
+        let n = normalize(&abs);
+        if n.starts_with(&self.workdir) {
+            return true;
+        }
+        // 写法不同但指向同一处（符号链接）：把路径里已存在的部分解析成真实路径再比较
+        self.real_workdir.as_ref().is_some_and(|r| n.starts_with(r) || resolve_existing(&n).starts_with(r))
     }
 }
 
@@ -117,6 +129,23 @@ fn is_listed_command(cmd: &str, list: &[&str]) -> bool {
         return false;
     }
     list.iter().any(|p| cmd == *p || cmd.strip_prefix(p).is_some_and(|r| r.starts_with(' ')))
+}
+
+/// 解析路径里已经存在的最长前缀的符号链接，剩下的部分原样接上（写入的目标文件本身可能还不存在）。
+fn resolve_existing(p: &Path) -> PathBuf {
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = p.to_path_buf();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&cur) {
+            let mut out = normalize(&real);
+            for part in rest.iter().rev() { out.push(part); }
+            return out;
+        }
+        match (cur.file_name().map(|n| n.to_os_string()), cur.parent().map(Path::to_path_buf)) {
+            (Some(name), Some(parent)) => { rest.push(name); cur = parent; }
+            _ => return p.to_path_buf(),
+        }
+    }
 }
 
 /// 词法归一化：处理 `.` 与 `..`，不访问文件系统。
@@ -154,6 +183,20 @@ mod tests {
         assert!(matches!(d, PolicyDecision::Allow(_)));
         let d = pol().decide("Edit", &json!({"file_path": "src/a.rs"}));
         assert!(matches!(d, PolicyDecision::Allow(_)));
+    }
+
+    #[test]
+    fn real_path_behind_a_symlink_counts_as_inside_the_workspace() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = d.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let p = Policy::new(&link);
+        // CLI 可能报告真实路径，也可能报告链接路径：都在工作区内
+        assert!(matches!(p.decide("Write", &json!({"file_path": real.join("a.txt").to_string_lossy()})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Write", &json!({"file_path": link.join("a.txt").to_string_lossy()})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Write", &json!({"file_path": d.path().join("other.txt").to_string_lossy()})), PolicyDecision::Ask(_)), "旁边的目录仍在工作区之外");
     }
 
     #[test]

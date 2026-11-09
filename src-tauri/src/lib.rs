@@ -18,6 +18,7 @@ pub fn run() {
             let db = Arc::new(Db::open(&data_dir)?);
             // 把事件表里的新增事件推送给界面。不用进程内的钩子：MCP 服务器和命令行是别的进程，
             // 它们写入的事件只有通过读库才看得到。
+            let _ = db.close_orphaned_autopilot_runs();
             let st = state::AppState::new(db.clone(), &data_dir);
             let sched = st.sched.clone();
             let handle = app.handle().clone();
@@ -65,6 +66,10 @@ pub fn run() {
             commands::cost_report,
             commands::cost_calls,
             commands::my_duties,
+            commands::start_autopilot,
+            commands::pause_autopilot,
+            commands::stop_autopilot,
+            commands::autopilot_status,
             commands::usage_overview,
             commands::usage_stats,
             commands::usage_calls,

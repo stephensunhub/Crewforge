@@ -21,6 +21,8 @@ pub struct AppState {
     pub running: Arc<Mutex<HashSet<String>>>,
     /// 正在进行的耗时操作（基线、检查），防止同一项目/任务被重复触发
     pub busy: Arc<Mutex<HashSet<String>>>,
+    /// 正在自主推进的项目 → 控制开关（暂停、停止）
+    pub autopilots: Arc<Mutex<std::collections::HashMap<String, Arc<crewforge_core::autopilot::AutopilotCtl>>>>,
 }
 
 impl AppState {
@@ -35,6 +37,7 @@ impl AppState {
             sched: Scheduler::new(db_for_sched, DEFAULT_CONCURRENCY),
             running: Arc::new(Mutex::new(HashSet::new())),
             busy: Arc::new(Mutex::new(HashSet::new())),
+            autopilots: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 }

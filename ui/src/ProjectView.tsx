@@ -91,7 +91,7 @@ export function ProjectView({
   if (tab === "onboarding")
     return <OnboardingView projectId={project.id} members={members} events={events} running={running} onError={onError} onChanged={onChanged} />;
   if (tab === "duties")
-    return <DutiesPanel projectId={project.id} projectName={project.name} events={events} onGoTab={onGoTab} />;
+    return <DutiesPanel projectId={project.id} projectName={project.name} events={events} onGoTab={onGoTab} onError={onError} />;
   if (tab === "plan")
     return <PlanPanel project={project} members={members} events={events} onError={onError} onChanged={onChanged} onOpenMeeting={onOpenMeeting} />;
   if (tab === "chat")

@@ -379,3 +379,8 @@ button.u-cell:hover { background: var(--panel-2); }
 .u-drawer { width: min(520px, 100%); height: 100%; overflow: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 16px 18px; display: grid; gap: 8px; align-content: start; }
 .duty-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
 .duty-item .btn { white-space: nowrap; flex: none; }
+.ap-timeline { display: grid; gap: 2px; max-height: 280px; overflow: auto; font-size: 13px; }
+.ap-line { display: flex; gap: 10px; padding: 3px 4px; border-radius: 6px; }
+.ap-line .time { margin-left: 0; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+.ap-line.ok { color: var(--ok); }
+.ap-line.end { font-weight: 600; background: var(--panel-2); }
