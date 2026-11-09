@@ -258,8 +258,16 @@ export interface Efficiency {
 }
 export interface QuotaPoint { ts: number; five_hour: number | null; seven_day: number | null }
 export interface QuotaNow { ts: number; status: string; five_hour: number | null; seven_day: number | null; five_resets_at: number | null; seven_resets_at: number | null }
+export interface Latency { p50_ms: number | null; p95_ms: number | null; avg_ttft_ms: number | null; ttft_samples: number }
+export interface ModelUse { model: string; input: number; output: number; cache_read: number; cache_creation: number; cost_usd: number | null }
+export interface CallRow {
+  event_id: number; ts: number; employee: string; project: string; purpose: string; purpose_label: string; subject: string; models: ModelUse[];
+  cost_usd: number | null; input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; cache_creation_tokens: number | null;
+  duration_ms: number | null; ttft_ms: number | null; is_error: boolean; subtype: string;
+}
+export interface CallPage { total: number; rows: CallRow[] }
 export interface CostReport {
-  since: number | null; totals: Totals; by_employee: CostGroup[]; by_project: CostGroup[]; by_purpose: CostGroup[]; by_day: CostDay[];
+  since: number | null; totals: Totals; by_employee: CostGroup[]; by_project: CostGroup[]; by_purpose: CostGroup[]; by_model: CostGroup[]; by_day: CostDay[]; by_hour: CostDay[]; latency: Latency;
   top_tasks: CostTask[]; efficiency: Efficiency; quota_now: QuotaNow | null; quota_series: QuotaPoint[];
 }
 

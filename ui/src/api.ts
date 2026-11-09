@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage,
 } from "./types";
 
 export const api = {
@@ -29,6 +29,7 @@ export const api = {
   setMemberRole: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("set_member_role", { projectId, employeeId, role }),
   removeMember: (projectId: string, employeeId: string) => invoke<void>("remove_member", { projectId, employeeId }),
   // 成本与额度
+  costCalls: (a: { days: number | null; employeeId: string | null; projectId: string | null; purpose: string | null; onlyErrors: boolean; limit: number; offset: number }) => invoke<CallPage>("cost_calls", a),
   costReport: (days: number | null) => invoke<CostReport>("cost_report", { days, tzOffsetMinutes: -new Date().getTimezoneOffset() }),
   // 旧项目导入
   onboardingState: (projectId: string) => invoke<OnboardingState>("onboarding_state", { projectId }),

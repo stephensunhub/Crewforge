@@ -126,6 +126,21 @@ pub struct TurnResult {
     pub output_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub cache_creation_tokens: Option<u64>,
+    /// 按模型拆分的用量（CLI 的 modelUsage）；没有则为空
+    pub models: Vec<ModelUse>,
+    /// 首个内容帧的耗时（毫秒）
+    pub ttft_ms: Option<u64>,
+}
+
+/// 一个模型在本轮里的用量与费用。
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct ModelUse {
+    pub model: String,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_creation: u64,
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,6 +217,17 @@ pub fn parse_line(line: &str) -> Vec<AgentEvent> {
                 output_tokens: u["output_tokens"].as_u64(),
                 cache_read_tokens: u["cache_read_input_tokens"].as_u64(),
                 cache_creation_tokens: u["cache_creation_input_tokens"].as_u64(),
+                models: v["modelUsage"].as_object().map(|m| {
+                    m.iter().map(|(name, x)| ModelUse {
+                        model: name.clone(),
+                        input: x["inputTokens"].as_u64().unwrap_or(0),
+                        output: x["outputTokens"].as_u64().unwrap_or(0),
+                        cache_read: x["cacheReadInputTokens"].as_u64().unwrap_or(0),
+                        cache_creation: x["cacheCreationInputTokens"].as_u64().unwrap_or(0),
+                        cost_usd: x["costUSD"].as_f64(),
+                    }).collect()
+                }).unwrap_or_default(),
+                ttft_ms: v["ttft_ms"].as_u64(),
             })]
         }
         _ => vec![],
@@ -407,6 +433,21 @@ mod tests {
             parse_line(l),
             vec![AgentEvent::RateLimit { status: "allowed_warning".into(), five_hour: Some(0.7), seven_day: Some(0.5), five_resets_at: Some(1700000000), seven_resets_at: None }]
         );
+    }
+
+    #[test]
+    fn parse_result_reads_per_model_usage_and_ttft() {
+        let l = r#"{"type":"result","subtype":"success","is_error":false,"result":"ok","total_cost_usd":0.3,"ttft_ms":820,"usage":{"input_tokens":3},
+            "modelUsage":{"claude-sonnet-5-5":{"inputTokens":2,"outputTokens":14,"cacheReadInputTokens":100,"cacheCreationInputTokens":50,"costUSD":0.25},
+                          "claude-haiku-5-5":{"inputTokens":1,"outputTokens":2,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.05}}}"#.replace('\n', "");
+        let AgentEvent::Result(r) = &parse_line(&l)[0] else { panic!() };
+        assert_eq!(r.ttft_ms, Some(820));
+        assert_eq!(r.models.len(), 2);
+        let sonnet = r.models.iter().find(|m| m.model == "claude-sonnet-5-5").unwrap();
+        assert_eq!((sonnet.output, sonnet.cache_read, sonnet.cache_creation, sonnet.cost_usd), (14, 100, 50, Some(0.25)));
+        // 没有 modelUsage 的旧输出照常解析
+        let AgentEvent::Result(r2) = &parse_line(r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#)[0] else { panic!() };
+        assert!(r2.models.is_empty() && r2.ttft_ms.is_none());
     }
 
     #[test]

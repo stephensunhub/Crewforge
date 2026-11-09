@@ -5,7 +5,8 @@
 //! - CLI 没给出的数据就是"未知"，不会被当成 0 计入，也不会被估算；
 //! - `input_tokens` 只是未命中缓存的那部分，真正处理的上下文还包括缓存读写。
 
-use crate::db::Db;
+use crate::db::{Db, now_ms};
+use crate::provider::claude::ModelUse;
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -46,6 +47,20 @@ impl Totals {
             self.duration_ms += d;
             self.turns_with_duration += 1;
         }
+    }
+    /// 按模型拆分时的累加：一个模型在一轮里算一次调用。
+    fn add_model(&mut self, m: &ModelUse, is_error: bool) {
+        self.turns += 1;
+        self.errors += is_error as u64;
+        if let Some(c) = m.cost_usd {
+            self.cost_usd += c;
+            self.turns_with_cost += 1;
+        }
+        self.turns_with_tokens += 1;
+        self.input_tokens += m.input;
+        self.output_tokens += m.output;
+        self.cache_read_tokens += m.cache_read;
+        self.cache_creation_tokens += m.cache_creation;
     }
     /// 实际处理的上下文 token：未命中缓存的输入 + 缓存读 + 缓存写
     pub fn context_tokens(&self) -> u64 {
@@ -115,6 +130,52 @@ pub struct QuotaNow {
     pub seven_resets_at: Option<i64>,
 }
 
+/// 耗时分布：整轮耗时的中位数与 P95，以及首个内容到达的平均时间。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Latency {
+    pub p50_ms: Option<u64>,
+    pub p95_ms: Option<u64>,
+    pub avg_ttft_ms: Option<f64>,
+    pub ttft_samples: u64,
+}
+
+/// 调用明细里的一行（一次模型调用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct CallRow {
+    pub event_id: i64,
+    pub ts: i64,
+    pub employee: String,
+    pub project: String,
+    pub purpose: String,
+    pub purpose_label: String,
+    /// 任务标题或会议标题
+    pub subject: String,
+    pub models: Vec<ModelUse>,
+    pub cost_usd: Option<f64>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_creation_tokens: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub ttft_ms: Option<u64>,
+    pub is_error: bool,
+    pub subtype: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CallFilter {
+    pub employee_id: Option<String>,
+    pub project_id: Option<String>,
+    pub purpose: Option<String>,
+    pub only_errors: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CallPage {
+    pub total: usize,
+    pub rows: Vec<CallRow>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CostReport {
     pub since: Option<i64>,
@@ -122,7 +183,11 @@ pub struct CostReport {
     pub by_employee: Vec<Group>,
     pub by_project: Vec<Group>,
     pub by_purpose: Vec<Group>,
+    pub by_model: Vec<Group>,
     pub by_day: Vec<DayPoint>,
+    /// 最近 48 小时内的范围才有：按小时汇总（标签为“月-日 时”）
+    pub by_hour: Vec<DayPoint>,
+    pub latency: Latency,
     pub top_tasks: Vec<TaskCost>,
     pub efficiency: Efficiency,
     pub quota_now: Option<QuotaNow>,
@@ -143,6 +208,8 @@ struct Row {
     cache_creation: Option<u64>,
     duration: Option<u64>,
     is_error: bool,
+    models: Vec<ModelUse>,
+    ttft: Option<u64>,
 }
 
 pub fn purpose_label(p: &str) -> &'static str {
@@ -193,6 +260,64 @@ impl Db {
         }))
     }
 
+    /// 调用明细：每次模型调用一行，最新的在前，可按员工、项目、用途、是否出错过滤并分页。
+    pub fn cost_calls(&self, since: Option<i64>, filter: &CallFilter, limit: usize, offset: usize) -> Result<CallPage> {
+        let conn = self.conn.lock().unwrap();
+        let name_of = |sql: &str| -> Result<HashMap<String, String>> {
+            let mut s = conn.prepare(sql)?;
+            Ok(s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<std::result::Result<_, _>>()?)
+        };
+        let employees = name_of("SELECT id, name FROM employees")?;
+        let projects = name_of("SELECT id, name FROM projects")?;
+        let tasks = name_of("SELECT id, title FROM tasks")?;
+        let meetings = name_of("SELECT id, title FROM meetings")?;
+        let meeting_project = name_of("SELECT id, project_id FROM meetings")?;
+        let task_project: HashMap<String, String> = {
+            let by_path: HashMap<String, String> = name_of("SELECT path, id FROM projects")?;
+            let mut s = conn.prepare("SELECT id, repo_path FROM tasks")?;
+            let v: Vec<(String, String)> = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+            v.into_iter().filter_map(|(id, path)| by_path.get(&path).map(|p| (id, p.clone()))).collect()
+        };
+        let mut s = conn.prepare(
+            "SELECT e.id, e.ts, e.employee_id, json_extract(e.payload,'$.task_id'), json_extract(e.payload,'$.meeting_id'),
+                    json_extract(e.payload,'$.purpose'), json_extract(e.payload,'$.project_id'), json_extract(e.payload,'$.cost_usd'),
+                    json_extract(e.payload,'$.input_tokens'), json_extract(e.payload,'$.output_tokens'), json_extract(e.payload,'$.cache_read_tokens'),
+                    json_extract(e.payload,'$.cache_creation_tokens'), json_extract(e.payload,'$.duration_ms'), json_extract(e.payload,'$.is_error'),
+                    json_extract(e.payload,'$.models'), json_extract(e.payload,'$.ttft_ms'), json_extract(e.payload,'$.subtype')
+             FROM events e WHERE e.kind = 'turn_result' AND e.ts >= ?1 ORDER BY e.id DESC")?;
+        let u = |v: Option<i64>| v.map(|x| x.max(0) as u64);
+        let mut all: Vec<CallRow> = Vec::new();
+        let it = s.query_map([since.unwrap_or(0)], |r| {
+            let (eid, task, meeting, purpose, project): (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) =
+                (r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?);
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, eid, task, meeting, purpose, project, r.get::<_, Option<f64>>(7)?,
+                [r.get::<_, Option<i64>>(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?], r.get::<_, Option<i64>>(13)?.unwrap_or(0) != 0,
+                r.get::<_, Option<String>>(14)?, r.get::<_, Option<i64>>(15)?, r.get::<_, Option<String>>(16)?))
+        })?;
+        for row in it {
+            let (id, ts, eid, task, meeting, purpose, project, cost, n, is_error, models, ttft, subtype) = row?;
+            let project_id = project.clone()
+                .or_else(|| task.as_ref().and_then(|t| task_project.get(t)).cloned())
+                .or_else(|| meeting.as_ref().and_then(|m| meeting_project.get(m)).cloned());
+            let purpose = purpose.unwrap_or_else(|| if meeting.is_some() { "meeting".into() } else { "task".into() });
+            if filter.employee_id.as_ref().is_some_and(|f| eid.as_deref() != Some(f.as_str())) { continue; }
+            if filter.project_id.as_ref().is_some_and(|f| project_id.as_deref() != Some(f.as_str())) { continue; }
+            if filter.purpose.as_ref().is_some_and(|f| &purpose != f) { continue; }
+            if filter.only_errors && !is_error { continue; }
+            let subject = task.as_ref().and_then(|t| tasks.get(t)).or_else(|| meeting.as_ref().and_then(|m| meetings.get(m))).cloned().unwrap_or_default();
+            all.push(CallRow {
+                event_id: id, ts, employee: eid.as_ref().and_then(|e| employees.get(e)).cloned().unwrap_or_else(|| "（未知员工）".into()),
+                project: project_id.as_ref().and_then(|p| projects.get(p)).cloned().unwrap_or_default(),
+                purpose_label: purpose_label(&purpose).to_string(), purpose, subject,
+                models: models.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(), cost_usd: cost,
+                input_tokens: u(n[0]), output_tokens: u(n[1]), cache_read_tokens: u(n[2]), cache_creation_tokens: u(n[3]), duration_ms: u(n[4]),
+                ttft_ms: ttft.map(|v| v.max(0) as u64), is_error, subtype: subtype.unwrap_or_default(),
+            });
+        }
+        let total = all.len();
+        Ok(CallPage { total, rows: all.into_iter().skip(offset).take(limit).collect() })
+    }
+
     /// `since`：只统计该时间（毫秒）之后的事件；`tz_offset_minutes`：本地时区相对 UTC 的分钟数（东八区为 480），用于按天归并。
     pub fn cost_report(&self, since: Option<i64>, tz_offset_minutes: i64) -> Result<CostReport> {
         let since_v = since.unwrap_or(0);
@@ -225,7 +350,7 @@ impl Db {
                         json_extract(e.payload,'$.cost_usd'), json_extract(e.payload,'$.input_tokens'),
                         json_extract(e.payload,'$.output_tokens'), json_extract(e.payload,'$.cache_read_tokens'),
                         json_extract(e.payload,'$.cache_creation_tokens'), json_extract(e.payload,'$.duration_ms'),
-                        json_extract(e.payload,'$.is_error')
+                        json_extract(e.payload,'$.is_error'), json_extract(e.payload,'$.models'), json_extract(e.payload,'$.ttft_ms')
                  FROM events e WHERE e.kind = 'turn_result' AND e.ts >= ?1 ORDER BY e.id",
             )?;
             let it = s.query_map([since_v], |r| {
@@ -235,6 +360,8 @@ impl Db {
                     output: r.get::<_, Option<i64>>(8)?.map(|v| v.max(0) as u64), cache_read: r.get::<_, Option<i64>>(9)?.map(|v| v.max(0) as u64),
                     cache_creation: r.get::<_, Option<i64>>(10)?.map(|v| v.max(0) as u64), duration: r.get::<_, Option<i64>>(11)?.map(|v| v.max(0) as u64),
                     is_error: r.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
+                    models: r.get::<_, Option<String>>(13)?.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
+                    ttft: r.get::<_, Option<i64>>(14)?.map(|v| v.max(0) as u64),
                 })
             })?;
             it.collect::<std::result::Result<_, _>>()?
@@ -245,6 +372,11 @@ impl Db {
         let mut by_proj: HashMap<String, (String, Totals)> = HashMap::new();
         let mut by_purpose: HashMap<String, (String, Totals)> = HashMap::new();
         let mut by_day: BTreeMap<String, Totals> = BTreeMap::new();
+        let mut by_hour: BTreeMap<String, Totals> = BTreeMap::new();
+        let mut by_model: HashMap<String, (String, Totals)> = HashMap::new();
+        let mut durations: Vec<u64> = Vec::new();
+        let (mut ttft_sum, mut ttft_n) = (0u64, 0u64);
+        let want_hours = since.map(|s| now_ms() - s <= 2 * 86_400_000).unwrap_or(false);
         let mut by_task: HashMap<String, Totals> = HashMap::new();
         let mut task_turns = 0u64;
         for r in &rows {
@@ -261,6 +393,20 @@ impl Db {
             by_purpose.entry(purpose.clone()).or_insert_with(|| (purpose_label(&purpose).to_string(), Totals::default())).1.add(r);
             let day = days_to_ymd((r.ts + tz_offset_minutes * 60_000).div_euclid(86_400_000));
             by_day.entry(day).or_default().add(r);
+            if want_hours {
+                let local = r.ts + tz_offset_minutes * 60_000;
+                let hour = format!("{} {:02}", &days_to_ymd(local.div_euclid(86_400_000))[5..], local.rem_euclid(86_400_000) / 3_600_000);
+                by_hour.entry(hour).or_default().add(r);
+            }
+            if r.models.is_empty() {
+                by_model.entry("unknown".into()).or_insert_with(|| ("（未记录模型）".into(), Totals::default())).1.add(r);
+            } else {
+                for m in &r.models {
+                    by_model.entry(m.model.clone()).or_insert_with(|| (m.model.clone(), Totals::default())).1.add_model(m, r.is_error);
+                }
+            }
+            if let Some(d) = r.duration { durations.push(d); }
+            if let Some(t) = r.ttft { ttft_sum += t; ttft_n += 1; }
             if purpose == "task" {
                 if let Some(t) = &r.task_id {
                     by_task.entry(t.clone()).or_default().add(r);
@@ -328,7 +474,14 @@ impl Db {
 
         Ok(CostReport {
             since, totals, by_employee: sorted(by_emp), by_project: sorted(by_proj), by_purpose: sorted(by_purpose),
+            by_model: sorted(by_model),
             by_day: by_day.into_iter().map(|(day, totals)| DayPoint { day, totals }).collect(),
+            by_hour: by_hour.into_iter().map(|(day, totals)| DayPoint { day, totals }).collect(),
+            latency: {
+                durations.sort_unstable();
+                let pick = |q: f64| if durations.is_empty() { None } else { Some(durations[(((durations.len() - 1) as f64) * q).round() as usize]) };
+                Latency { p50_ms: pick(0.5), p95_ms: pick(0.95), avg_ttft_ms: (ttft_n > 0).then(|| ttft_sum as f64 / ttft_n as f64), ttft_samples: ttft_n }
+            },
             top_tasks, efficiency: eff, quota_now, quota_series: series,
         })
     }
@@ -409,6 +562,47 @@ mod tests {
         assert!((r.efficiency.cache_hit_ratio.unwrap() - 1700.0 / 5218.0).abs() < 1e-9);
         assert!((r.efficiency.avg_context_per_turn.unwrap() - 5218.0 / 4.0).abs() < 1e-9, "平均值只按有数据的轮数算");
         assert_eq!(r.totals.duration_ms, 10_000);
+    }
+
+    #[test]
+    fn by_model_hourly_latency_and_call_log() {
+        let db = Db::open_memory().unwrap();
+        let a = db.add_employee("alice", "r", "p").unwrap();
+        let b = db.add_employee("bob", "r", "p").unwrap();
+        let p = db.create_project("Shop", "", "/r1").unwrap();
+        let now = now_ms();
+        let ins = |ts: i64, emp: &str, payload: serde_json::Value| {
+            db.conn.lock().unwrap().execute("INSERT INTO events (ts, kind, employee_id, payload) VALUES (?1,'turn_result',?2,?3)", params![ts, emp, payload.to_string()]).unwrap();
+        };
+        // 一轮用了两个模型；一轮没有模型信息（旧事件）；一轮出错
+        ins(now - 3_600_000, &a.id, json!({"cost_usd": 0.30, "input_tokens": 3, "output_tokens": 16, "cache_read_tokens": 100, "cache_creation_tokens": 50, "duration_ms": 1000, "ttft_ms": 800,
+            "purpose": "task", "project_id": p.id, "is_error": false, "subtype": "success",
+            "models": [{"model":"sonnet","input":2,"output":14,"cache_read":100,"cache_creation":50,"cost_usd":0.25},{"model":"haiku","input":1,"output":2,"cache_read":0,"cache_creation":0,"cost_usd":0.05}]}));
+        ins(now - 1_800_000, &b.id, json!({"cost_usd": 0.10, "input_tokens": 1, "output_tokens": 2, "cache_read_tokens": 3, "cache_creation_tokens": 4, "duration_ms": 3000, "purpose": "meeting", "project_id": p.id, "is_error": false}));
+        ins(now - 600_000, &b.id, json!({"cost_usd": null, "duration_ms": 9000, "purpose": "task", "project_id": p.id, "is_error": true, "subtype": "error_during_execution"}));
+
+        let r = db.cost_report(Some(now - 86_400_000), 0).unwrap();
+        let sonnet = r.by_model.iter().find(|g| g.key == "sonnet").unwrap();
+        assert_eq!((sonnet.totals.output_tokens, sonnet.totals.cache_read_tokens), (14, 100));
+        assert!((sonnet.totals.cost_usd - 0.25).abs() < 1e-9);
+        assert!(r.by_model.iter().any(|g| g.key == "haiku"));
+        let unknown = r.by_model.iter().find(|g| g.key == "unknown").unwrap();
+        assert_eq!(unknown.totals.turns, 2, "没有模型信息的调用归入“未记录模型”");
+        assert!(!r.by_hour.is_empty() && r.by_hour.iter().map(|h| h.totals.turns).sum::<u64>() == 3, "范围在 48 小时内才有按小时数据");
+        assert!(db.cost_report(None, 0).unwrap().by_hour.is_empty());
+        assert_eq!((r.latency.p50_ms, r.latency.p95_ms), (Some(3000), Some(9000)));
+        assert_eq!((r.latency.avg_ttft_ms, r.latency.ttft_samples), (Some(800.0), 1));
+
+        // 调用明细：最新的在前，可过滤与分页
+        let page = db.cost_calls(None, &CallFilter::default(), 2, 0).unwrap();
+        assert_eq!((page.total, page.rows.len()), (3, 2));
+        assert!(page.rows[0].is_error && page.rows[0].employee == "bob" && page.rows[0].project == "Shop");
+        assert_eq!(db.cost_calls(None, &CallFilter::default(), 2, 2).unwrap().rows.len(), 1);
+        let only_err = db.cost_calls(None, &CallFilter { only_errors: true, ..Default::default() }, 10, 0).unwrap();
+        assert_eq!(only_err.total, 1);
+        let alice = db.cost_calls(None, &CallFilter { employee_id: Some(a.id.clone()), ..Default::default() }, 10, 0).unwrap();
+        assert_eq!((alice.total, alice.rows[0].models.len()), (1, 2));
+        assert_eq!(db.cost_calls(None, &CallFilter { purpose: Some("meeting".into()), ..Default::default() }, 10, 0).unwrap().total, 1);
     }
 
     #[test]

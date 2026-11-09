@@ -147,6 +147,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
                         "duration_ms": started_at.elapsed().as_millis() as u64, "is_error": r.is_error, "subtype": r.subtype, "cost_usd": r.cost_usd,
                         "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
                         "cache_read_tokens": r.cache_read_tokens, "cache_creation_tokens": r.cache_creation_tokens,
+                        "models": r.models, "ttft_ms": r.ttft_ms,
                     }))?;
                     return Ok(r.clone());
                 }

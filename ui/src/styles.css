@@ -332,3 +332,4 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .badge.ps-done { color: var(--ok); border-color: var(--ok); }
 .badge.ps-blocked { color: var(--bad); border-color: var(--bad); }
 .badge.ps-proposed { color: var(--warn); border-color: var(--warn); }
+.row-bad td { background: color-mix(in srgb, var(--bad) 8%, transparent); } .cost-table .bad, span.bad { color: var(--bad); }

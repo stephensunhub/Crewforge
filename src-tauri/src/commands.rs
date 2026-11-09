@@ -3,7 +3,7 @@ use crate::state::AppState;
 use crewforge_core::onboarding::{OnboardingState, StoredCheck, DEFAULT_COMMAND_TIMEOUT, baseline::CheckReport, scan::{BaselineCommand, ScanReport}};
 use crewforge_core::actions::ActionItem;
 use crewforge_core::plan::{NewPlanItem, PlanView};
-use crewforge_core::cost::CostReport;
+use crewforge_core::cost::{CallFilter, CallPage, CostReport};
 use crewforge_core::scheduler::{SchedStatus, SchedulerConfig};
 use crewforge_core::memory::{DEFAULT_MAX_CHARS, DEFAULT_MAX_ITEMS, Memory, MemoryFilter, NewMemory};
 use crewforge_core::board::{Actor, IssueView, Meeting, MeetingMessage, PendingDecision};
@@ -693,6 +693,17 @@ pub fn latest_task_check(state: State<'_, AppState>, task_id: String) -> CmdResu
 
 
 // ================= 成本与额度 =================
+/// 调用明细：每次模型调用一行，最新的在前，可过滤与分页。
+#[tauri::command]
+pub fn cost_calls(
+    state: State<'_, AppState>, days: Option<i64>, employee_id: Option<String>, project_id: Option<String>,
+    purpose: Option<String>, only_errors: bool, limit: usize, offset: usize,
+) -> CmdResult<CallPage> {
+    let since = days.filter(|d| *d > 0).map(|d| crewforge_core::db::now_ms() - d * 86_400_000);
+    let f = CallFilter { employee_id, project_id, purpose, only_errors };
+    state.db.cost_calls(since, &f, limit.min(200), offset).map_err(err)
+}
+
 /// `days`：只统计最近多少天；不传表示全部。`tz_offset_minutes`：本地时区相对 UTC 的分钟数，用于按天归并。
 #[tauri::command]
 pub fn cost_report(state: State<'_, AppState>, days: Option<i64>, tz_offset_minutes: i64) -> CmdResult<CostReport> {

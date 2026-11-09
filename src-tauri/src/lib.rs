@@ -63,6 +63,7 @@ pub fn run() {
             commands::dispatch_plan_item,
             commands::start_planning,
             commands::cost_report,
+            commands::cost_calls,
             commands::onboarding_state,
             commands::run_scan,
             commands::run_baseline,
