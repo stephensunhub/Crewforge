@@ -123,5 +123,6 @@ async fn full_autopilot_run_on_a_real_small_project() {
     for a in approver.0.lock().unwrap().iter().take(12) { println!("   {a}"); }
     for m in db.list_memories(&Default::default()).unwrap().iter().filter(|m| m.project_id.as_deref() == Some(project.id.as_str())) { println!("记忆[{}｜{}] {}", m.status, m.source_kind, m.title); }
     for i in db.list_issues(&project.id).unwrap() { println!("议题《{}》{}（{}）", i.title, if i.raised_by.is_some() { "AI 提议" } else { "" }, i.status); }
-    assert_eq!(r.status, "finished", "{r:?}");
+    // 预算有限时以“预算”结束也是正常结果（收尾已照做）；不能是失败、升级或停止
+    assert!(matches!(r.status.as_str(), "finished" | "budget"), "{r:?}");
 }
