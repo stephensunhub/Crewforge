@@ -11,6 +11,11 @@ export function SettingsView({ sched, onConcurrency, onAction }: {
   const [version, setVersion] = useState("检测中…");
   const [dir, setDir] = useState("");
   const [cfg, setCfg] = useState<SchedulerConfig | null>(null);
+  const [ctxSaved, setCtxSaved] = useState<number | null>(null);
+  const [ctxK, setCtxK] = useState("");
+  useEffect(() => { api.getContextLimit().then((n) => { setCtxSaved(n); setCtxK(String(Math.round(n / 1000))); }).catch(() => undefined); }, []);
+  const ctxNew = Math.max(0, Math.round(Number(ctxK) || 0)) * 1000;
+  const ctxDirty = ctxSaved != null && ctxNew !== ctxSaved;
   useEffect(() => {
     api.claudeVersion().then(setVersion).catch((e) => setVersion(`未检测到 claude：${e}`));
     api.dataDir().then(setDir).catch(() => undefined);
@@ -63,9 +68,19 @@ export function SettingsView({ sched, onConcurrency, onAction }: {
         </div>
 
         <div className="setting">
+          <b>员工会话上下文上限</b>
+          <div className="hint">员工的会话会一直续接，上下文越大，每一步越贵、越容易跑偏。上一轮结束时超过这个值，该员工的下一次任务会换成新会话，靠项目记忆、任务单和 git 状态衔接。Copilot 员工不受影响。建议 100～200K；填 0 表示不限。当前各会话的大小见“用量 → 员工会话”。</div>
+          <div className="row" style={{ alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <label className="tog"><input type="number" min={0} style={{ width: 90 }} value={ctxK} onChange={(e) => setCtxK(e.target.value)} /> K token</label>
+            <button className="btn primary" disabled={!ctxDirty} onClick={() => void onAction(async () => { await api.setContextLimit(ctxNew); setCtxSaved(ctxNew); })}>保存</button>
+            {ctxDirty && <button className="btn" onClick={() => setCtxK(String(Math.round((ctxSaved ?? 0) / 1000)))}>还原</button>}
+          </div>
+        </div>
+
+        <div className="setting">
           <b>执行引擎</b>
           <div className="hint">Claude Code：<code>{version}</code>（使用你本机已登录的账号）</div>
-          <div className="hint">GitHub Copilot CLI 适配尚未开始。</div>
+          <div className="hint">GitHub Copilot CLI 的安装、模型与启停在“模型”页管理。</div>
         </div>
         <div className="setting">
           <b>数据目录</b>

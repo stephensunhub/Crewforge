@@ -171,6 +171,20 @@ pub fn set_concurrency(state: State<'_, AppState>, n: usize) -> CmdResult<usize>
     state.sched.set_user_limit(n).map_err(err)
 }
 
+// ================= 会话上下文上限 =================
+#[tauri::command]
+pub fn get_context_limit(state: State<'_, AppState>) -> u64 {
+    crewforge_core::runner::context_limit(&state.db)
+}
+
+#[tauri::command]
+pub fn set_context_limit(state: State<'_, AppState>, tokens: u64) -> CmdResult<()> {
+    if tokens != 0 && tokens < 20_000 {
+        return Err("上限太小，员工的会话会频繁换新；至少 20K，或填 0 表示不限".into());
+    }
+    state.db.set_setting("context_limit", &tokens.to_string()).map_err(err)
+}
+
 // ================= 额度调度 =================
 #[tauri::command]
 pub fn scheduler_status(state: State<'_, AppState>) -> SchedStatus {

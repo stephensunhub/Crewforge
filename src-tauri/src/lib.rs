@@ -155,6 +155,8 @@ pub fn run() {
             commands::reveal_in_finder,
             commands::scheduler_status,
             commands::scheduler_set_config,
+            commands::get_context_limit,
+            commands::set_context_limit,
             commands::scheduler_pause,
             commands::scheduler_override,
             commands::get_concurrency,
