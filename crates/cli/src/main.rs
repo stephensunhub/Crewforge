@@ -102,6 +102,11 @@ async fn main() -> Result<()> {
         }
         ["events"] => print_events(&db, 20)?,
         ["events", n] => print_events(&db, n.parse()?)?,
+        ["setting", "get", key] => println!("{}", db.get_setting(key)?.unwrap_or_default()),
+        ["setting", "set", key, value] => {
+            db.set_setting(key, value)?;
+            println!("已设置 {key}");
+        }
         ["run", rest @ ..] => run(db, orch, rest).await?,
         ["cost"] => cost(&db, None)?,
         ["cost", d] => cost(&db, Some(d.parse()?))?,

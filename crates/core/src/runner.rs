@@ -104,7 +104,8 @@ pub async fn run_turn<A: Approver, O: Observer>(
     let spawned: Result<AgentProcess> = if copilot {
         // Copilot：权限在启动时定好（见 provider::copilot），没有审批通道；设定、协作工具、规范与 Claude 员工一致
         let mut cs = CopilotSpec::new(session.id.clone(), session.started, spec.persona.clone(), cfg.project_path.clone());
-        cs.program = cfg.copilot_program.clone();
+        // 设置里指定了路径（应用自带安装的 copilot）就用它，否则用默认的 `copilot`（需要在 PATH 里）
+        cs.program = db.get_setting("copilot_program")?.filter(|p| !p.trim().is_empty()).unwrap_or_else(|| cfg.copilot_program.clone());
         cs.mcp = spec.mcp.clone();
         cs.read_only = cfg.read_only;
         CopilotProcess::spawn(&cs, &effective_prompt).await.map(AgentProcess::Copilot)
