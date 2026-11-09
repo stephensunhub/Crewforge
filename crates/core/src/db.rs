@@ -378,6 +378,22 @@ impl Db {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// 该会话最近一次模型调用时的上下文大小；还没有记录（或引擎不提供）则为 None。
+    pub fn session_context_tokens(&self, session_id: &str) -> Result<Option<u64>> {
+        let conn = self.conn.lock().unwrap();
+        let v: Option<Option<i64>> = conn.query_row(
+            "SELECT json_extract(payload,'$.context_tokens') FROM events
+             WHERE session_id = ?1 AND kind = 'turn_result' ORDER BY id DESC LIMIT 1",
+            [session_id], |r| r.get(0)).optional()?;
+        Ok(v.flatten().map(|n| n.max(0) as u64))
+    }
+
+    /// 丢弃会话记录，下次任务会建立新会话（旧的历史事件保留）。
+    pub fn reset_session(&self, session_id: &str) -> Result<()> {
+        self.conn.lock().unwrap().execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
+        Ok(())
+    }
+
     pub fn set_session_status(&self, session_id: &str, status: &str) -> Result<()> {
         self.conn.lock().unwrap().execute(
             "UPDATE sessions SET status = ?2, updated_at = ?3 WHERE id = ?1",

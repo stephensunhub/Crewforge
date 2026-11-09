@@ -59,7 +59,22 @@ pub async fn run_turn<A: Approver, O: Observer>(
     observer: &O,
 ) -> Result<TurnResult> {
     let project = cfg.project_path.to_string_lossy().to_string();
-    let session = db.get_or_create_session(&employee.id, &project)?;
+    let mut session = db.get_or_create_session(&employee.id, &project)?;
+    let pid0 = cfg.project_id.as_deref();
+    // 会话上下文过大时换新会话：每一步都要重读整个上下文，越大越贵、越容易跑偏。
+    let mut rotated_from: Option<u64> = None;
+    let limit = context_limit(db);
+    if limit > 0 && session.started && session.status != "running" {
+        if let Some(ctx) = db.session_context_tokens(&session.id)? {
+            if ctx > limit {
+                db.reset_session(&session.id)?;
+                db.append_event_for(pid0, "session_rotated", Some(employee.id.as_str()), Some(session.id.as_str()),
+                    &json!({"context_tokens": ctx, "limit": limit}))?;
+                session = db.get_or_create_session(&employee.id, &project)?;
+                rotated_from = Some(ctx);
+            }
+        }
+    }
     let (eid, sid) = (Some(employee.id.as_str()), Some(session.id.as_str()));
     let pid = cfg.project_id.as_deref();
 
@@ -74,6 +89,13 @@ pub async fn run_turn<A: Approver, O: Observer>(
         );
     }
 
+    if let Some(ctx) = rotated_from {
+        effective_prompt = format!(
+            "[系统提示] 你的上一个会话上下文已达约 {}K，为节省用量已换成新会话，之前的对话不再可见。\
+             请以下面的任务、项目记忆和工作区当前状态为准，先用只读方式（git status、git log）核对进度，再继续。\n\n{effective_prompt}",
+            ctx / 1000
+        );
+    }
     let mut spec = ClaudeSpec::new(session.id.clone(), session.started, employee.persona.clone(), cfg.project_path.clone());
     spec.program = cfg.program.clone();
     if !db.provider_enabled(&employee.provider)? {
@@ -106,6 +128,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
     }))?;
 
     let started_at = std::time::Instant::now();
+    let mut last_ctx: Option<u64> = None;
     let spawned: Result<AgentProcess> = if copilot {
         // Copilot：权限在启动时定好（见 provider::copilot），没有审批通道；设定、协作工具、规范与 Claude 员工一致
         let mut cs = CopilotSpec::new(session.id.clone(), session.started, spec.persona.clone(), cfg.project_path.clone());
@@ -135,6 +158,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
             observer.on_event(&employee.name, &ev);
             match &ev {
                 AgentEvent::Init { .. } => db.mark_session_started(&session.id)?,
+                AgentEvent::Context(n) => last_ctx = Some(*n),
                 AgentEvent::Text(t) => {
                     db.append_event_for(pid, "agent_text", eid, sid, &json!({"text": t}))?;
                 }
@@ -171,6 +195,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
                         "cache_read_tokens": r.cache_read_tokens, "cache_creation_tokens": r.cache_creation_tokens,
                         "models": r.models, "ttft_ms": r.ttft_ms,
                         "provider": r.provider, "model": r.model, "premium_requests": r.premium_requests, "nano_aiu": r.nano_aiu,
+                        "context_tokens": last_ctx,
                     }))?;
                     return Ok(r.clone());
                 }
@@ -192,6 +217,11 @@ pub async fn run_turn<A: Approver, O: Observer>(
             Err(e)
         }
     }
+}
+
+/// 会话上下文上限（token）。超过后下一次任务换新会话；设置项 `context_limit`，0 表示不限，默认 150000。
+pub fn context_limit(db: &Db) -> u64 {
+    db.get_setting("context_limit").ok().flatten().and_then(|v| v.trim().parse().ok()).unwrap_or(150_000)
 }
 
 /// 沙箱里除工作区外还需要可写的目录：worktree 的 git 公共目录（提交要写那里）与常见包缓存。

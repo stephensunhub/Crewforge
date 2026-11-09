@@ -168,6 +168,8 @@ pub enum AgentEvent {
         five_resets_at: Option<i64>,
         seven_resets_at: Option<i64>,
     },
+    /// 一次模型调用时的上下文大小（输入 + 缓存读 + 缓存写，单位 token），用于判断会话是否过大
+    Context(u64),
     Result(TurnResult),
 }
 
@@ -178,7 +180,13 @@ pub fn parse_line(line: &str) -> Vec<AgentEvent> {
         Some("system") if v["subtype"] == "init" => vec![AgentEvent::Init {
             session_id: v["session_id"].as_str().unwrap_or_default().to_string(),
         }],
-        Some("assistant") => v["message"]["content"]
+        Some("assistant") => {
+            let u = &v["message"]["usage"];
+            let ctx = u["input_tokens"].as_u64().unwrap_or(0)
+                + u["cache_read_input_tokens"].as_u64().unwrap_or(0)
+                + u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+            let mut out = if ctx > 0 { vec![AgentEvent::Context(ctx)] } else { vec![] };
+            out.extend(v["message"]["content"]
             .as_array()
             .map(|blocks| {
                 blocks
@@ -192,9 +200,11 @@ pub fn parse_line(line: &str) -> Vec<AgentEvent> {
                         }),
                         _ => None,
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
             })
-            .unwrap_or_default(),
+            .unwrap_or_default());
+            out
+        }
         Some("control_request") if v["request"]["subtype"] == "can_use_tool" => {
             let r = &v["request"];
             match (v["request_id"].as_str(), r["tool_name"].as_str()) {
