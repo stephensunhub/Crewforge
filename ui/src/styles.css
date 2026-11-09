@@ -397,3 +397,7 @@ button.u-cell:hover { background: var(--panel-2); }
 .end-choice.on { border-color: var(--accent); }
 .end-choice.danger.on { border-color: var(--bad); }
 .end-choice input { margin-top: 3px; }
+
+.navbtns { display: flex; gap: 2px; align-items: center; margin-right: 4px; }
+.navbtns .icon-btn { font-size: 18px; line-height: 1; padding: 2px 8px; }
+.navbtns .icon-btn:disabled { opacity: .3; cursor: default; }

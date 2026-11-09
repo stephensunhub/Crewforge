@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, subscribe } from "./api";
 import { COMPANY_TABS, CompanyView, type CompanyTab } from "./CompanyView";
 import { PROJECT_TABS, ProjectView, type ProjectTab } from "./ProjectView";
 import { SettingsView } from "./SettingsView";
 import { ModelsView } from "./ModelsView";
 import { UsageView } from "./UsageView";
+import { useNavHistory } from "./useNav";
 import { formatApprovalInput, hhmm, short } from "./common";
 import type { ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
 
@@ -111,6 +112,31 @@ export default function App() {
     if (ready && scope.kind === "project" && !currentProject) setScope({ kind: "company" });
   }, [ready, scope, currentProject]);
 
+  // 全局前进 / 后退（顶栏按钮、鼠标侧键、Cmd+[ / Cmd+]）
+  type Loc = { scope: Scope; companyTab: CompanyTab; projectTab: ProjectTab };
+  const nav = useNavHistory<Loc>(
+    { scope, companyTab, projectTab },
+    (l) => (l.scope.kind === "company" ? `company:${l.companyTab}` : l.scope.kind === "project" ? `project:${l.scope.id}:${l.projectTab}` : l.scope.kind),
+    (l) => { setScope(l.scope); setCompanyTab(l.companyTab); setProjectTab(l.projectTab); setInbox(false); },
+    (l) => l.scope.kind !== "project" || projects.some((p) => p.project.id === (l.scope as { id: string }).id),
+  );
+
+  // 点通知面板以外的地方、或按 Esc，关闭通知面板
+  const inboxRef = useRef<HTMLDivElement>(null);
+  const bellRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!inbox) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (inboxRef.current?.contains(t) || bellRef.current?.contains(t)) return;
+      setInbox(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setInbox(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [inbox]);
+
   const quota = useMemo(() => {
     for (let i = events.length - 1; i >= 0; i--)
       if (events[i].kind === "rate_limit") return events[i].payload as { status: string; five_hour: number | null; seven_day: number | null };
@@ -164,6 +190,10 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand"><img src="/logo.png" alt="" /><b>Crewforge</b></div>
+        <div className="navbtns">
+          <button className="icon-btn" disabled={!nav.canBack} onClick={nav.back} title="后退（鼠标后退键 / Cmd+[）">‹</button>
+          <button className="icon-btn" disabled={!nav.canForward} onClick={nav.forward} title="前进（鼠标前进键 / Cmd+]）">›</button>
+        </div>
         <nav className="scopes">
           <button className={`scope ${scope.kind === "company" ? "on" : ""}`} onClick={() => setScope({ kind: "company" })}>{company?.name ?? "公司"}</button>
           {projects.map((p) => (
@@ -182,7 +212,7 @@ export default function App() {
               ))}
             </div>
           )}
-          <button className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
+          <button ref={bellRef} className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
             🔔{inboxTotal > 0 && <span className="count">{inboxTotal}</span>}
           </button>
           <button className={`icon-btn text ${scope.kind === "models" ? "on" : ""}`} onClick={() => setScope({ kind: "models" })}>模型</button>
@@ -190,7 +220,7 @@ export default function App() {
           <button className={`icon-btn ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })} title="设置">⚙</button>
         </div>
         {inbox && (
-          <div className="inbox">
+          <div className="inbox" ref={inboxRef}>
             <b>待你处理</b>
             {inboxTotal === 0 && <div className="hint" style={{ padding: "10px 0" }}>现在没有需要你处理的事项。</div>}
             {planCounts.map(([pid, pname, n]) => (
