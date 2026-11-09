@@ -131,8 +131,28 @@ pub struct Autopilot<A: Approver + Send + Sync + 'static> {
     last_curated_at_merged: AtomicUsize,
     standups: AtomicUsize,
     /// 正在被占用的员工名（与应用里“工作中”的集合共用，避免人和负责人同时驱动同一员工的会话）
+    /// 本批次里已经派出去处理的评审意见文本（并行的任务里相同的意见只处理一次）
+    handled_actions: std::sync::Mutex<Vec<String>>,
     busy: Arc<std::sync::Mutex<HashSet<String>>>,
     on_busy_change: Arc<dyn Fn(Vec<String>) + Send + Sync>,
+}
+
+/// 每个条目最多让员工处理几条拦合并的评审意见；超出的降级为“之后再说”。
+pub const MAX_ACTIONS_PER_TASK: usize = 3;
+/// 调用数或时间用到预算的这个比例之后，进入“软预算”：不再处理评审意见、不再开站会和整理记忆。
+pub const SOFT_BUDGET_RATIO: f64 = 0.8;
+
+fn bigrams(s: &str) -> std::collections::HashSet<(char, char)> {
+    let cs: Vec<char> = s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect();
+    cs.windows(2).map(|w| (w[0], w[1])).collect()
+}
+
+/// 两条评审意见是不是同一件事：字符二元组的 Jaccard 相似度。
+pub fn similar_actions(a: &str, b: &str) -> bool {
+    let (x, y) = (bigrams(a), bigrams(b));
+    if x.is_empty() || y.is_empty() { return false; }
+    let inter = x.intersection(&y).count() as f64;
+    inter / x.union(&y).count() as f64 >= 0.55
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -184,7 +204,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             orch, sched, approver, ctl, project_id: run.project_id.clone(), run_id: run.id.clone(), repo: std::path::PathBuf::from(project.path),
             calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()),
             merged: AtomicUsize::new(0), last_standup_at_merged: AtomicUsize::new(0), last_curated_at_merged: AtomicUsize::new(0), standups: AtomicUsize::new(0),
-            busy, on_busy_change,
+            handled_actions: std::sync::Mutex::new(Vec::new()), busy, on_busy_change,
         }))
     }
 
@@ -211,6 +231,28 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             return Some(format!("时间达到预算 {} 分钟", self.max_minutes));
         }
         None
+    }
+
+    /// 软预算：用到预算的 80% 之后，只做必须做的（开发、验证、评审、合并），可选的步骤一律跳过。
+    fn soft_budget(&self) -> bool {
+        self.calls.load(Ordering::SeqCst) as f64 >= self.max_calls as f64 * SOFT_BUDGET_RATIO
+            || self.started.elapsed().as_secs_f64() >= self.max_minutes as f64 * 60.0 * SOFT_BUDGET_RATIO
+    }
+
+    /// 剩下的调用数不够再做一个条目（按本批次已合并条目的平均调用数估计）：不再开始新条目，避免超出预算。
+    fn no_room_for_another_item(&self) -> Option<String> {
+        let merged = self.merged.load(Ordering::SeqCst);
+        if merged == 0 { return None; }
+        let used = self.calls.load(Ordering::SeqCst);
+        let avg = (used as f64 / merged as f64).ceil() as usize;
+        let remaining = self.max_calls.saturating_sub(used);
+        (remaining < avg).then(|| format!("预算只剩 {remaining} 次调用，不够再做一个条目（本批次每个条目平均约 {avg} 次）"))
+    }
+
+    /// 这条评审意见是不是和已经处理（或正在处理）的某条是同一件事。
+    fn is_duplicate_action(&self, text: &str) -> bool {
+        if self.handled_actions.lock().unwrap().iter().any(|t| similar_actions(t, text)) { return true; }
+        self.db().recent_done_action_texts(&self.project_id, 80).unwrap_or_default().iter().any(|t| similar_actions(t, text))
     }
 
     /// 需求类或高风险议题等人拍板：这类事负责人不替人决定。
@@ -377,17 +419,29 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                     continue;
                 }
                 let mine = a.assignee_id.as_deref().map(|x| x == emp.id).unwrap_or(true);
-                if !mine || fixes >= 5 {
-                    self.db().set_action_status(&a.id, "dismissed", "负责人：不是这个任务负责人的事项，或本任务的修复预算已用完，转入后续跟进")?;
+                if !mine {
+                    self.db().set_action_status(&a.id, "dismissed", "负责人：不是这个任务负责人的事项，转入后续跟进")?;
                     continue;
                 }
+                // 并行任务里相同的意见只处理一次：修复会随主分支合并过来，不要每个任务各改一遍
+                if self.is_duplicate_action(&a.text) {
+                    self.say("autopilot_step", format!("评审意见与已处理的重复，不再重复改：{}", clip(&a.text, 80)));
+                    self.db().set_action_status(&a.id, "dismissed", "负责人：与已经处理（或正在处理）的另一条评审意见重复，只处理一次；修复会随主分支合并过来")?;
+                    continue;
+                }
+                // 每个条目最多处理几条；软预算期间不再处理——都降级为“之后再说”，仍被跟踪
+                if fixed.len() >= MAX_ACTIONS_PER_TASK || self.soft_budget() {
+                    let why = if fixed.len() >= MAX_ACTIONS_PER_TASK { format!("超过每个条目最多处理 {MAX_ACTIONS_PER_TASK} 条的上限") } else { "预算接近上限".to_string() };
+                    self.db().downgrade_action(&a.id, &format!("负责人：{why}，降级为之后再说（不拦合并）"))?;
+                    continue;
+                }
+                self.handled_actions.lock().unwrap().push(a.text.clone());
                 self.say("autopilot_step", format!("评审意见交给 {}：{}", emp.name, clip(&a.text, 100)));
                 {
                     let _p = self.permit().await;
                     let (e2, p2, pr2) = self.orch.prepare_action_dispatch(&a.id, Some(&emp.id))?;
                     self.orch.assign_for_action(&e2, &p2, &pr2, &a.id, &*self.approver, &NoopObserver).await?;
                 }
-                fixes += 1;
                 fixed.push(a.id.clone());
             }
             if !fixed.is_empty() {
@@ -501,7 +555,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     /// 负责人整理项目记忆：待验证的经验攒到 3 条以上、且自上次整理后至少合并了 2 个任务才整理（`force` 时只要有待验证的就整理）。
     async fn maybe_curate(&self, force: bool) {
         let Some(lead) = self.lead() else { return };
-        if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) { return; }
+        if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) || (!force && self.soft_budget()) { return; }
         let unverified = self.orch.curation_candidates(&self.project_id).map(|c| c.iter().filter(|m| m.status == "unverified").count()).unwrap_or(0);
         let merged = self.merged.load(Ordering::SeqCst);
         if unverified == 0 || (!force && (unverified < 3 || merged < self.last_curated_at_merged.load(Ordering::SeqCst) + 2)) { return; }
@@ -537,7 +591,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let Ok(_g) = self.standup_lock.try_lock() else { return };
         let active = self.db().list_tasks(&self.repo.to_string_lossy()).map(|t| t.into_iter().filter(|t| t.status == "active").count()).unwrap_or(0);
         let merged = self.merged.load(Ordering::SeqCst);
-        if active < 2 || (self.standups.load(Ordering::SeqCst) > 0 && merged <= self.last_standup_at_merged.load(Ordering::SeqCst)) || self.over_budget().is_some() {
+        if active < 2 || (self.standups.load(Ordering::SeqCst) > 0 && merged <= self.last_standup_at_merged.load(Ordering::SeqCst)) || self.over_budget().is_some() || self.soft_budget() {
             return;
         }
         let Ok((m, who)) = self.orch.start_standup(&self.project_id).await else { return };
@@ -569,7 +623,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let (status, reason) = loop {
             if self.ctl.stop.load(Ordering::SeqCst) { break ("stopped", "你停止了推进".to_string()); }
             let paused = self.ctl.pause.load(Ordering::SeqCst);
-            let budget = self.over_budget();
+            let budget = self.over_budget().or_else(|| if running.is_empty() { self.no_room_for_another_item() } else { None });
             let human = self.needs_human();
             if (paused || budget.is_some() || human.is_some()) && set.is_empty() {
                 break if paused { ("paused", "你暂停了推进".to_string()) } else if let Some(b) = budget { ("budget", b) } else { ("escalated", human.unwrap_or_default()) };
@@ -593,7 +647,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 break ("finished", "计划全部完成".to_string());
             }
             // 暂停、预算用尽或有事等人时，不再派新活，只等手上的做完
-            if !(paused || budget.is_some() || human.is_some()) {
+            if !(paused || budget.is_some() || human.is_some()) && !(self.no_room_for_another_item().is_some()) {
                 self.rule_issues(&mut ruled).await;
                 let busy: HashSet<String> = running.iter().filter_map(|rid| self.db().get_plan_item(rid).ok().flatten().and_then(|i| i.task_id).and_then(|t| self.db().get_task(&t).ok().flatten()).map(|t| t.employee_id)).collect();
                 let mut busy = busy;
@@ -641,5 +695,20 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let done = self.db().plan_view(&self.project_id).map(|v| format!("计划完成 {}/{}", v.counts.done, v.items.iter().filter(|i| i.status != "cancelled").count())).unwrap_or_default();
         let _ = self.db().append_event_for(Some(&self.project_id), "autopilot_finished", None, None, &json!({"run_id": self.run_id, "status": status, "text": format!("{}：{reason}（{done}，本批次 {calls} 次调用）", status_label(status))}));
         self.db().get_autopilot_run(&self.run_id).ok().flatten().expect("批次存在")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn similar_review_comments_are_recognised_but_different_ones_are_not() {
+        let a = "让 load 处理空文件或损坏 JSON（todo.py load，捕获 JSONDecodeError，打印清楚的错误并以退出码 1 结束）";
+        let b = "让 `load` 处理空文件或损坏 JSON（todo.py `load`，捕获 JSONDecodeError，打印清楚的错误并以退出码 1 结束，add、list 不再出现堆栈）";
+        assert!(similar_actions(a, b), "同一件事的不同写法");
+        assert!(!similar_actions(a, "补编号 0 和 -1 的用例（tests/test_done.py，各 2 个用例，均断言退出码 1）"));
+        assert!(!similar_actions(a, "让 parse_due 拒绝非 ASCII 日期（加 isascii 判断）"));
+        assert!(!similar_actions("", "x") && !similar_actions("a", "b"));
     }
 }

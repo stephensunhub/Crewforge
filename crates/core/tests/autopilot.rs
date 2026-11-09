@@ -27,7 +27,12 @@ fn sh(dir: &Path, args: &[&str]) {
 
 /// 假 CLI：开发任务写一个唯一文件；评审返回意见；整理纪要返回带两条行动项的纪要。
 fn fake_cli(dir: &Path) -> String {
-    let path = dir.join("fake-claude");
+    fake_cli_with(dir, "fake-claude", "- [合并前] alice：补一个说明\\n- [之后] 人类：以后再看")
+}
+
+/// 同上，但评审纪要里的行动项由调用方指定（`\\n` 分隔，已是 JSON 转义后的写法）。
+fn fake_cli_with(dir: &Path, name: &str, actions: &str) -> String {
+    let path = dir.join(name);
     let script = r###"#!/bin/sh
 read -r line
 echo '{"type":"system","subtype":"init","session_id":"x"}'
@@ -40,12 +45,12 @@ case "$line" in
   *调整计划*有条目反复失败*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"add\",\"title\":\"拆小 A1\",\"reason\":\"A 太大\",\"assignee\":\"bob\",\"depends_on\":[]},{\"op\":\"add\",\"title\":\"拆小 A2\",\"reason\":\"A 太大\",\"assignee\":\"bob\",\"depends_on\":[\"N1\"]},{\"op\":\"add\",\"title\":\"带坏依赖\",\"reason\":\"x\",\"depends_on\":[\"#99\"]},{\"op\":\"add\",\"title\":\"拆小 A3\",\"reason\":\"A 太大\",\"depends_on\":[\"N2\"]},{\"op\":\"add\",\"title\":\"超过上限\",\"reason\":\"x\"},{\"op\":\"cancel\",\"item\":2,\"reason\":\"B 不再需要\"},{\"op\":\"cancel\",\"item\":99,\"reason\":\"x\"},{\"op\":\"reassign\",\"item\":3,\"assignee\":\"bob\"},{\"op\":\"retry\",\"item\":1,\"note\":\"先做最小可用版本\"}],\"escalate\":null,\"summary\":\"把 A 拆小\"}","usage":{}}' ;;
   *负责人裁决*线上数据库*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"action\":\"escalate\",\"reason\":\"涉及线上数据迁移，我没有足够依据\"}","usage":{}}' ;;
   *负责人裁决*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"我的裁决：\n{\"action\":\"decide\",\"option\":1,\"decision\":\"推送用 SSE\",\"reason\":\"单向推送足够，实现更简单\",\"rejected\":{\"2\":\"WebSocket 要额外处理心跳\"}}","usage":{}}' ;;
-  *整理纪要*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"## 决议\n- 同意\n## 被否决的方案及原因\n无\n## 行动项\n- [合并前] alice：补一个说明\n- [之后] 人类：以后再看\n## 待验证的经验\n无","usage":{}}' ;;
+  *整理纪要*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"## 决议\n- 同意\n## 被否决的方案及原因\n无\n## 行动项\n@ACTIONS@\n## 待验证的经验\n无","usage":{}}' ;;
   *请评审*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"评审意见：可以。","usage":{}}' ;;
   *站会*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"做完了；无依赖。","usage":{}}' ;;
   *) echo x > "$f"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已完成。","usage":{}}' ;;
 esac
-"###.replace("@MARK@", &dir.join("final_add_once").to_string_lossy());
+"###.replace("@MARK@", &dir.join("final_add_once").to_string_lossy()).replace("@ACTIONS@", actions);
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path.to_string_lossy().into_owned()
@@ -353,4 +358,61 @@ async fn lead_curates_only_ai_sourced_project_memories_and_never_touches_human_o
     e.db.verify_memory(&c.id, "human").unwrap();
     let none = e.orch.lead_curate_memory(&e.pid, &lead, &Deny).await.unwrap();
     assert_eq!(none.summary, "没有待验证的记忆");
+}
+
+fn count_events(e: &Env, kind: &str, contains: &str) -> usize {
+    e.db.recent_events(2000).unwrap().into_iter().filter(|x| x.kind == kind && x.payload["text"].as_str().unwrap_or("").contains(contains)).count()
+}
+
+#[tokio::test]
+async fn at_most_three_review_comments_are_fixed_per_item_and_the_rest_become_later_items() {
+    let mut e = setup().await;
+    let tools = e._d.path().join("bin");
+    // 5 条互不相同、没指明负责人的拦合并意见
+    let many = "- [合并前] 补充甲方面的校验逻辑\\n- [合并前] 调整乙模块的错误提示文字\\n- [合并前] 增加丙场景的边界用例\\n- [合并前] 重命名丁函数使其更清楚\\n- [合并前] 删除戊目录里的废弃脚本";
+    Arc::get_mut(&mut e.orch).unwrap().program = fake_cli_with(&tools, "fake-many", many);
+    std::fs::write(tools.join("final_add_once"), "").unwrap(); // 复盘时不追加条目
+    for id in &e.ids[1..] { e.db.set_plan_status(id, "cancelled", "测试").unwrap(); }
+    let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    assert_eq!(count_events(&e, "autopilot_step", "评审意见交给"), 3, "最多处理 3 条");
+    let m = e.db.list_meetings(&e.pid).unwrap();
+    let acts = e.db.actions_for_meeting(&m[0].id).unwrap();
+    let later: Vec<_> = acts.iter().filter(|a| a.status == "open" && !a.blocking).collect();
+    assert_eq!(later.len(), 2, "超出的 2 条降级为之后再说，仍然开着、被跟踪：{acts:?}");
+    assert!(later.iter().all(|a| a.note.contains("上限")), "{later:?}");
+    assert_eq!(acts.iter().filter(|a| a.status == "done").count(), 3);
+    // 降级的不进人的待办，只计入“之后再说”
+    assert!(e.db.my_duties(&e.pid).unwrap().later_actions >= 2);
+}
+
+#[tokio::test]
+async fn the_same_review_comment_in_parallel_tasks_is_fixed_only_once() {
+    let mut e = setup().await;
+    let tools = e._d.path().join("bin");
+    let same = "- [合并前] 让 load 处理空文件或损坏 JSON（捕获 JSONDecodeError，报清楚的错误并以退出码 1 结束）";
+    Arc::get_mut(&mut e.orch).unwrap().program = fake_cli_with(&tools, "fake-same", same);
+    std::fs::write(tools.join("final_add_once"), "").unwrap(); // 复盘时不追加条目
+    e.db.set_plan_status(&e.ids[1], "cancelled", "测试").unwrap(); // 只留并行的 A（bob）和 C（carol）
+    let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    assert_eq!(count_events(&e, "autopilot_step", "评审意见交给"), 1, "两个任务收到同一条意见，只派出一次");
+    assert_eq!(count_events(&e, "autopilot_step", "与已处理的重复"), 1);
+    let all: Vec<_> = e.db.list_meetings(&e.pid).unwrap().into_iter().flat_map(|m| e.db.actions_for_meeting(&m.id).unwrap()).collect();
+    let dup = all.iter().find(|a| a.status == "dismissed").expect("重复的那条被驳回");
+    assert!(dup.note.contains("重复"), "{dup:?}");
+}
+
+#[tokio::test]
+async fn near_the_budget_limit_no_new_item_is_started_and_the_budget_is_not_overshot() {
+    let e = setup().await;
+    e.db.set_plan_status(&e.ids[2], "cancelled", "测试").unwrap(); // 只留 A → B
+    // A 约 3 次调用（开发、评审、纪要）；预算 5：A 做完后剩 2 次，不够再做一个条目（约 3 次），不应该开始 B
+    let r = run(&e, 5, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "budget", "{r:?}");
+    assert!(r.reason.contains("不够再做一个条目"), "{r:?}");
+    assert!(r.calls <= 5, "没有超出预算：{r:?}");
+    let v = e.db.plan_view(&e.pid).unwrap();
+    assert_eq!(v.items.iter().find(|i| i.title == "A").unwrap().status, "done");
+    assert_eq!(v.items.iter().find(|i| i.title == "B").unwrap().status, "planned", "B 没有被开始");
 }

@@ -372,6 +372,20 @@ mod tests {
 }
 
 impl Db {
+    /// 把拦合并的行动项降级为“之后再说”：仍然开着、仍被跟踪，只是不再拦合并，也不进人的待办。
+    pub fn downgrade_action(&self, id: &str, note: &str) -> Result<()> {
+        let n = self.conn.lock().unwrap().execute("UPDATE action_items SET blocking = 0, note = ?2 WHERE id = ?1 AND status = 'open'", params![id, note])?;
+        if n == 0 { anyhow::bail!("行动项不存在或已不是待处理"); }
+        Ok(())
+    }
+
+    /// 项目里最近已处理的行动项文本（负责人用来识别重复的评审意见）。
+    pub fn recent_done_action_texts(&self, project_id: &str, limit: usize) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut s = conn.prepare("SELECT text FROM action_items WHERE project_id = ?1 AND status = 'done' ORDER BY resolved_at DESC, created_at DESC LIMIT ?2")?;
+        Ok(s.query_map(params![project_id, limit as i64], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// 项目里还没处理完的行动项（文档“已知问题”用）。
     pub fn open_actions_for_project(&self, project_id: &str) -> Result<Vec<ActionItem>> {
         self.query_actions("WHERE a.project_id = ?1 AND a.status IN ('open','working')", &[&project_id])
