@@ -333,3 +333,6 @@ export interface SessionCtx {
   context_tokens: number | null; updated_at: number; rotations: number;
 }
 export interface SessionsView { limit: number; sessions: SessionCtx[] }
+
+export interface EndedProject { project: Project; end_kind: "completed" | "archived"; end_reason: string; ended_at: number | null }
+export interface DiscardReport { tasks_removed: number; folder_trashed: string | null }

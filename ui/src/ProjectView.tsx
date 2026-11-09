@@ -10,6 +10,7 @@ import { OnboardingView } from "./OnboardingView";
 import { DocsView } from "./DocsView";
 import { DutiesPanel } from "./DutiesPanel";
 import { PlanPanel } from "./PlanPanel";
+import { EndProjectModal } from "./EndProject";
 import type { ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
 
 export type ProjectTab = "duties" | "onboarding" | "chat" | "plan" | "tasks" | "issues" | "meetings" | "members" | "memory" | "docs";
@@ -142,6 +143,7 @@ function MembersTab({ project, members, employees, running, onChanged, onError, 
 }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [ending, setEnding] = useState(false);
   const p = project.project;
   const candidates = employees.filter((e) => !members.some((m) => m.employee_id === e.id));
 
@@ -179,19 +181,16 @@ function MembersTab({ project, members, employees, running, onChanged, onError, 
       </div>
 
       <div className="page-head" style={{ marginTop: 28 }}><div><h2>项目信息</h2></div>
-        <button className="btn" onClick={() => setEditing(true)}>编辑</button></div>
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn" onClick={() => setEditing(true)}>编辑</button>
+          <button className="btn danger" onClick={() => setEnding(true)}>结束项目…</button>
+        </div></div>
       <div className="kv">
         <span>名称</span><span>{p.name}</span>
         <span>目录</span><code>{p.path}</code>
         <span>描述</span><span>{p.description || "—"}</span>
       </div>
-      <div style={{ marginTop: 16 }}>
-        <button className="btn danger" onClick={async () => {
-          if (await api.confirm(`归档项目「${p.name}」？\n数据和代码都会保留，只是不再出现在列表里。`, "确认归档")) {
-            try { await api.archiveProject(p.id); onChanged(); onArchived(); } catch (e) { onError(String(e)); }
-          }
-        }}>归档项目</button>
-      </div>
+      {ending && <EndProjectModal summary={project} onClose={() => setEnding(false)} onError={onError} onDone={() => { setEnding(false); onChanged(); onArchived(); }} />}
 
       {adding && <AddMember candidates={candidates} hasLead={members.some((m) => m.role === "lead")} onClose={() => setAdding(false)}
         onAdd={async (eid, role) => { await guard(() => api.addMember(p.id, eid, role)); setAdding(false); }} />}

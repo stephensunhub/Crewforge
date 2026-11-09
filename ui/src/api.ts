@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport,
 } from "./types";
 
 export const api = {
@@ -22,6 +22,10 @@ export const api = {
   createProject: (name: string, description: string, path: string, initGit: boolean, importExisting: boolean) =>
     invoke<Project>("create_project", { name, description, path, initGit, importExisting }),
   updateProject: (id: string, name: string, description: string) => invoke<void>("update_project", { id, name, description }),
+  endProject: (id: string, kind: "completed" | "archived", reason: string) => invoke<void>("end_project", { id, kind, reason }),
+  discardProject: (id: string, confirmName: string, deleteFolder: boolean) => invoke<DiscardReport>("discard_project", { id, confirmName, deleteFolder }),
+  endedProjects: () => invoke<EndedProject[]>("list_ended_projects"),
+  restoreProject: (id: string) => invoke<void>("restore_project", { id }),
   archiveProject: (id: string) => invoke<void>("archive_project", { id }),
   // 项目成员
   members: (projectId: string) => invoke<Member[]>("list_members", { projectId }),

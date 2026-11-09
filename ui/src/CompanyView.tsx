@@ -1,3 +1,4 @@
+import { EndedProjects } from "./EndProject";
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import { Avatar, Field, Modal, Placeholder, basename } from "./common";
@@ -211,6 +212,7 @@ export function CompanyView({
             </div>
           ))}
         </div>
+        <EndedProjects refreshKey={projects.length} onRestored={onChanged} onError={onError} />
         {modal === "new-proj" && (
           <ProjectForm onClose={() => setModal(null)} onSubmit={async (n, d, p, i, imp) => {
             const ok = await guard(() => api.createProject(n, d, p, i, imp));

@@ -391,3 +391,9 @@ button.u-cell:hover { background: var(--panel-2); }
 .reason-box input { width: 260px; max-width: 100%; padding: 3px 8px; font-size: 12px; }
 .reason-box .btn { padding: 3px 10px; font-size: 12px; }
 .action .hint.bad { color: var(--bad); }
+
+.end-choices { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.end-choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line, #3a3a3a); border-radius: 8px; cursor: pointer; }
+.end-choice.on { border-color: var(--accent); }
+.end-choice.danger.on { border-color: var(--bad); }
+.end-choice input { margin-top: 3px; }

@@ -3,6 +3,7 @@
 pub mod actions;
 pub mod autopilot;
 pub mod board;
+pub mod closeout;
 pub mod cost;
 pub mod curate;
 pub mod db;

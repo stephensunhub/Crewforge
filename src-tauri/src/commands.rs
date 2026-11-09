@@ -131,6 +131,44 @@ pub fn archive_project(state: State<'_, AppState>, id: String) -> CmdResult<()> 
     state.db.archive_project(&id).map_err(err)
 }
 
+/// 结束项目前：通知自主推进停下，并确认项目成员现在没有人在干活（否则会和正在运行的 CLI 抢目录）。
+fn quiesce_project(state: &AppState, project_id: &str) -> CmdResult<()> {
+    if let Some(ctl) = state.autopilots.lock().unwrap().get(project_id) {
+        ctl.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    let members = state.db.list_members(project_id).map_err(err)?;
+    let running = state.running.lock().unwrap().clone();
+    let busy: Vec<String> = members.iter().filter(|m| running.contains(&m.name)).map(|m| m.name.clone()).collect();
+    if !busy.is_empty() {
+        return Err(format!("{} 正在执行任务。已通知自主推进停下；等他们做完当前这一步后再试", busy.join("、")));
+    }
+    Ok(())
+}
+
+/// 已完成 / 归档（kind = completed | archived）。
+#[tauri::command]
+pub async fn end_project(state: State<'_, AppState>, id: String, kind: String, reason: String) -> CmdResult<()> {
+    quiesce_project(&state, &id)?;
+    state.orch.end_project(&id, &kind, &reason).await.map_err(err)
+}
+
+/// 不做了：彻底删除；`delete_folder` 时把项目文件夹移到废纸篓。需要输入项目名确认。
+#[tauri::command]
+pub async fn discard_project(state: State<'_, AppState>, id: String, confirm_name: String, delete_folder: bool) -> CmdResult<crewforge_core::closeout::DiscardReport> {
+    quiesce_project(&state, &id)?;
+    state.orch.discard_project(&id, &confirm_name, delete_folder).await.map_err(err)
+}
+
+#[tauri::command]
+pub fn list_ended_projects(state: State<'_, AppState>) -> CmdResult<Vec<crewforge_core::closeout::EndedProject>> {
+    state.db.list_ended_projects().map_err(err)
+}
+
+#[tauri::command]
+pub fn restore_project(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.db.restore_project(&id).map_err(err)
+}
+
 #[tauri::command]
 pub fn list_members(state: State<'_, AppState>, project_id: String) -> CmdResult<Vec<Member>> {
     state.db.list_members(&project_id).map_err(err)
