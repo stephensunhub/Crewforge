@@ -12,6 +12,7 @@ pub mod memory;
 pub mod orchestrator;
 pub mod plan;
 pub mod policy;
+pub mod protocol;
 pub mod provider;
 pub mod runner;
 pub mod scheduler;

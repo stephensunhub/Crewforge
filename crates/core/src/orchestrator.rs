@@ -131,6 +131,15 @@ impl Orchestrator {
             program: self.program.clone(),
         };
         let result = run_turn(&self.db, employee, &cfg, &full_prompt, approver, observer).await;
+        if let Ok(r) = &result {
+            if crate::protocol::enabled(&self.db) {
+                let flags = crate::protocol::lint_report(&r.text);
+                if !flags.is_empty() {
+                    let _ = self.db.append_event_for(cfg.project_id.as_deref(), "report_flags", Some(&employee.id), None,
+                        &serde_json::json!({"task_id": task.id, "flags": flags, "chars": r.text.chars().count()}));
+                }
+            }
+        }
 
         // 无论成功与否都保存检查点：被中断时的进展同样不能丢
         let label = if result.is_ok() { "" } else { " (WIP，执行被中断)" };

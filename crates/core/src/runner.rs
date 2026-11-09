@@ -79,6 +79,12 @@ pub async fn run_turn<A: Approver, O: Observer>(
     if !cfg.read_only && db.get_setting("sandbox")?.as_deref() != Some("off") {
         spec.sandbox = Some(sandbox_writable_dirs(&cfg.project_path));
     }
+    if crate::protocol::enabled(db) {
+        let style = crate::protocol::style_for(&cfg.purpose);
+        if !style.is_empty() {
+            spec.persona = format!("{}\n\n{}", spec.persona, style);
+        }
+    }
     let policy = if cfg.read_only { Policy::read_only(&cfg.project_path) }
     else if spec.sandbox.is_some() { Policy::new(&cfg.project_path).sandboxed() }
     else { Policy::new(&cfg.project_path) };
