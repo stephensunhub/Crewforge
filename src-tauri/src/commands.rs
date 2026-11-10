@@ -822,6 +822,22 @@ pub async fn lead_handle_actions(app: AppHandle, state: State<'_, AppState>, pro
     res.map_err(err)
 }
 
+/// 让负责人整理“之后再说”的行动项（不够 5 条时不调用模型，返回 None）。
+#[tauri::command]
+pub async fn lead_triage_actions(app: AppHandle, state: State<'_, AppState>, project_id: String) -> CmdResult<Option<String>> {
+    let lead = lead_of(&state, &project_id)?;
+    if !state.busy.lock().unwrap().insert(format!("triage:{project_id}")) { return Err("负责人正在整理，请稍等".into()); }
+    let approver = UiApprover { app, pending: state.pending.clone(), project_id: Some(project_id.clone()) };
+    let res = async {
+        let _permit = state.sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
+        state.orch.lead_triage_later(&project_id, &lead, &approver).await
+    }.await;
+    state.busy.lock().unwrap().remove(&format!("triage:{project_id}"));
+    Ok(res.map_err(err)?.map(|t| format!("驳回 {} 条，转为计划条目 {} 个{}{}", t.dismissed, t.planned.len(),
+        if t.planned.is_empty() { String::new() } else { format!("（{}）", t.planned.join("、")) },
+        if t.rejected.is_empty() { String::new() } else { format!("；被拒绝的指令：{}", t.rejected.join("；")) })))
+}
+
 // ================= 负责人起草计划 =================
 /// 让项目的 AI 负责人根据项目目标、扫描、基线、评估和现有计划起草一份计划；条目进入“提议中”，等你确认。
 #[tauri::command]

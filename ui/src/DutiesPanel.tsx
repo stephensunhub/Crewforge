@@ -79,6 +79,8 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
 export function DutiesPanel({ projectId, projectName, events, onGoTab, onOpenMeeting, onError }: { projectId: string; projectName: string; events: EventRow[]; onGoTab: (t: ProjectTab) => void; onOpenMeeting: (id: string) => void; onError: (m: string) => void }) {
   const [d, setD] = useState<Duties | null>(null);
   const [handling, setHandling] = useState(false);
+  const [triaging, setTriaging] = useState(false);
+  const [triaged, setTriaged] = useState<string | null>(null);
   const [handled, setHandled] = useState<string[]>([]);
   const load = useCallback(async () => { try { setD(await api.myDuties(projectId)); } catch { /* 忽略 */ } }, [projectId]);
   const last = useMemo(() => events.reduce((m, e) => (/^(plan_|issue_|action_|memory_|task_|meeting_|agent_proposed)/.test(e.kind) ? Math.max(m, e.id) : m), 0), [events]);
@@ -117,7 +119,9 @@ export function DutiesPanel({ projectId, projectName, events, onGoTab, onOpenMee
           </div>
         )}
         {d && d.later_actions > 0 && (
-          <div className="hint" style={{ marginTop: 10 }}>另有 {d.later_actions} 条“之后再说”的评审行动项，不拦合并，也不需要你决定，留在<button className="link" onClick={() => onGoTab("meetings")}>会议页</button>，员工或负责人择机处理，不会占你的待办。</div>
+          <div className="hint" style={{ marginTop: 10 }}>另有 {d.later_actions} 条“之后再说”的评审行动项，不拦合并，也不需要你决定，留在<button className="link" onClick={() => onGoTab("meetings")}>会议页</button>，不会占你的待办。
+            {d.later_actions >= 5 && <button className="btn" style={{ marginLeft: 10 }} disabled={triaging} title="负责人逐条看：重复、过时、不必做的驳回，值得做的转成计划条目，拿不准的保留" onClick={async () => { setTriaging(true); setTriaged(null); try { setTriaged((await api.leadTriageActions(projectId)) ?? "数量不多，没有整理"); await load(); } catch (e) { onError(String(e)); } finally { setTriaging(false); } }}>{triaging ? "负责人整理中…" : "让负责人整理"}</button>}
+            {triaged && <span className="hint" style={{ marginLeft: 10 }}>结果：{triaged}</span>}</div>
         )}
         {d && d.plan_total > 0 && <div className="hint" style={{ marginTop: 6 }}>计划进度：{d.plan_done}/{d.plan_total}（{d.plan_percent}%）。<button className="link" onClick={() => onGoTab("plan")}>查看计划</button></div>}
       </section>

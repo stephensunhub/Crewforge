@@ -143,7 +143,7 @@ pub const MAX_ACTIONS_PER_TASK: usize = 3;
 /// 调用数或时间用到预算的这个比例之后，进入“软预算”：不再处理评审意见、不再开站会和整理记忆。
 pub const SOFT_BUDGET_RATIO: f64 = 0.8;
 /// 给收尾（整理记忆、更新文档）留的调用数：开始新条目前先扣掉，保证预算用尽时收尾也能做。
-pub const WRAP_UP_RESERVE: usize = 3;
+pub const WRAP_UP_RESERVE: usize = 4;
 
 fn bigrams(s: &str) -> std::collections::HashSet<(char, char)> {
     let cs: Vec<char> = s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect();
@@ -548,6 +548,22 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         }
     }
 
+    /// 收尾：整理“之后再说”的行动项（积累到一定数量才调用）。
+    async fn triage_later(&self) {
+        let Some(lead) = self.lead() else { return };
+        if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) { return; }
+        if self.orch.later_actions(&self.project_id).map(|v| v.len()).unwrap_or(0) < crate::lead_triage::MIN_ITEMS_TO_TRIAGE { return; }
+        let _p = self.permit().await;
+        match self.orch.lead_triage_later(&self.project_id, &lead, &*self.approver).await {
+            Ok(Some(t)) => {
+                self.say("autopilot_step", format!("{} 整理了“之后再说”的行动项：驳回 {} 条，转为计划条目 {} 个{}，保留 {} 条的编号未提及或被保留", lead.name, t.dismissed, t.planned.len(), if t.planned.is_empty() { String::new() } else { format!("（{}）", t.planned.join("、")) }, t.kept));
+                for r in &t.rejected { self.say("autopilot_step", format!("整理行动项被拒绝：{r}")); }
+            }
+            Ok(None) => {}
+            Err(e) => self.say("autopilot_step", format!("整理行动项没有完成：{e}")),
+        }
+    }
+
     fn lead(&self) -> Option<Employee> {
         self.members().into_iter().find(|(_, r)| r == "lead").map(|(e, _)| e)
     }
@@ -655,6 +671,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 // 预算是因为“留给收尾的调用数”而停的（还没真正用光）：收尾照做，不让文档和记忆总被挤掉
                 if end.0 == "budget" && !paused && self.over_budget().is_none() && !self.ctl.stop.load(Ordering::SeqCst) {
                     self.maybe_curate(true).await;
+                    self.triage_later().await;
                     self.update_docs().await;
                 }
                 break end;
@@ -673,6 +690,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 // 收尾：整理记忆、更新文档（各一次）
                 if !paused && budget.is_none() && human.is_none() && set.is_empty() {
                     self.maybe_curate(true).await;
+                    self.triage_later().await;
                     self.update_docs().await;
                 }
                 break ("finished", "计划全部完成".to_string());
