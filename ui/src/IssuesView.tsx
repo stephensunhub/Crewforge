@@ -127,8 +127,11 @@ function IssueDetail({ v, members, onClose, guard, onDiscuss, onSupersede }: {
   const [optTitle, setOptTitle] = useState("");
   const [optDesc, setOptDesc] = useState("");
   const [deciding, setDeciding] = useState(false);
+  const [pre, setPre] = useState<string | null>(null);
   const nameOf = (id: string | null) => (id ? members.find((m) => m.employee_id === id)?.name ?? "（已离开项目）" : "人类");
   const editable = ["open", "discussing", "pending_decision"].includes(i.status);
+  const canPick = i.status === "pending_decision";
+  const pick = (id: string | null) => { setPre(id); setDeciding(true); };
 
   return (
     <Modal title={i.title} onClose={onClose} width={680}>
@@ -148,13 +151,16 @@ function IssueDetail({ v, members, onClose, guard, onDiscuss, onSupersede }: {
         <div>
           <h4 className="group-title">候选方案</h4>
           {v.options.length === 0 && <div className="hint">还没有方案。</div>}
+          {canPick && v.options.length > 0 && <div className="hint" style={{ marginBottom: 6 }}>点一个方案，或点“采用此方案”，直接进入拍板。</div>}
+          {!canPick && editable && v.options.length > 0 && <div className="hint" style={{ marginBottom: 6 }}>议题进入「待决策」后，才能在这里选方案并拍板。</div>}
           {v.options.map((o) => (
-            <div className={`option ${o.status}`} key={o.id}>
+            <div className={`option ${o.status}${canPick ? " clickable" : ""}`} key={o.id} onClick={canPick ? () => pick(o.id) : undefined} role={canPick ? "button" : undefined} title={canPick ? "点击选择这个方案并拍板" : undefined}>
               <div><b>{o.title}</b>{o.status === "chosen" && <span className="badge merged" style={{ marginLeft: 8 }}>已采纳</span>}
                 {o.status === "rejected" && <span className="badge abandoned" style={{ marginLeft: 8 }}>未采纳</span>}</div>
               {o.description && <div className="hint">{o.description}</div>}
               <div className="hint">提出：{nameOf(o.proposed_by)}</div>
               {o.reject_reason && <div className="hint">未采纳原因：{o.reject_reason}</div>}
+              {canPick && <div style={{ marginTop: 6 }}><button className="btn" onClick={(e) => { e.stopPropagation(); pick(o.id); }}>采用此方案</button></div>}
             </div>
           ))}
           {editable && (
@@ -176,7 +182,7 @@ function IssueDetail({ v, members, onClose, guard, onDiscuss, onSupersede }: {
         )}
 
         <div className="form-btns" style={{ justifyContent: "flex-start", flexWrap: "wrap" }}>
-          {i.status === "pending_decision" && <button className="btn primary" onClick={() => setDeciding(true)}>拍板</button>}
+          {i.status === "pending_decision" && <button className="btn primary" onClick={() => pick(null)}>拍板</button>}
           {(NEXT[i.status] ?? []).map(([to, plain]) => {
             // 员工提议的议题在“待讨论”阶段，操作的含义是接受或驳回提议
             const label = i.status === "open" && v.raised_by_name ? (to === "discussing" ? "接受，开始讨论" : "驳回提议") : plain;
@@ -188,18 +194,20 @@ function IssueDetail({ v, members, onClose, guard, onDiscuss, onSupersede }: {
           {["decided", "implementing", "closed"].includes(i.status) && !v.superseded_by && <button className="btn" onClick={onSupersede}>推翻并重新讨论</button>}
         </div>
       </div>
-      {deciding && <DecideModal v={v} onClose={() => setDeciding(false)}
+      {deciding && <DecideModal v={v} initialChosen={pre} onClose={() => setDeciding(false)}
         onDecide={async (c, d, r, rej) => { if (await guard(() => api.decideIssue(i.id, c, d, r, rej))) { setDeciding(false); onClose(); } }} />}
     </Modal>
   );
 }
 
-function DecideModal({ v, onClose, onDecide }: {
-  v: IssueView; onClose: () => void;
+function DecideModal({ v, initialChosen, onClose, onDecide }: {
+  v: IssueView; initialChosen: string | null; onClose: () => void;
   onDecide: (chosen: string | null, decision: string, reason: string, rejected: Record<string, string>) => Promise<void>;
 }) {
-  const [chosen, setChosen] = useState<string | null>(v.options[0]?.id ?? null);
-  const [decision, setDecision] = useState(v.options[0] ? `采用「${v.options[0].title}」` : "");
+  // 从某个方案点进来就预选它；点“拍板”按钮进来则默认第一个
+  const first = v.options.find((o) => o.id === initialChosen) ?? v.options[0];
+  const [chosen, setChosen] = useState<string | null>(first?.id ?? null);
+  const [decision, setDecision] = useState(first ? `采用「${first.title}」` : "");
   const [reason, setReason] = useState("");
   const [rej, setRej] = useState<Record<string, string>>({});
   return (
