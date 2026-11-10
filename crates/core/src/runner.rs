@@ -245,6 +245,15 @@ pub async fn run_turn<A: Approver, O: Observer>(
         }
         Err(e) => {
             proc.kill().await;
+            // 会话其实已经在 CLI 那边建好了，只是应用没来得及记下（应用恰好在那一刻被关掉），数据库里还是“没建立”，
+            // 之后每次都用“创建新会话”的方式启动，被 CLI 拒绝（Session ID … is already in use），永远失败。
+            // 记下这个会话已建立，改用续接重试一次。
+            if !spec.resume && e.to_string().contains("is already in use") {
+                db.mark_session_started(&session.id)?;
+                db.set_session_status(&session.id, "idle")?;
+                db.append_event_for(pid, "session_repaired", eid, sid, &json!({"reason": "会话在 CLI 那边已存在，应用没有记下；改用续接"}))?;
+                return Box::pin(run_turn(db, employee, cfg, prompt, approver, observer)).await;
+            }
             // 保持 running：下次启动会被识别为需要恢复
             db.append_event_for(pid, "task_failed", eid, sid, &json!({"error": e.to_string()}))?;
             Err(e)

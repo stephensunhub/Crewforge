@@ -137,3 +137,31 @@ fn silence_limit_defaults_depend_on_where_the_employee_runs_and_zero_turns_it_of
     db.set_setting("turn_silence_minutes", "0").unwrap();
     assert!(turn_silence_limit(&db, false).is_none());
 }
+
+#[tokio::test]
+async fn a_session_that_exists_in_the_cli_but_was_never_recorded_is_repaired_and_resumed() {
+    let d = tempfile::tempdir().unwrap();
+    let work = d.path().join("w");
+    std::fs::create_dir_all(&work).unwrap();
+    let db = Db::open(&d.path().join("home")).unwrap();
+    let e = db.add_employee("dev", "dev", "p").unwrap();
+    // 假 CLI：用 --session-id（创建新会话）启动就报“已存在”，用 --resume 才正常
+    let args_log = d.path().join("args.log");
+    let p = d.path().join("picky");
+    std::fs::write(&p, format!(
+        "#!/bin/sh\nread -r line\necho \"$*\" | tr ' ' '\\n' | grep -E '^--(session-id|resume)$' | head -1 >> '{log}'\n\
+         case \"$*\" in\n*--session-id*) echo 'Error: Session ID abc is already in use' >&2; exit 1 ;;\nesac\n\
+         echo '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"x\"}}'\n\
+         echo '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}'\n",
+        log = args_log.display())).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let r = run_turn(&db, &e, &cfg(&work, p.to_string_lossy().into_owned()), "任务", &Deny, &NoopObserver).await.unwrap();
+    assert_eq!(r.text, "ok", "修复后重试成功");
+    let args = std::fs::read_to_string(&args_log).unwrap();
+    assert_eq!(args.lines().collect::<Vec<_>>(), vec!["--session-id", "--resume"], "先创建（被拒绝），再改用续接：{args}");
+    assert!(db.recent_events(50).unwrap().iter().any(|x| x.kind == "session_repaired"));
+    assert!(!db.recent_events(50).unwrap().iter().any(|x| x.kind == "task_failed"), "不当作失败");
+    let s = db.get_or_create_session(&e.id, &work.to_string_lossy()).unwrap();
+    assert!(s.started && s.status == "idle", "会话已记为建立，状态空闲");
+}
