@@ -515,3 +515,25 @@ async fn items_left_in_progress_by_a_restart_are_requeued_and_finished() {
     assert!(!e.db.recent_events(500).unwrap().iter().any(|x| x.payload["text"].as_str().unwrap_or("").contains("请先合并或放弃")));
     assert_eq!(e.db.get_plan_item(&a).unwrap().unwrap().status, "done");
 }
+
+#[tokio::test]
+async fn the_lead_shows_as_busy_while_ruling_issues_and_is_released_afterwards() {
+    let e = setup().await;
+    let bob = e.db.employee_by_name("bob").unwrap().unwrap();
+    // 计划条目都派给 bob；alice（负责人）只会因为裁决议题而忙
+    let tech = e.db.create_issue(&e.pid, "推送方案：SSE 还是 WebSocket", "选择推送方案", "technical", false, Some(&bob.id), None, None).unwrap();
+    e.db.add_option(&tech.id, "SSE", "单向", None).unwrap();
+    e.db.add_option(&tech.id, "WebSocket", "双向", None).unwrap();
+
+    let snaps: Arc<std::sync::Mutex<Vec<Vec<String>>>> = Default::default();
+    let rec = snaps.clone();
+    let on_busy: Arc<dyn Fn(Vec<String>) + Send + Sync> = Arc::new(move |names| rec.lock().unwrap().push(names));
+    let run = Autopilot::<Deny>::prepare(&e.orch, &e.pid, 100, 30).unwrap();
+    let busy = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let r = Autopilot::new_with_busy(e.orch.clone(), e.sched.clone(), Arc::new(Deny), Arc::new(AutopilotCtl::default()), &run, busy.clone(), on_busy).unwrap().run().await;
+    assert_eq!(r.status, "finished", "{r:?}");
+
+    let s = snaps.lock().unwrap();
+    assert!(s.iter().any(|n| n.iter().any(|x| x == "alice")), "裁决议题期间负责人应显示为工作中：{s:?}");
+    assert!(busy.lock().unwrap().is_empty(), "批次结束后没有人还被标记为忙");
+}

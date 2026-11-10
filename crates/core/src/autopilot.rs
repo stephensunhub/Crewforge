@@ -201,6 +201,26 @@ fn clip(s: &str, n: usize) -> String {
     if one.chars().count() <= n { one } else { format!("{}…", one.chars().take(n).collect::<String>()) }
 }
 
+/// 见 `Autopilot::busy_scope`。
+struct BusyScope {
+    busy: Arc<std::sync::Mutex<HashSet<String>>>,
+    notify: Arc<dyn Fn(Vec<String>) + Send + Sync>,
+    name: String,
+    owned: bool,
+}
+
+impl Drop for BusyScope {
+    fn drop(&mut self) {
+        if !self.owned { return; }
+        let names: Vec<String> = {
+            let mut b = self.busy.lock().unwrap();
+            b.remove(&self.name);
+            b.iter().cloned().collect()
+        };
+        (self.notify)(names);
+    }
+}
+
 impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     /// 开始前的检查：项目要有 AI 负责人；此时点“开始”就是人对计划的最后确认——提议的条目一并批准。
     pub fn prepare(orch: &Arc<Orchestrator>, project_id: &str, max_calls: i64, max_minutes: i64) -> Result<AutopilotRun> {
@@ -391,6 +411,18 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         }
     }
 
+    /// 员工在做后台工作（裁决、整理、写文档、开会发言…）期间标记为“工作中”，离开作用域自动取消。
+    /// 已经因为别的活被标记的不重复标记，也不会替它取消。
+    fn busy_scope(&self, name: &str) -> BusyScope {
+        let owned = {
+            let mut b = self.busy.lock().unwrap();
+            let inserted = b.insert(name.to_string());
+            if inserted { let names: Vec<String> = b.iter().cloned().collect(); drop(b); (self.on_busy_change)(names); }
+            inserted
+        };
+        BusyScope { busy: self.busy.clone(), notify: self.on_busy_change.clone(), name: name.to_string(), owned }
+    }
+
     fn mark_busy(&self, name: &str, on: bool) {
         let names: Vec<String> = {
             let mut b = self.busy.lock().unwrap();
@@ -446,6 +478,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             self.db().post_message(&m.id, "human", None, &format!("@{} 请评审 {} 的改动《{}》。重点看：逻辑是否正确、边界情况、测试是否充分、是否符合项目目标；发现需要团队决定的设计问题请先 list_issues 再 propose_issue。（这条消息由负责人流程自动发出）", rv.name, emp.name, item.title))?;
             {
                 let _p = self.permit().await;
+                let _busy = self.busy_scope(&rv.name);
                 match self.orch.meeting_reply(&m.id, &rv, &*self.approver).await {
                     Ok(t) => self.say("autopilot_step", format!("{} 评审《{}》：{}", rv.name, item.title, clip(&t, 200))),
                     Err(e) => self.say("autopilot_step", format!("评审没有完成：{e}")),
@@ -560,6 +593,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             tried.insert(i.id.clone());
             n += 1;
             let _p = self.permit().await;
+            let _busy = self.busy_scope(&lead.name);
             match self.orch.lead_rule_issue(&i.id, &lead, &*self.approver).await {
                 Ok(RulingOutcome::Decided { decision, reason }) => self.say("autopilot_decided", format!("{} 裁决《{}》：{}（原因：{}）", lead.name, i.title, clip(&decision, 120), clip(&reason, 120))),
                 Ok(RulingOutcome::Escalated { reason }) => {
@@ -582,6 +616,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             tried.insert(id.clone());
             n += 1;
             let _p = self.permit().await;
+            let _busy = self.busy_scope(&lead.name);
             match self.orch.lead_handle_action(&id, &lead, &*self.approver).await {
                 Ok(Some(ActionOutcome::Decided { decision, follow_ups })) => self.say("autopilot_decided", format!("{} 处理了一项标给人的事项：{}{}", lead.name, clip(&decision, 120), if follow_ups.is_empty() { String::new() } else { format!("（追加了计划条目：{}）", follow_ups.join("、")) })),
                 Ok(Some(ActionOutcome::Dismissed { reason })) => self.say("autopilot_decided", format!("{} 判断一项标给人的事项不必做：{}", lead.name, clip(&reason, 120))),
@@ -598,6 +633,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) { return; }
         if self.orch.later_actions(&self.project_id).map(|v| v.len()).unwrap_or(0) < crate::lead_triage::MIN_ITEMS_TO_TRIAGE { return; }
         let _p = self.permit().await;
+        let _busy = self.busy_scope(&lead.name);
         match self.orch.lead_triage_later(&self.project_id, &lead, &*self.approver).await {
             Ok(Some(t)) => {
                 self.say("autopilot_step", format!("{} 整理了“之后再说”的行动项：驳回 {} 条，转为计划条目 {} 个{}，保留 {} 条的编号未提及或被保留", lead.name, t.dismissed, t.planned.len(), if t.planned.is_empty() { String::new() } else { format!("（{}）", t.planned.join("、")) }, t.kept));
@@ -616,6 +652,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     async fn adjust_plan(&self, trigger: AdjustTrigger, failure: &str) -> Option<Applied> {
         let lead = self.lead()?;
         let _p = self.permit().await;
+        let _busy = self.busy_scope(&lead.name);
         match self.orch.lead_adjust_plan(&self.project_id, &lead, trigger, failure, &*self.approver).await {
             Ok(a) => {
                 let mut parts = Vec::new();
@@ -645,6 +682,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         if unverified == 0 || (!force && (unverified < 3 || merged < self.last_curated_at_merged.load(Ordering::SeqCst) + 2)) { return; }
         self.last_curated_at_merged.store(merged, Ordering::SeqCst);
         let _p = self.permit().await;
+        let _busy = self.busy_scope(&lead.name);
         match self.orch.lead_curate_memory(&self.project_id, &lead, &*self.approver).await {
             Ok(c) => {
                 let mut parts = Vec::new();
@@ -664,6 +702,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let Some(lead) = self.lead() else { return };
         if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) { return; }
         let _p = self.permit().await;
+        let _busy = self.busy_scope(&lead.name);
         match self.orch.update_project_docs(&self.project_id, &lead, true, &*self.approver).await {
             Ok(r) => self.say("autopilot_docs", format!("{} 更新了项目文档（docs/crewforge/）：{}", lead.name, r.note)),
             Err(e) => self.say("autopilot_step", format!("文档没有更新：{e}")),
@@ -684,6 +723,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         self.say("autopilot_step", format!("{active} 个任务并行，开站会对齐：{}", who.iter().map(|e| e.name.clone()).collect::<Vec<_>>().join("、")));
         for w in &who {
             let _p = self.permit().await;
+            let _busy = self.busy_scope(&w.name);
             if let Err(e) = self.orch.meeting_reply(&m.id, w, &*self.approver).await {
                 self.say("autopilot_step", format!("站会：{}：{e}", w.name));
             }
