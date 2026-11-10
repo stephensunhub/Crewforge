@@ -126,7 +126,7 @@ function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: str
 }
 
 export function CompanyView({
-  tab, cards, projects, company, running, activities, onOpenWork, events, onOpenProject, onChanged, onError,
+  tab, cards, projects, company, running, activities, onOpenWork, events, onOpenProject, onGoScope, onChanged, onError,
 }: {
   tab: CompanyTab;
   cards: EmployeeCard[];
@@ -137,6 +137,7 @@ export function CompanyView({
   onOpenWork: (a: Activity) => void;
   events: EventRow[];
   onOpenProject: (id: string, tab?: ProjectTab) => void;
+  onGoScope: (k: "models" | "settings") => void;
   onChanged: () => void;
   onError: (m: string) => void;
 }) {
@@ -262,7 +263,7 @@ export function CompanyView({
     );
   }
 
-  if (tab === "interventions") return <InterventionsView projects={projects} events={events} onOpenWork={(pid, t) => onOpenProject(pid, t as ProjectTab)} onError={onError} />;
+  if (tab === "interventions") return <InterventionsView projects={projects} employees={cards.map((c) => c.employee)} running={running} events={events} onOpenWork={(pid, t) => onOpenProject(pid, t as ProjectTab)} onGoScope={onGoScope} onError={onError} />;
   if (tab === "manage") return <CompanyManage company={company} onSaved={onChanged} onError={onError} />;
   if (tab === "memory") return <MemoryView scope={{ layer: "company" }} events={events} onError={onError} />;
   return <Placeholder title="公司文档">公司级工程规范、技术选型原则、通用流程。存放在数据目录，供所有项目引用。</Placeholder>;

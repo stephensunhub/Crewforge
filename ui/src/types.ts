@@ -365,5 +365,6 @@ export interface StuckItem { employee: string; project_id: string | null; kind: 
 
 export interface BlockedMerge { task_id: string; employee: string; project_id: string | null; repo_path: string; title: string; kind: "blocked" | "conflict"; reason: string; files: string[]; since: number; dirty_files: string[]; can_retry: boolean }
 
-export interface Intervention { id: number; ts: number; category: string; label: string; title: string; detail: string; project_id: string | null; project_name: string | null; employee: string | null; tab: string }
+export interface IvAction { kind: "goto" | "models" | "settings" | "whitelist" | "merge" | "log"; label: string; tab: string | null; domain: string | null; task_id: string | null; employee: string | null }
+export interface Intervention { error: string | null; actions: IvAction[]; id: number; ts: number; category: string; label: string; title: string; detail: string; project_id: string | null; project_name: string | null; employee: string | null; tab: string }
 export interface InterventionReport { items: Intervention[]; counts: [string, string, number][] }

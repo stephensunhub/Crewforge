@@ -51,6 +51,8 @@ export default function App() {
   const [companyTab, setCompanyTab] = useState<CompanyTab>("employees");
   const [projectTab, setProjectTab] = useState<ProjectTab>("chat");
   const [error, setError] = useState("");
+  // 界面上弹出的出错提示也记进“人工介入”，关掉之后还能回头看（同样的内容 60 秒内只记一次）
+  useEffect(() => { if (error) void api.recordUiError(error).catch(() => undefined); }, [error]);
   const [inbox, setInbox] = useState(false);
   const [ready, setReady] = useState(false);
   const [pending, setPending] = useState<PendingDecision[]>([]);
@@ -370,7 +372,7 @@ export default function App() {
       <main className="content">
         {scope.kind === "company" && (
           <CompanyView tab={companyTab} cards={cards} projects={projects} company={company} running={running} activities={activities} onOpenWork={openWork} events={events}
-            onOpenProject={openProject} onChanged={() => void reloadStatic()} onError={setError} />
+            onOpenProject={openProject} onGoScope={(k) => { setScope({ kind: k }); setInbox(false); }} onChanged={() => void reloadStatic()} onError={setError} />
         )}
         {scope.kind === "project" && currentProject && (
           <ProjectView key={currentProject.project.id} tab={projectTab} summary={currentProject} employees={employees} events={events}

@@ -1585,3 +1585,9 @@ pub fn interventions(state: State<'_, AppState>, days: i64, category: Option<Str
 pub fn add_intervention_note(state: State<'_, AppState>, project_id: Option<String>, text: String) -> CmdResult<()> {
     state.db.add_intervention_note(project_id.as_deref().filter(|p| !p.is_empty()), &text).map_err(err)
 }
+
+/// 记录界面上弹出的出错提示，进入人工介入历史。
+#[tauri::command]
+pub fn record_ui_error(state: State<'_, AppState>, text: String) {
+    let _ = state.db.record_ui_error(&text);
+}

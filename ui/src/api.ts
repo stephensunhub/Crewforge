@@ -54,6 +54,7 @@ export const api = {
   addSandboxDomain: (domain: string) => invoke<string>("add_sandbox_domain", { domain }),
   removeSandboxDomain: (domain: string) => invoke<void>("remove_sandbox_domain", { domain }),
   interventions: (days: number, category: string | null) => invoke<InterventionReport>("interventions", { days, category }),
+  recordUiError: (text: string) => invoke<void>("record_ui_error", { text }),
   addInterventionNote: (projectId: string | null, text: string) => invoke<void>("add_intervention_note", { projectId, text }),
   blockedMerges: () => invoke<BlockedMerge[]>("blocked_merges"),
   stuckItems: () => invoke<StuckItem[]>("stuck_items"),

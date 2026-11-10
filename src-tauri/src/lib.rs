@@ -99,6 +99,7 @@ pub fn run() {
             commands::stuck_items,
             commands::blocked_merges,
             commands::interventions,
+            commands::record_ui_error,
             commands::add_intervention_note,
             commands::start_autopilot,
             commands::get_autopilot_resume,
