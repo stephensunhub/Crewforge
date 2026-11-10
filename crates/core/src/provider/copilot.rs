@@ -209,7 +209,7 @@ impl CopilotProcess {
                 }
             }
         });
-        let registered = child.id().map(crate::proc_registry::register);
+        let registered = child.id().and_then(crate::proc_registry::register);
         Ok(Self { child, _registered: registered, stdout, pending: VecDeque::new(), parser: CopilotParser::new(spec.session_id.clone()), stderr_tail })
     }
 

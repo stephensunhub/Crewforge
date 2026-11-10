@@ -11,11 +11,22 @@ use std::sync::{Mutex, OnceLock};
 struct Reg {
     pids: BTreeSet<i32>,
     file: Option<PathBuf>,
+    /// 应用正在退出：之后再起的员工进程不再登记、直接终止（否则会成为没人管的孤儿）
+    shutdown: bool,
+}
+
+impl Reg {
+    /// 登记一个新进程；已经在退出中就不登记，返回 false。
+    fn add(&mut self, pid: i32) -> bool {
+        if self.shutdown { return false; }
+        self.pids.insert(pid);
+        true
+    }
 }
 
 fn reg() -> &'static Mutex<Reg> {
     static R: OnceLock<Mutex<Reg>> = OnceLock::new();
-    R.get_or_init(|| Mutex::new(Reg { pids: BTreeSet::new(), file: None }))
+    R.get_or_init(|| Mutex::new(Reg { pids: BTreeSet::new(), file: None, shutdown: false }))
 }
 
 fn persist(r: &Reg) {
@@ -36,11 +47,16 @@ pub fn init(data_dir: &Path) -> usize {
 }
 
 /// 登记一个员工进程；返回的守卫在进程结束（或被丢弃）时自动取消登记。
-pub fn register(pid: u32) -> Registered {
+/// 应用已经在退出时返回 None，并把这个进程直接终止（退出清理之后又起的进程，没人会再管它）。
+pub fn register(pid: u32) -> Option<Registered> {
     let mut r = reg().lock().unwrap();
-    r.pids.insert(pid as i32);
+    if !r.add(pid as i32) {
+        drop(r);
+        kill_group(pid as i32, libc::SIGKILL);
+        return None;
+    }
     persist(&r);
-    Registered { pid: pid as i32 }
+    Some(Registered { pid: pid as i32 })
 }
 
 pub struct Registered {
@@ -79,7 +95,11 @@ fn alive(pid: i32) -> bool {
 
 /// 终止所有登记的员工进程（应用退出时调用）：先请它们退出，稍等仍在的再强制终止。
 pub fn terminate_all() -> usize {
-    let pids: Vec<i32> = reg().lock().unwrap().pids.iter().copied().collect();
+    let pids: Vec<i32> = {
+        let mut r = reg().lock().unwrap();
+        r.shutdown = true; // 从这一刻起新起的进程不再登记，直接终止
+        r.pids.iter().copied().collect()
+    };
     for p in &pids { kill_group(*p, libc::SIGTERM); }
     std::thread::sleep(std::time::Duration::from_millis(300));
     for p in &pids { if alive(*p) { kill_group(*p, libc::SIGKILL); } }
@@ -136,11 +156,19 @@ mod tests {
     #[test]
     fn registered_processes_are_terminated_on_exit_and_unregistered_when_done() {
         let mut a = spawn_fake_cli();
-        let guard = register(a.id());
+        let guard = register(a.id()).expect("没在退出时可以登记");
         assert!(reg().lock().unwrap().pids.contains(&(a.id() as i32)));
         assert!(terminate_all() >= 1);
         assert!(a.wait().is_ok(), "退出时被终止");
         drop(guard);
         assert!(!reg().lock().unwrap().pids.contains(&(a.id() as i32)));
+    }
+
+    #[test]
+    fn a_process_started_after_shutdown_began_is_not_accepted() {
+        let mut r = Reg { pids: BTreeSet::new(), file: None, shutdown: false };
+        assert!(r.add(111) && r.pids.contains(&111));
+        r.shutdown = true;
+        assert!(!r.add(222) && !r.pids.contains(&222), "退出中：不登记，调用方要把它终止");
     }
 }

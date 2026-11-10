@@ -302,7 +302,7 @@ impl ClaudeProcess {
             }
         });
 
-        let registered = child.id().map(crate::proc_registry::register);
+        let registered = child.id().and_then(crate::proc_registry::register);
         let mut p = Self { child, _registered: registered, stdin: Some(stdin), stdout, pending: VecDeque::new(), stderr_tail };
         p.write_json(&json!({"type": "user", "message": {"role": "user", "content": prompt}}))
             .await?;
