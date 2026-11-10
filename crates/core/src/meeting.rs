@@ -188,11 +188,22 @@ impl Orchestrator {
             bail!("本场会议的 AI 发言已达上限（{}）。请由负责人或你来裁决，或结束会议", meeting.max_agent_replies);
         }
         let project = self.db.get_project(&meeting.project_id)?.context("项目不存在")?;
-        let prompt = self.build_meeting_prompt(&meeting, employee).await?;
+        let mut prompt = self.build_meeting_prompt(&meeting, employee).await?;
+        // 有进行中任务的员工，在自己的任务工作区（只读）里开会：改动在它的分支和独立工作区里，
+        // 主工作区上看不到没合并的文件，在那里核对会得出“文件全不在”的错误结论
+        let mut work_dir = Path::new(&project.path).to_path_buf();
+        if guest.is_none() {
+            if let Some(t) = self.db.active_task(&employee.id, &project.path)? {
+                if Path::new(&t.worktree_path).is_dir() {
+                    prompt = format!("[你的工作区] 你正在做的任务在分支 {} 的独立工作区 {}（当前目录）。会议是只读的：可以读文件、看 git 记录核对你的改动，但不能执行命令（构建、测试），也不能修改文件。\n没法验证的事就如实写“未验证：原因”，由项目负责人安排，不要写“需要人类”。\n\n{prompt}", t.branch, t.worktree_path);
+                    work_dir = Path::new(&t.worktree_path).to_path_buf();
+                }
+            }
+        }
         let seen_up_to = self.db.meeting_messages(meeting_id, 0)?.last().map(|m| m.id).unwrap_or(0);
 
         let cfg = TurnConfig {
-            project_path: Path::new(&project.path).to_path_buf(),
+            project_path: work_dir,
             task_id: None,
             project_id: None, // 不进入项目群聊的事件流，会议内容只在会议里显示
             read_only: true,

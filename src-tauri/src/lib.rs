@@ -19,6 +19,7 @@ pub fn run() {
             // 把事件表里的新增事件推送给界面。不用进程内的钩子：MCP 服务器和命令行是别的进程，
             // 它们写入的事件只有通过读库才看得到。
             let interrupted = db.take_orphaned_autopilot_runs().unwrap_or_default();
+            let _ = db.close_orphaned_standups();
             let st = state::AppState::new(db.clone(), &data_dir);
             let sched = st.sched.clone();
             let handle = app.handle().clone();

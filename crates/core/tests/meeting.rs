@@ -298,6 +298,10 @@ async fn standup_collects_facts_asks_each_active_member_once_and_flags_misalignm
     assert_eq!(prompts.len(), 2);
     assert!(prompts[0].contains("这是对齐会") && prompts[0].contains("系统记录的现状") && prompts[0].contains("不要做决策"));
     assert!(prompts[1].contains("做完了接口，依赖 bob 的字段名"), "bob 能看到 alice 的报告");
+    // 有进行中任务的人在自己的任务工作区里开会（只读），并被告知没法验证时写“未验证”而不是找人类
+    let alice_task = e.db.active_task(&alice.id, e.repo.to_str().unwrap()).unwrap().unwrap();
+    assert!(prompts[0].contains("[你的工作区]") && prompts[0].contains(&alice_task.worktree_path) && prompts[0].contains("不要写“需要人类”"), "{}", prompts[0]);
+    assert!(facts[0].content.contains("由项目负责人会后决定") && facts[0].content.contains("不要写“需要人类”"));
 
     // 对齐检查：同一文件被两人修改
     let check = e.orch.standup_alignment_check(&m.id).await.unwrap();

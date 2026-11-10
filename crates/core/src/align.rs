@@ -96,6 +96,11 @@ impl Db {
         Ok(())
     }
 
+    /// 应用启动时：上次被中断、还停在“进行中”的对齐会已经没有人在开了，直接结束，免得一直挂着。返回结束了几场。
+    pub fn close_orphaned_standups(&self) -> Result<usize> {
+        Ok(self.conn.lock().unwrap().execute("UPDATE meetings SET status = 'closed' WHERE kind = 'standup' AND status = 'open'", [])?)
+    }
+
     /// 该不该开一次对齐会：生效、有主持人、超过间隔，并且上次之后有变化（从没开过则只看间隔）。返回理由。
     pub fn align_due(&self, project_id: &str, now: i64) -> Result<Option<String>> {
         let cfg = self.align_config(project_id)?;
@@ -104,6 +109,13 @@ impl Db {
         }
         let last = cfg.last_at.unwrap_or(0);
         if now - last < cfg.interval_hours * 3_600_000 {
+            return Ok(None);
+        }
+        // 冷却：最近 30 分钟内已经开过（哪怕没开完，比如应用中途被关掉）就不再开，
+        // 否则每次重启都会因为“上次没有完成记录”而立刻再开一场
+        let recent: i64 = self.conn.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM meetings WHERE project_id = ?1 AND kind = 'standup' AND created_at > ?2", params![project_id, now - 30 * 60_000], |r| r.get(0))?;
+        if recent > 0 {
             return Ok(None);
         }
         if last == 0 {
@@ -229,5 +241,20 @@ mod tests {
         let c = parse_goal_check("{\"goal_ok\":false,\"note\":\"需求变了\",\"new_goal\":\"新目标\",\"reason\":\"r\"}").unwrap();
         assert_eq!((c.goal_ok, c.new_goal.as_deref()), (false, Some("新目标")));
         for bad in ["没有 json", "{\"goal_ok\":false,\"note\":\"x\"}", "{\"note\":\"x\"}", "{\"goal_ok\":true}"] { assert!(parse_goal_check(bad).is_err(), "{bad}"); }
+    }
+
+    #[test]
+    fn an_interrupted_meeting_does_not_make_the_next_start_open_another_one() {
+        let (db, p, alice, _) = setup(true);
+        let now = now_ms();
+        assert!(db.align_due(&p, now).unwrap().is_some(), "从没开过：到点就开");
+        // 开了一场但应用中途被关掉：没有完成记录，也不能一重启就再开一场
+        let m = db.create_meeting(&p, "standup", "对齐会", Some(&alice), None, &[], 4).unwrap();
+        assert_eq!(db.align_due(&p, now + 5 * 60_000).unwrap(), None, "30 分钟冷却");
+        // 重启时，停在进行中的对齐会被结束
+        assert_eq!(db.close_orphaned_standups().unwrap(), 1);
+        assert_eq!(db.get_meeting(&m.id).unwrap().unwrap().status, "closed");
+        assert_eq!(db.close_orphaned_standups().unwrap(), 0);
+        assert!(db.align_due(&p, now + 40 * 60_000).unwrap().is_some(), "冷却过后又可以开");
     }
 }
