@@ -404,3 +404,5 @@ button.u-cell:hover { background: var(--panel-2); }
 
 .action.focus { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
 .chip.on { color: var(--accent); border-color: var(--accent); }
+
+.tab-count { margin-left: 6px; font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--warn); color: #fff; }

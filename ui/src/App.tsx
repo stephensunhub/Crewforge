@@ -179,6 +179,15 @@ export default function App() {
   };
   const projectName = (id: string | null) => projects.find((p) => p.project.id === id)?.project.name ?? "";
 
+  const actionStamp = useMemo(() => events.reduce((m, e) => (["action_item_status", "meeting_minutes", "task_merged", "lead_decided_action", "lead_triaged_actions"].includes(e.kind) ? Math.max(m, e.id) : m), 0), [events]);
+  const projectIdForBadge = scope.kind === "project" ? scope.id : null;
+  const [liveActions, setLiveActions] = useState(0);
+  useEffect(() => {
+    if (!projectIdForBadge) { setLiveActions(0); return; }
+    let stale = false;
+    api.projectActions(projectIdForBadge).then((l) => { if (!stale) setLiveActions(l.filter((a) => a.status === "open" || a.status === "working").length); }).catch(() => {});
+    return () => { stale = true; };
+  }, [projectIdForBadge, actionStamp]);
   const tabs = scope.kind === "company" ? COMPANY_TABS : scope.kind === "project" ? PROJECT_TABS.filter(([k]) => k !== "onboarding" || (currentProject?.project.onboarding ?? "none") !== "none") : null;
   const activeTab = scope.kind === "company" ? companyTab : projectTab;
   // 角标是待处理事项的总数（不是“有待办的项目数”）：行动项、待验证经验、待确认的计划条目都按条数算
@@ -279,7 +288,7 @@ export default function App() {
       {tabs && (
         <div className="tabbar">
           {tabs.map(([k, label]) => (
-            <button key={k} className={`tab ${activeTab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
+            <button key={k} className={`tab ${activeTab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}{scope.kind === "project" && k === "actions" && liveActions > 0 && <span className="tab-count">{liveActions}</span>}</button>
           ))}
           {scope.kind === "project" && currentProject && <span className="hint tabbar-path" title={currentProject.project.path}>{currentProject.project.path}</span>}
         </div>
