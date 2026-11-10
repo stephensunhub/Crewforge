@@ -101,6 +101,15 @@ impl Db {
         Ok(self.conn.lock().unwrap().execute("UPDATE meetings SET status = 'closed' WHERE kind = 'standup' AND status = 'open'", [])?)
     }
 
+    /// 应用启动时：自主推进自动发起的评审会，如果只有那条自动发出的请求、没有任何员工回复，
+    /// 说明评审人那一轮被打断了（应用重启或退出），没人会再收尾，直接结束。有员工发言的不动；人手动发起的也不动。返回结束了几场。
+    pub fn close_orphaned_reviews(&self) -> Result<usize> {
+        Ok(self.conn.lock().unwrap().execute(
+            "UPDATE meetings SET status = 'closed' WHERE kind = 'code_review' AND status = 'open'
+               AND EXISTS (SELECT 1 FROM meeting_messages m WHERE m.meeting_id = meetings.id AND m.author_kind = 'human' AND m.content LIKE '%这条消息由负责人流程自动发出%')
+               AND NOT EXISTS (SELECT 1 FROM meeting_messages m WHERE m.meeting_id = meetings.id AND m.author_kind = 'employee')", [])?)
+    }
+
     /// 该不该开一次对齐会：生效、有主持人、超过间隔，并且上次之后有变化（从没开过则只看间隔）。返回理由。
     pub fn align_due(&self, project_id: &str, now: i64) -> Result<Option<String>> {
         let cfg = self.align_config(project_id)?;
@@ -256,5 +265,29 @@ mod tests {
         assert_eq!(db.get_meeting(&m.id).unwrap().unwrap().status, "closed");
         assert_eq!(db.close_orphaned_standups().unwrap(), 0);
         assert!(db.align_due(&p, now + 40 * 60_000).unwrap().is_some(), "冷却过后又可以开");
+    }
+
+    #[test]
+    fn interrupted_auto_reviews_with_no_reply_are_closed_on_startup_but_real_ones_are_kept() {
+        let (db, p, alice, bob) = setup(true);
+        let auto = "@Ollama-3-QA 请评审改动。（这条消息由负责人流程自动发出）";
+        // 1) 自动发起、评审人没来得及回复：被打断的
+        let orphan = db.create_meeting(&p, "code_review", "评审：A", Some(&alice), None, &[], 4).unwrap();
+        db.post_message(&orphan.id, "human", None, auto).unwrap();
+        // 2) 自动发起、评审人已经回复了：有内容，不动
+        let replied = db.create_meeting(&p, "code_review", "评审：B", Some(&alice), None, &[], 4).unwrap();
+        db.post_message(&replied.id, "human", None, auto).unwrap();
+        db.post_message(&replied.id, "employee", Some(&bob), "有条件通过").unwrap();
+        // 3) 人手动发起的评审，还没人回复：不是自动发的，不动
+        let manual = db.create_meeting(&p, "code_review", "评审：C", Some(&alice), None, &[], 4).unwrap();
+        db.post_message(&manual.id, "human", None, "@bob 帮我看看这个改动").unwrap();
+        // 4) 别的类型的会议，哪怕有同样的消息，也不动
+        let design = db.create_meeting(&p, "design", "方案讨论", Some(&alice), None, &[], 4).unwrap();
+        db.post_message(&design.id, "human", None, auto).unwrap();
+
+        assert_eq!(db.close_orphaned_reviews().unwrap(), 1);
+        let st = |id: &str| db.get_meeting(id).unwrap().unwrap().status;
+        assert_eq!((st(&orphan.id).as_str(), st(&replied.id).as_str(), st(&manual.id).as_str(), st(&design.id).as_str()), ("closed", "open", "open", "open"));
+        assert_eq!(db.close_orphaned_reviews().unwrap(), 0, "再跑一次没有新的");
     }
 }

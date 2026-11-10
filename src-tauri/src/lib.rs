@@ -23,6 +23,7 @@ pub fn run() {
             // 它们写入的事件只有通过读库才看得到。
             let interrupted = db.take_orphaned_autopilot_runs().unwrap_or_default();
             let _ = db.close_orphaned_standups();
+            let _ = db.close_orphaned_reviews();
             let st = state::AppState::new(db.clone(), &data_dir);
             let sched = st.sched.clone();
             let handle = app.handle().clone();
