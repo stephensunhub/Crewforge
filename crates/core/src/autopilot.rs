@@ -297,6 +297,8 @@ pub const MAX_ACTIONS_PER_TASK: usize = 3;
 pub const SOFT_BUDGET_RATIO: f64 = 0.8;
 /// 给收尾（整理记忆、更新文档）留的调用数：开始新条目前先扣掉，保证预算用尽时收尾也能做。
 pub const WRAP_UP_RESERVE: usize = 4;
+/// 批次开始时，“之后再说”的行动项积压到这么多才先整理（整理是串行的，会让其他人等）。
+pub const START_TRIAGE_BACKLOG: usize = 12;
 
 fn bigrams(s: &str) -> std::collections::HashSet<(char, char)> {
     let cs: Vec<char> = s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect();
@@ -894,8 +896,11 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
 
     pub async fn run(self: Arc<Self>) -> AutopilotRun {
         self.requeue_orphaned_items();
-        // 已经积压的行动项，批次一开始先清一遍
-        self.maybe_triage(true).await;
+        // 积压很多（≥ START_TRIAGE_BACKLOG 条）时，批次一开始先清一遍；不多就先开工，不让负责人整理的这十几分钟
+        // （本地模型很慢）挡住所有人，之后每合并 2 个条目、积压够多时会再整理
+        if self.orch.later_actions(&self.project_id).map(|v| v.len()).unwrap_or(0) >= START_TRIAGE_BACKLOG {
+            self.maybe_triage(true).await;
+        }
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();
         let mut ruled: HashSet<String> = HashSet::new();
