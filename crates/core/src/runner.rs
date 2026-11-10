@@ -144,7 +144,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
 
     db.set_session_status(&session.id, "running")?;
     db.append_event_for(pid, "task_started", eid, sid, &json!({
-        "prompt": cfg.log_prompt.as_deref().unwrap_or(prompt), "resume": session.started, "origin": cfg.origin,
+        "prompt": cfg.log_prompt.as_deref().unwrap_or(prompt), "resume": session.started, "origin": cfg.origin, "project": cfg.attr_project,
         "task_id": cfg.task_id, "meeting_id": cfg.meeting_id,
     }))?;
 

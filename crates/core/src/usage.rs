@@ -471,9 +471,13 @@ pub struct Activity {
 
 /// 工作类型对应的页面：会议发言去会议页，导入评估去导入页，起草计划去计划页，有任务的去任务页，其余去群聊。
 pub fn work_tab(what: &str, has_meeting: bool, has_task: bool) -> &'static str {
-    if has_meeting { "meetings" }
+    if has_meeting || what.starts_with("会议") || what.contains("纪要") || what.contains("对齐会") { "meetings" }
     else if what.starts_with("导入评估") { "onboarding" }
-    else if what == "起草计划" { "plan" }
+    else if what.contains("裁决") { "issues" }
+    else if what.contains("计划") && !has_task { "plan" }
+    else if what.contains("行动项") { "actions" }
+    else if what.contains("记忆") { "memory" }
+    else if what.contains("文档") { "docs" }
     else if has_task { "tasks" }
     else { "chat" }
 }
@@ -512,6 +516,16 @@ impl Db {
             let tool: Option<(String, i64)> = conn.query_row(
                 "SELECT json_extract(payload, '$.tool'), ts FROM events WHERE employee_id = ?1 AND kind = 'tool_use' AND id > ?2 ORDER BY id DESC LIMIT 1",
                 params![eid, sid], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+            // 所属项目：事件本身 → 任务开始时记的项目（系统发起的调用不进群聊，事件里没有项目）→ 会议所在项目
+            // → 员工只在一个项目里时就是那个项目（兼容没有记录项目的旧事件）
+            let pid = pid
+                .or_else(|| v["project"].as_str().map(String::from))
+                .or_else(|| v["meeting_id"].as_str().and_then(|m| conn.query_row("SELECT project_id FROM meetings WHERE id = ?1", [m], |r| r.get::<_, String>(0)).optional().ok().flatten()))
+                .or_else(|| {
+                    let mut st = conn.prepare("SELECT project_id FROM project_members WHERE employee_id = ?1").ok()?;
+                    let ids: Vec<String> = st.query_map([&eid], |r| r.get(0)).ok()?.filter_map(|x| x.ok()).collect();
+                    (ids.len() == 1).then(|| ids[0].clone())
+                });
             let pid_for_link = pid.clone();
             let what_for_tab = what.clone();
             let project = match pid {
@@ -702,5 +716,44 @@ mod work_tab_tests {
         assert_eq!(work_tab("起草计划", false, false), "plan");
         assert_eq!(work_tab("计划任务", false, true), "tasks");
         assert_eq!(work_tab("任务", false, false), "chat");
+        assert_eq!(work_tab("负责人裁决", false, false), "issues");
+        assert_eq!(work_tab("调整计划", false, false), "plan");
+        assert_eq!(work_tab("整理行动项", false, false), "actions");
+        assert_eq!(work_tab("整理记忆", false, false), "memory");
+        assert_eq!(work_tab("撰写文档", false, false), "docs");
+        assert_eq!(work_tab("纪要起草", false, false), "meetings");
+        assert_eq!(work_tab("对齐会目标检查", false, false), "meetings");
+    }
+}
+
+#[cfg(test)]
+mod activity_link_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn system_started_work_still_knows_which_project_and_page_to_open() {
+        let db = Db::open_memory().unwrap();
+        let p1 = db.create_project("P1", "", "/tmp/link-p1").unwrap().id;
+        let p2 = db.create_project("P2", "", "/tmp/link-p2").unwrap().id;
+        let lead = db.add_employee("lead", "负责人", "x").unwrap();
+        let solo = db.add_employee("solo", "工程师", "x").unwrap();
+        db.add_member(&p1, &lead.id, "lead").unwrap();
+        db.add_member(&p2, &lead.id, "developer").unwrap();
+        db.add_member(&p1, &solo.id, "developer").unwrap();
+
+        // 系统发起的调用不进群聊：事件没有项目，但任务开始时记了所属项目
+        db.append_event("task_started", Some(&lead.id), None, &json!({"prompt": "[负责人裁决] Dashboard 空库语义", "project": p2, "origin": "system"})).unwrap();
+        let a = &db.activities(&["lead".to_string()]).unwrap()[0];
+        assert_eq!((a.project_id.as_deref(), a.tab.as_str(), a.what.as_str()), (Some(p2.as_str()), "issues", "负责人裁决"));
+
+        // 旧事件没有记录项目：员工只在一个项目里时，就是那个项目
+        db.append_event("task_started", Some(&solo.id), None, &json!({"prompt": "[整理记忆] P1"})).unwrap();
+        let b = &db.activities(&["solo".to_string()]).unwrap()[0];
+        assert_eq!((b.project_id.as_deref(), b.tab.as_str()), (Some(p1.as_str()), "memory"));
+
+        // 在多个项目里又没有记录：不乱猜
+        db.append_event("task_started", Some(&lead.id), None, &json!({"prompt": "[整理记忆] ?"})).unwrap();
+        assert_eq!(db.activities(&["lead".to_string()]).unwrap()[0].project_id, None);
     }
 }

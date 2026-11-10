@@ -194,7 +194,7 @@ export default function App() {
   };
   // 点“工作中”的员工：跳到 TA 正在做的事所在的页面（会议、导入、计划、任务或群聊）
   const openWork = (a: Activity) => {
-    if (!a.project_id) return;
+    if (!a.project_id) { setError(`无法跳转：这项工作（${a.what}）没有记录所属项目，员工在多个项目里时无法判断是哪一个。`); return; }
     openProject(a.project_id, a.tab as ProjectTab);
     if (a.meeting_id) setMeetingFocus(a.meeting_id);
   };
