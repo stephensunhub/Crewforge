@@ -162,7 +162,14 @@ pub fn move_to_trash(dir: &Path) -> Result<PathBuf> {
     let trash = home.join(".Trash");
     std::fs::create_dir_all(&trash)?;
     let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
-    let dest = trash.join(format!("{name}-{}", now_ms()));
+    // 目标名已经存在（同一毫秒移动了同名文件夹）就换一个，不覆盖也不失败
+    let stamp = now_ms();
+    let mut dest = trash.join(format!("{name}-{stamp}"));
+    let mut n = 1;
+    while dest.exists() {
+        dest = trash.join(format!("{name}-{stamp}-{n}"));
+        n += 1;
+    }
     std::fs::rename(dir, &dest).with_context(|| format!("无法移到废纸篓（可能在另一块磁盘上），请手动删除：{}", dir.display()))?;
     Ok(dest)
 }
