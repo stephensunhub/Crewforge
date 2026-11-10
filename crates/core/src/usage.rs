@@ -463,6 +463,19 @@ pub struct Activity {
     pub last_tool: Option<String>,
     pub last_tool_at: Option<i64>,
     pub origin: String,
+    /// 点击后该去哪：项目、页签（chat | tasks | meetings | onboarding | plan）、会议
+    pub project_id: Option<String>,
+    pub tab: String,
+    pub meeting_id: Option<String>,
+}
+
+/// 工作类型对应的页面：会议发言去会议页，导入评估去导入页，起草计划去计划页，有任务的去任务页，其余去群聊。
+pub fn work_tab(what: &str, has_meeting: bool, has_task: bool) -> &'static str {
+    if has_meeting { "meetings" }
+    else if what.starts_with("导入评估") { "onboarding" }
+    else if what == "起草计划" { "plan" }
+    else if has_task { "tasks" }
+    else { "chat" }
 }
 
 /// 把任务开始事件里的提示归类成人能看懂的工作类型和摘要。
@@ -499,6 +512,8 @@ impl Db {
             let tool: Option<(String, i64)> = conn.query_row(
                 "SELECT json_extract(payload, '$.tool'), ts FROM events WHERE employee_id = ?1 AND kind = 'tool_use' AND id > ?2 ORDER BY id DESC LIMIT 1",
                 params![eid, sid], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+            let pid_for_link = pid.clone();
+            let what_for_tab = what.clone();
             let project = match pid {
                 Some(p) => conn.query_row("SELECT name FROM projects WHERE id = ?1", [p], |r| r.get(0)).optional()?,
                 None => None,
@@ -507,6 +522,8 @@ impl Db {
                 employee: name.clone(), what, subject, project, started_at: ts,
                 last_tool: tool.as_ref().map(|t| t.0.clone()), last_tool_at: tool.map(|t| t.1),
                 origin: v["origin"].as_str().unwrap_or("").to_string(),
+                tab: work_tab(&what_for_tab, v["meeting_id"].is_string(), v["task_id"].is_string()).to_string(),
+                project_id: pid_for_link, meeting_id: v["meeting_id"].as_str().map(String::from),
             });
         }
         Ok(out)
@@ -672,5 +689,18 @@ mod log_tests {
         assert_eq!(done.last_text.as_deref(), Some("做完了"));
         assert_eq!(db.employee_log(&e.id, 10, false).unwrap()[0].status, "interrupted", "员工不忙时没有结束标记 → 被中断");
         assert_eq!(db.employee_log(&e.id, 2, false).unwrap().len(), 2, "只取最近 2 次");
+    }
+}
+
+#[cfg(test)]
+mod work_tab_tests {
+    use super::work_tab;
+    #[test]
+    fn working_employees_link_to_the_page_where_the_work_is() {
+        assert_eq!(work_tab("会议发言", true, false), "meetings");
+        assert_eq!(work_tab("导入评估（qa）", false, false), "onboarding");
+        assert_eq!(work_tab("起草计划", false, false), "plan");
+        assert_eq!(work_tab("计划任务", false, true), "tasks");
+        assert_eq!(work_tab("任务", false, false), "chat");
     }
 }

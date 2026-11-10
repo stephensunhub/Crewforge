@@ -114,13 +114,13 @@ export function ReasonButton({ label, placeholder, required = false, className =
 const ago = (ts: number) => { const m = Math.max(0, Math.round((Date.now() - ts) / 60000)); return m < 1 ? "刚刚" : m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 小时 ${m % 60} 分钟`; };
 
 /** 员工此刻在做什么：类型、内容、已经多久、最近一个动作。 */
-export function ActivityLine({ a, showProject }: { a: Activity | undefined; showProject?: boolean }) {
+export function ActivityLine({ a, showProject, onOpen }: { a: Activity | undefined; showProject?: boolean; onOpen?: (a: Activity) => void }) {
   if (!a) return <div className="hint">正在工作（详情加载中…）</div>;
   const quiet = a.last_tool_at ? Math.round((Date.now() - a.last_tool_at) / 60000) : null;
   return (
-    <div className="activity" title={a.subject}>
+    <div className={`activity${onOpen ? " clickable" : ""}`} title={onOpen ? `点击跳到：${a.subject}` : a.subject} role={onOpen ? "button" : undefined} onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(a); } : undefined}>
       <b>{a.what}</b>{a.origin === "autopilot" ? "（自主推进派的）" : ""}{showProject && a.project ? ` · ${a.project}` : ""} · {short(a.subject, 40)}
-      <div className="hint">已 {ago(a.started_at)}{a.last_tool ? ` · 最近动作 ${a.last_tool}（${quiet === 0 ? "刚刚" : `${quiet} 分钟前`}）` : " · 还没有动作（可能在等模型首轮响应）"}{quiet !== null && quiet >= 10 ? " · ⚠ 已经 10 分钟没有新动作" : ""}</div>
+      <div className="hint">已 {ago(a.started_at)}{a.last_tool ? ` · 最近动作 ${a.last_tool}（${quiet === 0 ? "刚刚" : `${quiet} 分钟前`}）` : " · 还没有动作（可能在等模型首轮响应）"}{quiet !== null && quiet >= 10 ? " · ⚠ 已经 10 分钟没有新动作" : ""}{onOpen ? " · 点击查看 ›" : ""}</div>
     </div>
   );
 }

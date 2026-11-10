@@ -124,7 +124,7 @@ function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: str
 }
 
 export function CompanyView({
-  tab, cards, projects, company, running, activities, events, onOpenProject, onChanged, onError,
+  tab, cards, projects, company, running, activities, onOpenWork, events, onOpenProject, onChanged, onError,
 }: {
   tab: CompanyTab;
   cards: EmployeeCard[];
@@ -132,6 +132,7 @@ export function CompanyView({
   company: Company | null;
   running: string[];
   activities: Activity[];
+  onOpenWork: (a: Activity) => void;
   events: EventRow[];
   onOpenProject: (id: string) => void;
   onChanged: () => void;
@@ -174,7 +175,7 @@ export function CompanyView({
                   </div>
                   <span className={`status ${busy ? "run" : ""}`}>{busy ? "● 工作中" : "○ 空闲"}</span>
                 </div>
-                {busy && <ActivityLine a={activities.find((x) => x.employee === c.employee.name)} showProject />}
+                {busy && <ActivityLine a={activities.find((x) => x.employee === c.employee.name)} showProject onOpen={onOpenWork} />}
                 <div className="card-persona">{c.employee.persona}</div>
                 <div className="card-meta">
                   {c.projects.length === 0 ? <span className="hint">未参与任何项目</span> : c.projects.map(([id, n]) => (

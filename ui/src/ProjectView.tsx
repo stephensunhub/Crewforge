@@ -111,7 +111,7 @@ export function ProjectView({
     );
   if (tab === "members")
     return (
-      <MembersTab project={summary} members={members} employees={employees} running={running} activities={activities}
+      <MembersTab project={summary} members={members} employees={employees} running={running} activities={activities} onOpenWork={(a) => { onGoTab(a.tab as ProjectTab); if (a.meeting_id) onOpenMeeting(a.meeting_id); }}
         onChanged={() => { void refreshMembers(); onChanged(); }} onError={onError} onArchived={onLeave} />
     );
   if (tab === "issues")
@@ -136,12 +136,13 @@ export function ProjectView({
   return <DocsView projectId={project.id} hasLead={members.some((m) => m.role === "lead")} onError={onError} />;
 }
 
-function MembersTab({ project, members, employees, running, activities, onChanged, onError, onArchived }: {
+function MembersTab({ project, members, employees, running, activities, onOpenWork, onChanged, onError, onArchived }: {
   project: ProjectSummary;
   members: Member[];
   employees: Employee[];
   running: string[];
   activities: Activity[];
+  onOpenWork: (a: Activity) => void;
   onChanged: () => void;
   onError: (m: string) => void;
   onArchived: () => void;
@@ -173,7 +174,7 @@ function MembersTab({ project, members, employees, running, activities, onChange
               <div style={{ minWidth: 0 }}><b>{m.name}</b><div className="hint">{m.title}</div></div>
               <span className={`status ${running.includes(m.name) ? "run" : ""}`}>{running.includes(m.name) ? "● 工作中" : "○ 空闲"}</span>
             </div>
-            {running.includes(m.name) && <ActivityLine a={activities.find((x) => x.employee === m.name)} />}
+            {running.includes(m.name) && <ActivityLine a={activities.find((x) => x.employee === m.name)} onOpen={onOpenWork} />}
             <div className="card-foot">
               <select value={m.role} onChange={(e) => void guard(() => api.setMemberRole(p.id, m.employee_id, e.target.value as ProjectRole))}>
                 {ROLE_ORDER.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}

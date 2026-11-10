@@ -408,3 +408,5 @@ button.u-cell:hover { background: var(--panel-2); }
 .tab-count { margin-left: 6px; font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--warn); color: #fff; }
 .activity { margin: 8px 0 2px; padding: 6px 8px; border-radius: 8px; background: color-mix(in srgb, var(--accent, #4c8dff) 10%, transparent); font-size: 12.5px; }
 .codeblock { margin: 4px 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--text, #888) 8%, transparent); font-size: 12px; }
+.activity.clickable { cursor: pointer; }
+.activity.clickable:hover { outline: 1px solid var(--accent, #4c8dff); }

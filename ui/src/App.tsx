@@ -192,6 +192,12 @@ export default function App() {
     setProjectTab(tab ?? (importing ? "onboarding" : "chat"));
     setScope({ kind: "project", id });
   };
+  // 点“工作中”的员工：跳到 TA 正在做的事所在的页面（会议、导入、计划、任务或群聊）
+  const openWork = (a: Activity) => {
+    if (!a.project_id) return;
+    openProject(a.project_id, a.tab as ProjectTab);
+    if (a.meeting_id) setMeetingFocus(a.meeting_id);
+  };
   const projectName = (id: string | null) => projects.find((p) => p.project.id === id)?.project.name ?? "";
 
   const actionStamp = useMemo(() => events.reduce((m, e) => (["action_item_status", "meeting_minutes", "task_merged", "lead_decided_action", "lead_triaged_actions"].includes(e.kind) ? Math.max(m, e.id) : m), 0), [events]);
@@ -320,7 +326,7 @@ export default function App() {
 
       <main className="content">
         {scope.kind === "company" && (
-          <CompanyView tab={companyTab} cards={cards} projects={projects} company={company} running={running} activities={activities} events={events}
+          <CompanyView tab={companyTab} cards={cards} projects={projects} company={company} running={running} activities={activities} onOpenWork={openWork} events={events}
             onOpenProject={openProject} onChanged={() => void reloadStatic()} onError={setError} />
         )}
         {scope.kind === "project" && currentProject && (

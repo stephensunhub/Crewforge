@@ -353,7 +353,7 @@ export interface Endpoint { id: string; name: string; base_url: string; models: 
 export interface EndpointInput { name: string; base_url: string; models: string[]; extra_env: Record<string, string>; max_concurrency: number; context_tokens: number; token: string | null }
 export interface EndpointTest { ok: boolean; millis: number; detail: string }
 
-export interface Activity { employee: string; what: string; subject: string; project: string | null; started_at: number; last_tool: string | null; last_tool_at: number | null; origin: string }
+export interface Activity { employee: string; what: string; subject: string; project: string | null; started_at: number; last_tool: string | null; last_tool_at: number | null; origin: string; project_id: string | null; tab: string; meeting_id: string | null }
 
 export interface LogTool { ts: number; tool: string; summary: string }
 export interface LogRun { started_at: number; ended_at: number | null; what: string; subject: string; prompt: string; project: string | null; origin: string; status: "running" | "done" | "failed" | "interrupted"; error: string | null; duration_ms: number | null; tool_count: number; tools: LogTool[]; last_text: string | null; cost_usd: number | null; tokens: number | null; model: string | null }
