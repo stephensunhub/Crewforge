@@ -364,3 +364,6 @@ export interface DomainCheck { domain: string; warning: string | null; already: 
 export interface StuckItem { employee: string; project_id: string | null; kind: "network" | "bypass" | "silent" | "long"; title: string; detail: string; hosts: string[]; elapsed_min: number; since: number; tab: string; meeting_id: string | null }
 
 export interface BlockedMerge { task_id: string; employee: string; project_id: string | null; repo_path: string; title: string; kind: "blocked" | "conflict"; reason: string; files: string[]; since: number; dirty_files: string[]; can_retry: boolean }
+
+export interface Intervention { id: number; ts: number; category: string; label: string; title: string; detail: string; project_id: string | null; project_name: string | null; employee: string | null; tab: string }
+export interface InterventionReport { items: Intervention[]; counts: [string, string, number][] }

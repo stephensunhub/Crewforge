@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Activity, SandboxDomains, DomainCheck, StuckItem, BlockedMerge, LogRun, Endpoint, EndpointInput, EndpointTest,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Activity, SandboxDomains, DomainCheck, StuckItem, BlockedMerge, InterventionReport, LogRun, Endpoint, EndpointInput, EndpointTest,
 } from "./types";
 
 export const api = {
@@ -53,6 +53,8 @@ export const api = {
   checkSandboxDomain: (domain: string) => invoke<DomainCheck>("check_sandbox_domain", { domain }),
   addSandboxDomain: (domain: string) => invoke<string>("add_sandbox_domain", { domain }),
   removeSandboxDomain: (domain: string) => invoke<void>("remove_sandbox_domain", { domain }),
+  interventions: (days: number, category: string | null) => invoke<InterventionReport>("interventions", { days, category }),
+  addInterventionNote: (projectId: string | null, text: string) => invoke<void>("add_intervention_note", { projectId, text }),
   blockedMerges: () => invoke<BlockedMerge[]>("blocked_merges"),
   stuckItems: () => invoke<StuckItem[]>("stuck_items"),
   /** 加入沙箱白名单：先检查，共享托管域名要用户确认风险；返回是否已加入 */

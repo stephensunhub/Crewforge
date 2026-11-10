@@ -98,6 +98,8 @@ pub fn run() {
             commands::remove_sandbox_domain,
             commands::stuck_items,
             commands::blocked_merges,
+            commands::interventions,
+            commands::add_intervention_note,
             commands::start_autopilot,
             commands::get_autopilot_resume,
             commands::set_autopilot_resume,

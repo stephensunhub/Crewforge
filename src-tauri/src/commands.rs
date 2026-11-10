@@ -1540,7 +1540,10 @@ pub fn remove_sandbox_domain(state: State<'_, AppState>, domain: String) -> CmdR
 #[tauri::command]
 pub fn stuck_items(state: State<'_, AppState>) -> CmdResult<Vec<crewforge_core::stuck::StuckItem>> {
     let names: Vec<String> = state.running.lock().unwrap().iter().cloned().collect();
-    state.db.stuck_items(&names, crewforge_core::db::now_ms()).map_err(err)
+    let items = state.db.stuck_items(&names, crewforge_core::db::now_ms()).map_err(err)?;
+    // 记进人工介入历史：待办消失后还能回头看
+    let _ = state.db.record_stuck(&items);
+    Ok(items)
 }
 
 #[derive(serde::Serialize)]
@@ -1568,4 +1571,17 @@ pub async fn blocked_merges(state: State<'_, AppState>) -> CmdResult<Vec<Blocked
         out.push(BlockedMergeView { item, dirty_files, can_retry });
     }
     Ok(out)
+}
+
+/// 人工介入中心：最近 `days` 天里每一次需要人出手的事，以及各类别的数量。
+#[tauri::command]
+pub fn interventions(state: State<'_, AppState>, days: i64, category: Option<String>) -> CmdResult<crewforge_core::interventions::InterventionReport> {
+    let since = crewforge_core::db::now_ms() - days.clamp(1, 365) * 24 * 3_600_000;
+    state.db.interventions(since, category.as_deref().filter(|c| !c.is_empty()), 300).map_err(err)
+}
+
+/// 手动记一笔：人在应用之外做的事（比如在终端里手动执行了命令）。
+#[tauri::command]
+pub fn add_intervention_note(state: State<'_, AppState>, project_id: Option<String>, text: String) -> CmdResult<()> {
+    state.db.add_intervention_note(project_id.as_deref().filter(|p| !p.is_empty()), &text).map_err(err)
 }

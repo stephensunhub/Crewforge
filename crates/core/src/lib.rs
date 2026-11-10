@@ -11,6 +11,7 @@ pub mod docs;
 pub mod endpoint;
 pub mod duties;
 pub mod guest;
+pub mod interventions;
 pub mod lead_actions;
 pub mod lead_triage;
 pub mod mcp;

@@ -5,11 +5,13 @@ import { api } from "./api";
 import { ActivityLine, Avatar, Field, Modal, Placeholder, basename } from "./common";
 import { MemoryView } from "./MemoryView";
 import { EmployeeLog } from "./EmployeeLog";
+import { InterventionsView } from "./InterventionsView";
+import type { ProjectTab } from "./ProjectView";
 import type { Activity, Company, Endpoint, EmployeeCard, EventRow, ModelsOverview, ProjectSummary } from "./types";
 
-export type CompanyTab = "employees" | "projects" | "memory" | "docs" | "manage";
+export type CompanyTab = "employees" | "projects" | "interventions" | "memory" | "docs" | "manage";
 export const COMPANY_TABS: [CompanyTab, string][] = [
-  ["employees", "员工"], ["projects", "项目"], ["memory", "记忆"], ["docs", "文档"], ["manage", "管理"],
+  ["employees", "员工"], ["projects", "项目"], ["interventions", "人工介入"], ["memory", "记忆"], ["docs", "文档"], ["manage", "管理"],
 ];
 
 const ROLES = ["全栈工程师", "QA 测试工程师", "架构师 / CTO", "其他"];
@@ -134,7 +136,7 @@ export function CompanyView({
   activities: Activity[];
   onOpenWork: (a: Activity) => void;
   events: EventRow[];
-  onOpenProject: (id: string) => void;
+  onOpenProject: (id: string, tab?: ProjectTab) => void;
   onChanged: () => void;
   onError: (m: string) => void;
 }) {
@@ -260,6 +262,7 @@ export function CompanyView({
     );
   }
 
+  if (tab === "interventions") return <InterventionsView projects={projects} events={events} onOpenWork={(pid, t) => onOpenProject(pid, t as ProjectTab)} onError={onError} />;
   if (tab === "manage") return <CompanyManage company={company} onSaved={onChanged} onError={onError} />;
   if (tab === "memory") return <MemoryView scope={{ layer: "company" }} events={events} onError={onError} />;
   return <Placeholder title="公司文档">公司级工程规范、技术选型原则、通用流程。存放在数据目录，供所有项目引用。</Placeholder>;
