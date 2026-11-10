@@ -81,7 +81,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
                 // 自建端点的员工换会话前先写交接摘要；订阅员工窗口大、换得少，不额外多花一次调用
                 if let Some(r) = &resolved {
                     // 这一步要把旧上下文整个重读一遍再生成摘要，本地模型上常要几分钟，期间没有别的动静：先说明，别让人干等
-                    let note = format!("{} 的会话上下文已达 {}K（上限 {}K），正在换新会话并写交接摘要，本地模型上通常要几分钟，最长等 15 分钟；写完才会开始这一轮。", employee.name, ctx / 1000, limit / 1000);
+                    let note = format!("{} 的会话上下文已达 {}K（上限 {}K），正在换新会话并写交接摘要，本地模型上通常要几分钟，最长等 {} 分钟，超时就不带摘要直接换新会话。", employee.name, ctx / 1000, limit / 1000, HANDOFF_TIMEOUT_SECS / 60);
                     let _ = db.append_event_for(pid0, "handoff_started", Some(employee.id.as_str()), Some(session.id.as_str()), &json!({"context_tokens": ctx, "limit": limit, "text": note, "meeting_id": cfg.meeting_id}));
                     if let Some(mid) = cfg.meeting_id.as_deref() { let _ = db.post_message(mid, "system", None, &note); }
                     let t0 = std::time::Instant::now();
@@ -301,6 +301,9 @@ pub fn session_restarts(db: &Db, employee: &Employee, project_path: &str) -> boo
 
 /// 换会话之前，让旧会话自己写一份交接摘要（做到哪、定了什么、试过什么失败了、下一步），
 /// 新会话据此接着做，不容易跑偏。不允许调用任何工具；超时或失败就不带摘要。
+/// 交接摘要最长等多久（秒）。它占着端点名额、期间没有别的动静，不能拖太久；超时就不带摘要直接换新会话。
+const HANDOFF_TIMEOUT_SECS: u64 = 300;
+
 async fn handoff_summary(employee: &Employee, cfg: &TurnConfig, old_session: &str, r: &crate::endpoint::Resolved) -> Option<String> {
     let mut spec = ClaudeSpec::new(old_session.to_string(), true, employee.persona.clone(), cfg.project_path.clone());
     spec.program = cfg.program.clone();
@@ -309,7 +312,7 @@ async fn handoff_summary(employee: &Employee, cfg: &TurnConfig, old_session: &st
     let prompt = "[系统提示] 你的会话上下文即将换成新会话，之后你的对话记录不再可见。请不要调用任何工具，直接写一份给“新会话里的你”的交接摘要，500 字以内，包含：\n\
         ① 当前任务的目标和做到哪了；② 已经确定的决定和原因；③ 试过但失败或被否决的做法（避免重复）；④ 下一步具体要做什么；⑤ 需要注意的坑或未验证的假设。\n只写事实，不要客套。";
     let mut p = ClaudeProcess::spawn(&spec, prompt).await.ok()?;
-    let waited = tokio::time::timeout(std::time::Duration::from_secs(900), async {
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(HANDOFF_TIMEOUT_SECS), async {
         loop {
             match p.next_event().await {
                 Ok(Some(AgentEvent::Result(res))) => return Some(res),
