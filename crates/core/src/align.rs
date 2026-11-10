@@ -8,7 +8,7 @@
 //! - 目标检查：主持人对照目标和计划判断是否还对得上。目标不对时，只有项目负责人能提议改（人点头才生效）；
 //!   代为主持的非负责人只在纪要里指出。
 
-use crate::db::{Db, Employee};
+use crate::db::{Db, Employee, now_ms};
 use crate::orchestrator::Orchestrator;
 use crate::runner::Approver;
 use anyhow::{Context, Result, bail};
@@ -97,17 +97,32 @@ impl Db {
     }
 
     /// 应用启动时：上次被中断、还停在“进行中”的对齐会已经没有人在开了，直接结束，免得一直挂着。返回结束了几场。
+    /// 结束前在会议里留一条说明，别让人看到一场空会不知道发生了什么。
     pub fn close_orphaned_standups(&self) -> Result<usize> {
-        Ok(self.conn.lock().unwrap().execute("UPDATE meetings SET status = 'closed' WHERE kind = 'standup' AND status = 'open'", [])?)
+        self.close_orphans("kind = 'standup' AND status = 'open'", "这场对齐会开到一半，应用重启或退出，没有人再接着开，已自动结束。")
     }
 
     /// 应用启动时：自主推进自动发起的评审会，如果只有那条自动发出的请求、没有任何员工回复，
     /// 说明评审人那一轮被打断了（应用重启或退出），没人会再收尾，直接结束。有员工发言的不动；人手动发起的也不动。返回结束了几场。
     pub fn close_orphaned_reviews(&self) -> Result<usize> {
-        Ok(self.conn.lock().unwrap().execute(
-            "UPDATE meetings SET status = 'closed' WHERE kind = 'code_review' AND status = 'open'
+        self.close_orphans(
+            "kind = 'code_review' AND status = 'open'
                AND EXISTS (SELECT 1 FROM meeting_messages m WHERE m.meeting_id = meetings.id AND m.author_kind = 'human' AND m.content LIKE '%这条消息由负责人流程自动发出%')
-               AND NOT EXISTS (SELECT 1 FROM meeting_messages m WHERE m.meeting_id = meetings.id AND m.author_kind = 'employee')", [])?)
+               AND NOT EXISTS (SELECT 1 FROM meeting_messages m WHERE m.meeting_id = meetings.id AND m.author_kind = 'employee')",
+            "评审人还没来得及发言，这一轮就被打断了（应用重启或退出，或批次被停止；评审人在等模型名额、或在换新会话写交接摘要时也看不到任何动静），没有人再接着评审，已自动结束。这个任务的评审结果以之后重新发起的评审会为准。")
+    }
+
+    fn close_orphans(&self, cond: &str, note: &str) -> Result<usize> {
+        let ids: Vec<String> = {
+            let conn = self.conn.lock().unwrap();
+            let mut st = conn.prepare(&format!("SELECT id FROM meetings WHERE {cond}"))?;
+            st.query_map([], |r| r.get::<_, String>(0))?.flatten().collect()
+        };
+        for id in &ids {
+            let _ = self.post_message(id, "system", None, note);
+            self.conn.lock().unwrap().execute("UPDATE meetings SET status = 'closed', closed_at = ?2 WHERE id = ?1", params![id, now_ms()])?;
+        }
+        Ok(ids.len())
     }
 
     /// 该不该开一次对齐会：生效、有主持人、超过间隔，并且上次之后有变化（从没开过则只看间隔）。返回理由。
@@ -286,6 +301,8 @@ mod tests {
         db.post_message(&design.id, "human", None, auto).unwrap();
 
         assert_eq!(db.close_orphaned_reviews().unwrap(), 1);
+        let said = db.meeting_messages(&orphan.id, 0).unwrap();
+        assert!(said.iter().any(|m| m.author_kind == "system" && m.content.contains("被打断")), "空会结束前要留下说明：{said:?}");
         let st = |id: &str| db.get_meeting(id).unwrap().unwrap().status;
         assert_eq!((st(&orphan.id).as_str(), st(&replied.id).as_str(), st(&manual.id).as_str(), st(&design.id).as_str()), ("closed", "open", "open", "open"));
         assert_eq!(db.close_orphaned_reviews().unwrap(), 0, "再跑一次没有新的");

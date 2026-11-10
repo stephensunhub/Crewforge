@@ -612,7 +612,10 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 let _busy = self.busy_scope(&rv.name);
                 match self.orch.meeting_reply(&m.id, &rv, &*self.approver).await {
                     Ok(t) => self.say("autopilot_step", format!("{} 评审《{}》：{}", rv.name, item.title, clip(&t, 200))),
-                    Err(e) => self.say("autopilot_step", format!("评审没有完成：{e}")),
+                    Err(e) => {
+                        self.say("autopilot_step", format!("评审没有完成：{e}"));
+                        let _ = self.db().post_message(&m.id, "system", None, &format!("{} 这一轮没有完成，评审没有结果：{e}", rv.name));
+                    }
                 }
             }
             {
@@ -865,6 +868,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             let _busy = self.busy_scope(&w.name);
             if let Err(e) = self.orch.meeting_reply(&m.id, w, &*self.approver).await {
                 self.say("autopilot_step", format!("站会：{}：{e}", w.name));
+                let _ = self.db().post_message(&m.id, "system", None, &format!("{} 这一轮没有完成：{e}", w.name));
             }
         }
         if let Ok(text) = self.orch.standup_alignment_check(&m.id).await {

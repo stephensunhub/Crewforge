@@ -584,6 +584,11 @@ impl Db {
         if m.status == "closed" {
             bail!("会议已经结束");
         }
+        // 没有任何 AI 发言就结束的会议，留一条说明：只剩一条发起消息的空会让人看不出发生了什么
+        if self.agent_reply_count(meeting_id)? == 0 {
+            let _ = self.post_message(meeting_id, "system", None,
+                "这场会议结束时没有任何 AI 发言。常见原因：被邀请的员工那一轮没有跑起来（在等模型名额、在换新会话写交接摘要、或批次被停止、应用重启）。到成员页看对应员工的“工作日志”，或看工作日志里这段时间的记录。");
+        }
         self.conn.lock().unwrap().execute(
             "UPDATE meetings SET status = 'closed', closed_at = ?2 WHERE id = ?1", params![meeting_id, now_ms()])?;
         let left = self.end_meeting_guests(meeting_id)?;
@@ -726,6 +731,11 @@ mod tests {
 
         db.close_meeting(&m.id).unwrap();
         assert!(db.post_message(&m.id, "human", None, "还有话").is_err(), "结束后不能发言");
+        assert!(!db.meeting_messages(&m.id, 0).unwrap().iter().any(|x| x.author_kind == "system"), "有 AI 发言的会议不加说明");
+        let empty = db.create_meeting(&pid, "code_review", "空会", None, None, &[], 4).unwrap();
+        db.post_message(&empty.id, "human", None, "请评审").unwrap();
+        db.close_meeting(&empty.id).unwrap();
+        assert!(db.meeting_messages(&empty.id, 0).unwrap().iter().any(|x| x.author_kind == "system" && x.content.contains("没有任何 AI 发言")));
         assert!(db.close_meeting(&m.id).is_err());
         assert_eq!(db.get_meeting(&m.id).unwrap().unwrap().status, "closed");
     }

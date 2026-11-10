@@ -103,6 +103,10 @@ async fn endpoint_employees_hand_off_with_a_summary_and_get_goal_and_memory_agai
     assert!(lines[2].contains("已换成新会话") && lines[2].contains("[上一会话写给你的交接摘要]") && lines[2].contains("任务二"), "{}", lines[2]);
     let rotated = db.recent_events(50).unwrap().into_iter().find(|x| x.kind == "session_rotated").unwrap();
     assert_eq!(rotated.payload["handoff"].as_str(), Some("ok"), "摘要写进了换会话事件，便于在日志里追溯");
+    let evs = db.recent_events(80).unwrap();
+    let started = evs.iter().find(|x| x.kind == "handoff_started").expect("写交接摘要前要留下事件，别让人干等");
+    assert!(started.payload["text"].as_str().unwrap().contains("交接摘要"));
+    assert_eq!(evs.iter().find(|x| x.kind == "handoff_finished").unwrap().payload["ok"], true);
 }
 
 #[tokio::test]

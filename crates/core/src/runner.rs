@@ -80,7 +80,14 @@ pub async fn run_turn<A: Approver, O: Observer>(
             if ctx > limit {
                 // 自建端点的员工换会话前先写交接摘要；订阅员工窗口大、换得少，不额外多花一次调用
                 if let Some(r) = &resolved {
+                    // 这一步要把旧上下文整个重读一遍再生成摘要，本地模型上常要几分钟，期间没有别的动静：先说明，别让人干等
+                    let note = format!("{} 的会话上下文已达 {}K（上限 {}K），正在换新会话并写交接摘要，本地模型上通常要几分钟，最长等 15 分钟；写完才会开始这一轮。", employee.name, ctx / 1000, limit / 1000);
+                    let _ = db.append_event_for(pid0, "handoff_started", Some(employee.id.as_str()), Some(session.id.as_str()), &json!({"context_tokens": ctx, "limit": limit, "text": note, "meeting_id": cfg.meeting_id}));
+                    if let Some(mid) = cfg.meeting_id.as_deref() { let _ = db.post_message(mid, "system", None, &note); }
+                    let t0 = std::time::Instant::now();
                     handoff = handoff_summary(employee, cfg, &session.id, r).await;
+                    let _ = db.append_event_for(pid0, "handoff_finished", Some(employee.id.as_str()), Some(session.id.as_str()),
+                        &json!({"ok": handoff.is_some(), "seconds": t0.elapsed().as_secs(), "text": if handoff.is_some() { "交接摘要写好了" } else { "没能写出交接摘要（超时或出错），直接换新会话" }}));
                 }
                 db.reset_session(&session.id)?;
                 db.append_event_for(pid0, "session_rotated", Some(employee.id.as_str()), Some(session.id.as_str()),
