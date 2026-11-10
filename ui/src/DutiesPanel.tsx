@@ -50,9 +50,9 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
             <button className="btn danger" disabled={busy} onClick={() => void act(async () => { if (await api.confirm("停止自主推进？手上正在做的会做完当前一步就停。", "停止")) await api.stopAutopilot(projectId); })}>停止</button>
           </div>
         ) : (
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <label className="hint">最多 <input type="number" min={1} style={{ width: 64 }} value={calls} onChange={(e) => setCalls(Number(e.target.value))} /> 次调用</label>
-            <label className="hint"><input type="number" min={1} style={{ width: 64 }} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} /> 分钟</label>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <label className="hint" style={{ whiteSpace: "nowrap" }}>最多 <input type="number" min={1} style={{ width: 64 }} value={calls} onChange={(e) => setCalls(Number(e.target.value))} /> 次调用</label>
+            <label className="hint" style={{ whiteSpace: "nowrap" }}><input type="number" min={1} style={{ width: 64 }} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} /> 分钟</label>
             <button className="btn primary" disabled={busy} onClick={() => void act(async () => {
               if (await api.confirm(`开始自主推进？\n\n• 提议中的计划条目会一并批准（这就是你对计划的最后确认）\n• 本批次最多 ${calls} 次调用、${minutes} 分钟，用完自动暂停\n• 需求类或高风险议题、反复失败时会停下来等你`, "开始自主推进")) await api.startAutopilot(projectId, calls, minutes);
             })}>{run ? "再开一个批次" : "开始自主推进"}</button>
