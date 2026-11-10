@@ -341,3 +341,9 @@ export interface GoalProposal {
   id: string; project_id: string; proposed_by: string | null; proposer_name: string | null;
   old_goal: string; new_goal: string; reason: string; status: string; note: string; created_at: number;
 }
+
+export interface AlignConfig {
+  enabled: boolean; explicit: boolean; interval_hours: number; host_id: string | null; host_name: string | null; has_ai_lead: boolean;
+  last_at: number | null; last_meeting_id: string | null; last_goal_note: string | null; last_check: string | null;
+}
+export interface AlignOverviewRow { project_id: string; name: string; config: AlignConfig; open_points: number }

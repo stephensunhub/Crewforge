@@ -46,6 +46,15 @@ pub fn run() {
                 }
             });
             app.manage(st);
+            // 对齐会定时：启动一分钟后开始，每 10 分钟检查一次哪些项目到点
+            let tick_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                loop {
+                    commands::align_tick(&tick_handle).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -117,6 +126,9 @@ pub fn run() {
             commands::save_minutes,
             commands::close_meeting,
             commands::start_standup,
+            commands::get_align_config,
+            commands::set_align_config,
+            commands::align_overview,
             commands::invite_guest,
             commands::end_guest,
             commands::post_meeting_message,

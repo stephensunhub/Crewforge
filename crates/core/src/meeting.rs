@@ -23,7 +23,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         "qa_case" => "QA Case 评审",
         "retro" => "复盘",
         "planning" => "迁移规划",
-        "standup" => "站会",
+        "standup" => "对齐会",
         _ => "会议",
     }
 }
@@ -157,7 +157,7 @@ impl Orchestrator {
         p.push_str(&format!("\n{}：\n{}\n", if first { "目前的讨论" } else { "自你上次发言以来的新消息" }, if transcript.is_empty() { "（暂无）".into() } else { transcript }));
         if meeting.kind == "standup" {
             let fmt = if crate::protocol::enabled(&self.db) { crate::protocol::STANDUP_FORMAT } else { "按固定四项报告——做完了什么 / 在做什么 / 被什么卡住 / 依赖别人的什么（含你对接口、文件归属、先后顺序的假设）。" };
-            p.push_str(&format!("\n这是站会：只读，不要修改任何文件。{fmt} "));
+            p.push_str(&format!("\n这是对齐会：只读，不要修改任何文件。{fmt} "));
             p.push_str("以上面“系统记录的现状”为准，有出入就指出；对照前面已发言的人，如果你们对同一个接口、文件或顺序的理解不一致，或你依赖的东西别人没提到，明确指出。不要做决策，不要展开讨论方案。150 字以内。");
             return Ok(p);
         }
@@ -232,7 +232,7 @@ impl Orchestrator {
         let transcript = format_messages(&msgs, &|id| self.name_of(id), MAX_TRANSCRIPT_CHARS);
         let project = self.db.get_project(&meeting.project_id)?.context("项目不存在")?;
         let standup_hint = if meeting.kind == "standup" {
-            "\n这是站会：不做决策。把“## 决议”一节改写为各人进度的简要同步（一人一行）；“## 被否决的方案及原因”写成“## 不对齐点”，列出系统对齐检查与发言中暴露的不一致（同文件多人修改、接口假设不同、依赖未完成），每条说明涉及谁；“## 行动项”把每个不对齐点变成一条，指明负责人，不影响合并的一律写 [之后]。\n"
+            "\n这是对齐会：不做决策。把“## 决议”一节改写为各人进度的简要同步（一人一行）；“## 被否决的方案及原因”写成“## 不对齐点”，列出系统对齐检查与发言中暴露的不一致（同文件多人修改、接口假设不同、依赖未完成），每条说明涉及谁；“## 行动项”把每个不对齐点变成一条，指明负责人，不影响合并的一律写 [之后]。\n"
         } else { "" };
         let action_format = if crate::protocol::enabled(&self.db) { crate::protocol::ACTION_FORMAT } else { "" };
         let prompt = format!(

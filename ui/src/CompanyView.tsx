@@ -1,4 +1,5 @@
 import { EndedProjects } from "./EndProject";
+import { AlignOverview } from "./AlignBox";
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import { Avatar, Field, Modal, Placeholder, basename } from "./common";
@@ -212,6 +213,7 @@ export function CompanyView({
             </div>
           ))}
         </div>
+        <AlignOverview refreshKey={projects.length} onOpenProject={(id) => onOpenProject(id)} onError={onError} />
         <EndedProjects refreshKey={projects.length} onRestored={onChanged} onError={onError} />
         {modal === "new-proj" && (
           <ProjectForm onClose={() => setModal(null)} onSubmit={async (n, d, p, i, imp) => {

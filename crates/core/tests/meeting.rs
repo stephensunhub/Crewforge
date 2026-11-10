@@ -275,8 +275,8 @@ async fn standup_collects_facts_asks_each_active_member_once_and_flags_misalignm
     let carol = e.db.add_employee("carol", "QA", "p").unwrap();
     for (x, r) in [(&alice, "developer"), (&bob, "developer"), (&carol, "qa")] { e.db.add_member(&e.project_id, &x.id, r).unwrap(); }
 
-    // 没人在做事：不需要站会
-    assert!(e.orch.start_standup(&e.project_id).await.unwrap_err().to_string().contains("不需要站会"));
+    // 没人在做事：不需要对齐会
+    assert!(e.orch.start_standup(&e.project_id).await.unwrap_err().to_string().contains("不需要对齐会"));
 
     // alice 和 bob 各有一个进行中的任务，而且改了同一个文件；carol 没有任务
     e.orch.program = writer_cli(&e.tools, "wa", "api.md");
@@ -296,7 +296,7 @@ async fn standup_collects_facts_asks_each_active_member_once_and_flags_misalignm
     for w in &who { e.orch.meeting_reply(&m.id, w, &MustNotAsk).await.unwrap(); }
     let prompts: Vec<String> = std::fs::read_to_string(&prompt_file).unwrap().lines().map(String::from).collect();
     assert_eq!(prompts.len(), 2);
-    assert!(prompts[0].contains("这是站会") && prompts[0].contains("系统记录的现状") && prompts[0].contains("不要做决策"));
+    assert!(prompts[0].contains("这是对齐会") && prompts[0].contains("系统记录的现状") && prompts[0].contains("不要做决策"));
     assert!(prompts[1].contains("做完了接口，依赖 bob 的字段名"), "bob 能看到 alice 的报告");
 
     // 对齐检查：同一文件被两人修改

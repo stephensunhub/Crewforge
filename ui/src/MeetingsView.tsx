@@ -30,12 +30,12 @@ export function MeetingsView({ projectId, meetings, members, issues, tasks, even
         <div className="split-head">
           <b>会议</b>
           <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn" title="系统先汇总每个人在做什么，在做事的成员各报告一次，再检查有没有对不齐的地方（如多人改同一个文件）。只同步，不做决策。"
-              onClick={async () => { try { const m = await api.startStandup(projectId); onChanged(); setSelected(m.id); } catch (e) { onError(String(e)); } }}>站会</button>
+            <button className="btn" title="立刻开一次对齐会：系统汇总每个人在做什么，在做事的成员各报告一次，检查有没有对不齐的地方，主持人对照目标检查。定期开的设置在“我的职责”里。"
+              onClick={async () => { try { const m = await api.startStandup(projectId); onChanged(); setSelected(m.id); } catch (e) { onError(String(e)); } }}>对齐会</button>
             <button className="btn primary" onClick={() => setCreating({})}>＋ 开会</button>
           </div>
         </div>
-        {activeWorkers >= 2 && <div className="hint" style={{ padding: "6px 12px" }}>现在有 {activeWorkers} 个成员在并行做任务，可以开个站会对一下进度和接口。</div>}
+        {activeWorkers >= 2 && <div className="hint" style={{ padding: "6px 12px" }}>现在有 {activeWorkers} 个成员在并行做任务，可以开个对齐会对一下进度和接口。</div>}
         <div className="split-list">
           {meetings.length === 0 && <div className="hint" style={{ padding: 12 }}>还没有会议。需求评审、方案评审、Code Review 都可以在这里开。</div>}
           {meetings.map((m) => (

@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow,
 } from "./types";
 
 export const api = {
@@ -89,6 +89,9 @@ export const api = {
   draftMinutes: (meetingId: string) => invoke<void>("draft_minutes", { meetingId }),
   saveMinutes: (id: string, minutes: string) => invoke<void>("save_minutes", { id, minutes }),
   closeMeeting: (id: string) => invoke<void>("close_meeting", { id }),
+  getAlignConfig: (projectId: string) => invoke<AlignConfig>("get_align_config", { projectId }),
+  setAlignConfig: (projectId: string, enabled: boolean, intervalHours: number, hostId: string | null) => invoke<void>("set_align_config", { projectId, enabled, intervalHours, hostId }),
+  alignOverview: () => invoke<AlignOverviewRow[]>("align_overview"),
   startStandup: (projectId: string) => invoke<Meeting>("start_standup", { projectId }),
   inviteGuest: (meetingId: string, name: string, brief: string, hours?: number) => invoke<void>("invite_guest", { meetingId, name, brief, hours: hours ?? null }),
   endGuest: (meetingId: string, employeeId: string) => invoke<void>("end_guest", { meetingId, employeeId }),

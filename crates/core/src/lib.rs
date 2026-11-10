@@ -27,6 +27,7 @@ pub mod ruling;
 pub mod runner;
 pub mod scheduler;
 pub mod standup;
+pub mod align;
 pub mod shell_env;
 pub mod usage;
 pub mod workspace;

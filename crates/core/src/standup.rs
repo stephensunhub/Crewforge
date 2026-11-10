@@ -60,12 +60,17 @@ impl Orchestrator {
 
     /// 开一场站会：创建会议（类型 standup），写入系统事实与议程。返回会议与需要报告的成员（按固定顺序）。
     pub async fn start_standup(&self, project_id: &str) -> Result<(Meeting, Vec<Employee>)> {
+        let host = self.db.align_host(project_id)?;
+        self.start_standup_hosted(project_id, host.as_deref()).await
+    }
+
+    pub async fn start_standup_hosted(&self, project_id: &str, host_id: Option<&str>) -> Result<(Meeting, Vec<Employee>)> {
         let facts = self.standup_facts(project_id).await?;
         if facts.participants.is_empty() {
-            bail!("现在没有人在做事（没有进行中的任务或计划条目），不需要站会");
+            bail!("现在没有人在做事（没有进行中的任务或计划条目），不需要对齐会");
         }
-        let title = format!("站会 {}", chrono_like_now());
-        let m = self.db.create_meeting(project_id, "standup", &title, None, None, &[], facts.participants.len() as i64 + 2)?;
+        let title = format!("对齐会 {}", chrono_like_now());
+        let m = self.db.create_meeting(project_id, "standup", &title, host_id, None, &[], facts.participants.len() as i64 + 2)?;
         let mut body = String::from("【系统记录的现状】（来自任务与计划数据，不是谁的自述）\n");
         for (name, s) in &facts.per_member {
             body.push_str(&format!("{name}：\n{s}"));

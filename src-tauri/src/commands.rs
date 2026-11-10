@@ -493,39 +493,132 @@ pub fn close_meeting(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     state.db.close_meeting(&id).map_err(err)
 }
 
-/// 开站会：系统先汇总事实，在做事的成员依次各报告一次，再做对齐检查并起草纪要。立即返回会议，其余在后台进行。
+/// 开对齐会（原站会）：系统先汇总事实，在做事的成员依次各报告一次，再做对齐检查；主持人对照目标检查、起草纪要，
+/// 主持人是 AI 负责人时再处理待决定的行动项、整理“之后再说”。立即返回会议，其余在后台进行。
 #[tauri::command]
 pub async fn start_standup(app: AppHandle, state: State<'_, AppState>, project_id: String) -> CmdResult<Meeting> {
-    let (m, who) = state.orch.start_standup(&project_id).await.map_err(err)?;
-    let (db, orch, sched, running) = (state.db.clone(), state.orch.clone(), state.sched.clone(), state.running.clone());
-    let approver = UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: None };
-    let (app2, mid) = (app.clone(), m.id.clone());
+    run_alignment(app, &state, &project_id).await
+}
+
+pub async fn run_alignment(app: AppHandle, st: &AppState, project_id: &str) -> CmdResult<Meeting> {
+    let key = format!("align:{project_id}");
+    if !st.busy.lock().unwrap().insert(key.clone()) { return Err("这个项目的对齐会正在进行".into()); }
+    let host_id = st.db.align_host(project_id).map_err(err)?;
+    let (m, who) = match st.orch.start_standup_hosted(project_id, host_id.as_deref()).await {
+        Ok(x) => x,
+        Err(e) => { st.busy.lock().unwrap().remove(&key); return Err(err(e)); }
+    };
+    let (db, orch, sched, running, busy) = (st.db.clone(), st.orch.clone(), st.sched.clone(), st.running.clone(), st.busy.clone());
+    let approver = UiApprover { app: app.clone(), pending: st.pending.clone(), project_id: None };
+    let (app2, mid, pid) = (app.clone(), m.id.clone(), project_id.to_string());
     tauri::async_runtime::spawn(async move {
         let say = |t: String| { let _ = db.post_message(&mid, "system", None, &t); };
+        let emit_running = || { let _ = app2.emit("crewforge://running", running.lock().unwrap().iter().cloned().collect::<Vec<_>>()); };
         for emp in who {
             // 正在执行任务的成员不打断：以系统记录的事实为准
             if !running.lock().unwrap().insert(emp.name.clone()) {
                 say(format!("{} 正在执行任务，这次不打断，以上面系统记录的现状为准。", emp.name));
                 continue;
             }
-            let _ = app2.emit("crewforge://running", running.lock().unwrap().iter().cloned().collect::<Vec<_>>());
+            emit_running();
             let res: anyhow::Result<()> = async {
                 let _permit = sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
                 orch.meeting_reply(&mid, &emp, &approver).await.map(|_| ())
             }.await;
             if let Err(e) = res { say(format!("{}：{e}", emp.name)); }
             running.lock().unwrap().remove(&emp.name);
-            let _ = app2.emit("crewforge://running", running.lock().unwrap().iter().cloned().collect::<Vec<_>>());
+            emit_running();
         }
-        if let Err(e) = orch.standup_alignment_check(&mid).await { say(format!("对齐检查失败：{e}")); }
+        let check = match orch.standup_alignment_check(&mid).await { Ok(t) => t, Err(e) => { say(format!("对齐检查失败：{e}")); String::new() } };
+        // 主持人对照目标检查（只有项目负责人能提议改目标，其余人只在纪要里指出）
+        let host = host_id.as_deref().and_then(|h| db.employee_by_id(h).ok().flatten());
+        let host_is_lead = host.as_ref().map(|h| db.list_members(&pid).map(|ms| ms.iter().any(|x| x.employee_id == h.id && x.role == "lead")).unwrap_or(false)).unwrap_or(false);
+        let mut goal_note = String::new();
+        if let Some(h) = &host {
+            if running.lock().unwrap().insert(h.name.clone()) {
+                emit_running();
+                let res: anyhow::Result<String> = async {
+                    let _permit = sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
+                    orch.align_goal_check(&mid, h, &approver).await
+                }.await;
+                match res { Ok(l) => goal_note = l, Err(e) => say(format!("目标检查没有完成：{e}")) }
+                running.lock().unwrap().remove(&h.name);
+                emit_running();
+            } else {
+                say(format!("{} 正在执行任务，这次跳过目标检查。", h.name));
+            }
+        }
         let res: anyhow::Result<()> = async {
             let _permit = sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
             orch.draft_minutes(&mid, &approver).await.map(|_| ())
         }.await;
         if let Err(e) = res { say(format!("纪要没有起草：{e}。可以稍后手动让主持人起草。")); }
         let _ = db.append_event("meeting_minutes", None, None, &serde_json::json!({"meeting_id": mid}));
+        let _ = db.close_meeting(&mid);
+        // AI 负责人带头：纪要里待拍板的事由它定，再整理“之后再说”
+        if let (Some(lead), true) = (&host, host_is_lead) {
+            if running.lock().unwrap().insert(lead.name.clone()) {
+                emit_running();
+                use crewforge_core::lead_actions::ActionOutcome as O;
+                for id in orch.human_actions_for_lead(&pid).unwrap_or_default().into_iter().take(5) {
+                    let Ok(_permit) = sched.acquire_interactive().await else { break };
+                    match orch.lead_handle_action(&id, lead, &approver).await {
+                        Ok(Some(O::Decided { decision, .. })) => say(format!("{} 决定：{decision}", lead.name)),
+                        Ok(Some(O::Dismissed { reason })) => say(format!("{} 驳回（不必做）：{reason}", lead.name)),
+                        Ok(Some(O::Escalated { reason })) => say(format!("{} 留给你：{reason}", lead.name)),
+                        Ok(None) => {}
+                        Err(e) => say(format!("处理待决定事项没有完成：{e}")),
+                    }
+                }
+                if let Ok(_permit) = sched.acquire_interactive().await {
+                    if let Err(e) = orch.lead_triage_later(&pid, lead, &approver).await { say(format!("整理行动项没有完成：{e}")); }
+                }
+                running.lock().unwrap().remove(&lead.name);
+                emit_running();
+            }
+        }
+        let _ = db.append_event_for(Some(&pid), "alignment_done", None, None, &serde_json::json!({"meeting_id": mid, "goal_note": goal_note, "check": check.chars().take(300).collect::<String>()}));
+        busy.lock().unwrap().remove(&format!("align:{pid}"));
     });
     Ok(m)
+}
+
+/// 后台定时：到点（超过间隔且有变化）的项目自动开对齐会。正在自主推进的项目由推进流程自己对齐，这里跳过。
+pub async fn align_tick(app: &AppHandle) {
+    use tauri::Manager;
+    let st = app.state::<AppState>();
+    let projects = st.db.list_projects().unwrap_or_default();
+    for p in projects.into_iter().filter(|p| p.status == "active") {
+        if st.autopilots.lock().unwrap().contains_key(&p.id) { continue; }
+        if matches!(st.db.align_due(&p.id, crewforge_core::db::now_ms()), Ok(Some(_))) {
+            let _ = run_alignment(app.clone(), &st, &p.id).await;
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_align_config(state: State<'_, AppState>, project_id: String) -> CmdResult<crewforge_core::align::AlignConfig> {
+    state.db.align_config(&project_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_align_config(state: State<'_, AppState>, project_id: String, enabled: bool, interval_hours: i64, host_id: Option<String>) -> CmdResult<()> {
+    state.db.set_align_config(&project_id, enabled, interval_hours, host_id.as_deref()).map_err(err)
+}
+
+/// 公司页：各项目的对齐会情况，人一屏看完，不用进每个项目。
+#[derive(serde::Serialize)]
+pub struct AlignOverviewRow { pub project_id: String, pub name: String, pub config: crewforge_core::align::AlignConfig, pub open_points: usize }
+
+#[tauri::command]
+pub fn align_overview(state: State<'_, AppState>) -> CmdResult<Vec<AlignOverviewRow>> {
+    let mut out = Vec::new();
+    for p in state.db.list_projects().map_err(err)?.into_iter().filter(|p| p.status == "active") {
+        let config = state.db.align_config(&p.id).map_err(err)?;
+        let open_points = state.db.open_actions_for_project(&p.id).map(|a| a.len()).unwrap_or(0);
+        out.push(AlignOverviewRow { project_id: p.id, name: p.name, config, open_points });
+    }
+    Ok(out)
 }
 
 /// 邀请外部临时 AI（顾问）加入会议。用户直接邀请视为已批准。
