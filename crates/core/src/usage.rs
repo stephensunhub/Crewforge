@@ -526,3 +526,151 @@ mod activity_tests {
         assert_eq!(classify_prompt("实现登录\n细节…", false), ("任务".into(), "实现登录".into()));
     }
 }
+
+/// 员工工作日志里的一次执行：从“被派活”到这一轮结束。
+#[derive(Debug, Clone, Serialize)]
+pub struct LogRun {
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub what: String,
+    pub subject: String,
+    /// 派给员工的原始提示（不含系统注入的目标和记忆）
+    pub prompt: String,
+    pub project: Option<String>,
+    pub origin: String,
+    /// running | done | failed | interrupted
+    pub status: String,
+    pub error: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub tool_count: usize,
+    /// 工具调用流水（时间、工具名、一句话摘要），最多保留最近 300 条
+    pub tools: Vec<LogTool>,
+    /// 员工在这一轮里最后说的话（结果摘要）
+    pub last_text: Option<String>,
+    pub cost_usd: Option<f64>,
+    pub tokens: Option<u64>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LogTool {
+    pub ts: i64,
+    pub tool: String,
+    pub summary: String,
+}
+
+fn tool_summary(tool: &str, input: &serde_json::Value) -> String {
+    let pick = |k: &str| input[k].as_str().map(str::to_string);
+    let s = match tool {
+        "Bash" => pick("command"),
+        "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => pick("file_path"),
+        "Grep" | "Glob" => pick("pattern"),
+        "Task" | "Agent" => pick("description"),
+        _ => None,
+    }
+    .unwrap_or_else(|| input.to_string());
+    let one: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    one.chars().take(160).collect()
+}
+
+impl Db {
+    /// 员工的工作日志：最近 `limit` 次执行，新的在前。`busy` 表示员工此刻是否正在工作，
+    /// 用来区分“进行中”和“被中断”（没有结束标记的旧执行）。
+    pub fn employee_log(&self, employee_id: &str, limit: usize, busy: bool) -> Result<Vec<LogRun>> {
+        let conn = self.conn.lock().unwrap();
+        // 取最近 limit 次“开始”事件的位置，再读它之后的全部相关事件
+        let from: Option<i64> = conn.query_row(
+            "SELECT id FROM events WHERE employee_id = ?1 AND kind = 'task_started' ORDER BY id DESC LIMIT 1 OFFSET ?2",
+            params![employee_id, limit.saturating_sub(1) as i64], |r| r.get(0)).optional()?;
+        let from = from.unwrap_or(0);
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.ts, e.kind, e.payload, p.name FROM events e LEFT JOIN projects p ON p.id = e.project_id
+             WHERE e.employee_id = ?1 AND e.id >= ?2 AND e.kind IN ('task_started','tool_use','agent_text','turn_result','task_failed')
+             ORDER BY e.id")?;
+        let rows = stmt.query_map(params![employee_id, from], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)))?;
+        let mut runs: Vec<LogRun> = Vec::new();
+        for row in rows {
+            let (_, ts, kind, payload, project) = row?;
+            let v: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
+            match kind.as_str() {
+                "task_started" => {
+                    let prompt = v["prompt"].as_str().unwrap_or("").to_string();
+                    let (what, subject) = classify_prompt(&prompt, v["meeting_id"].is_string());
+                    runs.push(LogRun { started_at: ts, ended_at: None, what, subject, prompt, project, origin: v["origin"].as_str().unwrap_or("").into(), status: "interrupted".into(),
+                        error: None, duration_ms: None, tool_count: 0, tools: vec![], last_text: None, cost_usd: None, tokens: None, model: None });
+                }
+                _ => {
+                    let Some(run) = runs.last_mut() else { continue };
+                    match kind.as_str() {
+                        "tool_use" => {
+                            let tool = v["tool"].as_str().unwrap_or("?").to_string();
+                            run.tool_count += 1;
+                            run.tools.push(LogTool { ts, summary: tool_summary(&tool, &v["input"]), tool });
+                            if run.tools.len() > 300 { run.tools.remove(0); }
+                        }
+                        "agent_text" => run.last_text = v["text"].as_str().map(|t| t.chars().take(600).collect()),
+                        "turn_result" => {
+                            run.ended_at = Some(ts);
+                            run.status = if v["is_error"].as_bool().unwrap_or(false) { "failed" } else { "done" }.into();
+                            run.duration_ms = v["duration_ms"].as_u64();
+                            run.cost_usd = v["cost_usd"].as_f64();
+                            run.tokens = Some(v["input_tokens"].as_u64().unwrap_or(0) + v["output_tokens"].as_u64().unwrap_or(0));
+                            run.model = v["models"].as_array().and_then(|m| m.first()).and_then(|m| m["model"].as_str()).map(String::from).or_else(|| v["model"].as_str().map(String::from));
+                        }
+                        "task_failed" => {
+                            run.ended_at = Some(ts);
+                            run.status = "failed".into();
+                            run.error = v["error"].as_str().map(|e| e.chars().take(400).collect());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // 最新一次若没有结束标记且员工此刻在工作，就是进行中；更早的没有结束标记的是被中断
+        if busy {
+            if let Some(last) = runs.last_mut() {
+                if last.ended_at.is_none() { last.status = "running".into(); }
+            }
+        }
+        runs.reverse();
+        runs.truncate(limit);
+        Ok(runs)
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn work_log_groups_events_into_runs_with_status_and_progress() {
+        let db = Db::open_memory().unwrap();
+        let e = db.add_employee("dev", "工程师", "p").unwrap();
+        let ev = |k: &str, p: serde_json::Value| db.append_event(k, Some(&e.id), None, &p).unwrap();
+        // 第一次：正常完成
+        ev("task_started", json!({"prompt": "实现登录\n细节"}));
+        ev("tool_use", json!({"tool": "Read", "input": {"file_path": "/a/b.rs"}}));
+        ev("tool_use", json!({"tool": "Bash", "input": {"command": "cargo   test"}}));
+        ev("agent_text", json!({"text": "做完了"}));
+        ev("turn_result", json!({"is_error": false, "duration_ms": 1234, "cost_usd": 0.5, "input_tokens": 10, "output_tokens": 5, "model": "m"}));
+        // 第二次：失败
+        ev("task_started", json!({"prompt": "[导入评估:qa] Todo"}));
+        ev("task_failed", json!({"error": "CLI 退出"}));
+        // 第三次：没有结束标记
+        ev("task_started", json!({"prompt": "再来一次"}));
+        ev("tool_use", json!({"tool": "Grep", "input": {"pattern": "foo"}}));
+
+        let runs = db.employee_log(&e.id, 10, true).unwrap();
+        assert_eq!(runs.len(), 3);
+        assert_eq!((runs[0].status.as_str(), runs[0].tool_count), ("running", 1), "最新一次、员工在忙 → 进行中");
+        assert_eq!((runs[1].status.as_str(), runs[1].what.as_str(), runs[1].error.as_deref()), ("failed", "导入评估（qa）", Some("CLI 退出")));
+        let done = &runs[2];
+        assert_eq!((done.status.as_str(), done.subject.as_str(), done.duration_ms, done.tokens), ("done", "实现登录", Some(1234), Some(15)));
+        assert_eq!(done.tools.iter().map(|t| t.summary.as_str()).collect::<Vec<_>>(), vec!["/a/b.rs", "cargo test"]);
+        assert_eq!(done.last_text.as_deref(), Some("做完了"));
+        assert_eq!(db.employee_log(&e.id, 10, false).unwrap()[0].status, "interrupted", "员工不忙时没有结束标记 → 被中断");
+        assert_eq!(db.employee_log(&e.id, 2, false).unwrap().len(), 2, "只取最近 2 次");
+    }
+}

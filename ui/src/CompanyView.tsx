@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import { ActivityLine, Avatar, Field, Modal, Placeholder, basename } from "./common";
 import { MemoryView } from "./MemoryView";
+import { EmployeeLog } from "./EmployeeLog";
 import type { Activity, Company, Endpoint, EmployeeCard, EventRow, ModelsOverview, ProjectSummary } from "./types";
 
 export type CompanyTab = "employees" | "projects" | "memory" | "docs" | "manage";
@@ -136,7 +137,7 @@ export function CompanyView({
   onChanged: () => void;
   onError: (m: string) => void;
 }) {
-  const [modal, setModal] = useState<"new-emp" | "new-proj" | { edit: EmployeeCard } | { memory: EmployeeCard } | null>(null);
+  const [modal, setModal] = useState<"new-emp" | "new-proj" | { edit: EmployeeCard } | { memory: EmployeeCard } | { log: EmployeeCard } | null>(null);
   const [filter, setFilter] = useState("");
   const visible = filter.trim()
     ? cards.filter((c) => (c.employee.name + c.employee.role).toLowerCase().includes(filter.trim().toLowerCase()))
@@ -183,6 +184,7 @@ export function CompanyView({
                 <div className="card-foot">
                   {c.active_tasks > 0 && <span className="hint">{c.active_tasks} 个进行中的任务</span>}
                   <span style={{ flex: 1 }} />
+                  <button className="btn" onClick={() => setModal({ log: c })}>工作日志</button>
                   <button className="btn" onClick={() => setModal({ memory: c })}>个人记忆</button>
                   <button className="btn" onClick={() => setModal({ edit: c })}>编辑</button>
                   <button className="btn danger" onClick={async () => {
@@ -195,6 +197,9 @@ export function CompanyView({
           })}
         </div>
         {modal === "new-emp" && <EmployeeForm onClose={() => setModal(null)} onSubmit={async (n, r, p, pv, md, ep) => { if (await guard(async () => { const e = await api.addEmployee(n, r, p, pv, ep ? "" : md); if (ep) await api.setEmployeeEndpoint(e.id, ep, md); })) setModal(null); }} />}
+        {modal && typeof modal === "object" && "log" in modal && (
+          <EmployeeLog id={modal.log.employee.id} name={modal.log.employee.name} running={running.includes(modal.log.employee.name)} onClose={() => setModal(null)} />
+        )}
         {modal && typeof modal === "object" && "memory" in modal && (
           <Modal title={`${modal.memory.employee.name} 的个人记忆`} onClose={() => setModal(null)} width={760}>
             <MemoryView embedded scope={{ layer: "employee", employeeId: modal.memory.employee.id, name: modal.memory.employee.name }} events={events} onError={onError} />

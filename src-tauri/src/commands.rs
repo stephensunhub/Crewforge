@@ -212,6 +212,14 @@ pub fn employee_activities(state: State<'_, AppState>) -> CmdResult<Vec<crewforg
     state.db.activities(&names).map_err(err)
 }
 
+/// 员工的工作日志：最近若干次执行，每次做了什么、进度、耗时。
+#[tauri::command]
+pub fn employee_log(state: State<'_, AppState>, id: String, limit: usize) -> CmdResult<Vec<crewforge_core::usage::LogRun>> {
+    let emp = state.db.employee_by_id(&id).map_err(err)?.ok_or("员工不存在")?;
+    let busy = state.running.lock().unwrap().contains(&emp.name);
+    state.db.employee_log(&id, limit.clamp(1, 200), busy).map_err(err)
+}
+
 #[tauri::command]
 pub fn get_concurrency(state: State<'_, AppState>) -> usize {
     state.sched.status().user_limit

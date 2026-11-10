@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Activity, Endpoint, EndpointInput, EndpointTest,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Activity, LogRun, Endpoint, EndpointInput, EndpointTest,
 } from "./types";
 
 export const api = {
@@ -47,6 +47,7 @@ export const api = {
   getAutopilotResume: (projectId: string) => invoke<boolean>("get_autopilot_resume", { projectId }),
   setAutopilotResume: (projectId: string, enabled: boolean) => invoke<void>("set_autopilot_resume", { projectId, enabled }),
   employeeActivities: () => invoke<Activity[]>("employee_activities"),
+  employeeLog: (id: string, limit: number) => invoke<LogRun[]>("employee_log", { id, limit }),
   listEndpoints: () => invoke<Endpoint[]>("list_endpoints"),
   addEndpoint: (input: EndpointInput) => invoke<Endpoint>("add_endpoint", { input }),
   updateEndpoint: (id: string, input: EndpointInput) => invoke<void>("update_endpoint", { id, input }),
