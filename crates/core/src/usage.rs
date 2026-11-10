@@ -469,6 +469,9 @@ pub struct Activity {
     pub meeting_id: Option<String>,
     /// 员工连的是自建端点时，此刻端点上的排队情况（在等名额、还是几个请求同时在跑）
     pub queue: Option<crate::endpoint::QueueInfo>,
+    /// 这一轮模型调用已经结束的时间。有值说明员工现在不是在“跑模型”，而是任务还在走后面的步骤
+    /// （等评审、合并、验证…）；此时“多久没有新动作”没有意义，不该提示卡住。
+    pub turn_finished_at: Option<i64>,
 }
 
 /// 工作类型对应的页面：会议发言去会议页，导入评估去导入页，起草计划去计划页，有任务的去任务页，其余去群聊。
@@ -540,6 +543,9 @@ impl Db {
                 Some(p) => conn.query_row("SELECT name FROM projects WHERE id = ?1", [p], |r| r.get(0)).optional()?,
                 None => None,
             };
+            let finished: Option<i64> = conn.query_row(
+                "SELECT ts FROM events WHERE employee_id = ?1 AND kind IN ('turn_result','task_failed') AND id > ?2 ORDER BY id DESC LIMIT 1",
+                params![eid, sid], |r| r.get(0)).optional()?;
             // 还在等端点名额时，“最近一次任务开始”是上一轮的：不要把上一轮的内容和时间当成现在在做的事
             let queue = queues.remove(name);
             let waiting = queue.as_ref().filter(|q| q.self_waiting);
@@ -548,7 +554,7 @@ impl Db {
                 None => (what, subject, ts, tool),
             };
             out.push(Activity {
-                employee: name.clone(), what, subject, project, started_at: ts, queue,
+                employee: name.clone(), what, subject, project, started_at: ts, queue, turn_finished_at: finished,
                 last_tool: tool.as_ref().map(|t| t.0.clone()), last_tool_at: tool.map(|t| t.1),
                 origin: v["origin"].as_str().unwrap_or("").to_string(),
                 tab: work_tab(&what_for_tab, v["meeting_id"].is_string(), v["task_id"].is_string()).to_string(),

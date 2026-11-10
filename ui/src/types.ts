@@ -354,7 +354,7 @@ export interface Endpoint { id: string; name: string; base_url: string; models: 
 export interface EndpointInput { name: string; base_url: string; models: string[]; extra_env: Record<string, string>; max_concurrency: number; context_tokens: number; limit_budget: boolean; token: string | null }
 export interface EndpointTest { ok: boolean; millis: number; detail: string }
 
-export interface Activity { employee: string; what: string; subject: string; project: string | null; started_at: number; last_tool: string | null; last_tool_at: number | null; origin: string; project_id: string | null; tab: string; meeting_id: string | null; queue: QueueInfo | null }
+export interface Activity { employee: string; what: string; subject: string; project: string | null; started_at: number; last_tool: string | null; last_tool_at: number | null; origin: string; project_id: string | null; tab: string; meeting_id: string | null; queue: QueueInfo | null; turn_finished_at: number | null }
 export interface QueueInfo { endpoint: string; max: number; running: number; waiting: number; self_waiting: boolean; waiting_since: number | null; self_running: boolean }
 
 export interface LogTool { ts: number; tool: string; summary: string }

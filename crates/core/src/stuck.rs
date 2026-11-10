@@ -46,6 +46,8 @@ impl Db {
         let acts = self.activities(names)?;
         let mut out = Vec::new();
         for a in acts {
+            // 这一轮模型调用已经结束（任务在等评审、合并等后续步骤）：没有“卡在模型上”这回事
+            if a.turn_finished_at.is_some() && !a.queue.as_ref().is_some_and(|q| q.self_waiting) { continue; }
             let (eid, sid): (String, i64) = {
                 let conn = self.conn.lock().unwrap();
                 let Some(eid): Option<String> = conn.query_row("SELECT id FROM employees WHERE name = ?1", [&a.employee], |r| r.get(0)).optional()? else { continue };
@@ -144,6 +146,17 @@ mod tests {
         assert_eq!(items.len(), 1, "{items:?}");
         assert!(items[0].title.contains("等模型名额"), "{}", items[0].title);
         h.abort();
+    }
+
+    #[test]
+    fn a_finished_turn_waiting_for_review_is_not_reported_as_silent() {
+        let (db, e) = setup();
+        let now = 200 * MIN;
+        at(&db, &e.id, now - 90 * MIN, "task_started", json!({"prompt": "SQLite 存储实现"}));
+        at(&db, &e.id, now - 80 * MIN, "tool_use", json!({"tool": "Read", "input": {"file_path": "a"}}));
+        at(&db, &e.id, now - 70 * MIN, "turn_result", json!({"duration_ms": 1}));
+        assert!(db.stuck_items(&["dev".into()], now).unwrap().is_empty(), "模型这一轮早就结束了，后面是评审和合并");
+        assert!(db.activities(&["dev".into()]).unwrap()[0].turn_finished_at.is_some());
     }
 
     #[test]
