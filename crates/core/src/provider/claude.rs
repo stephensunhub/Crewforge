@@ -36,17 +36,11 @@ pub struct ClaudeSpec {
     /// 命令沙箱（macOS Seatbelt，由 CLI 自带）：沙箱内的命令不再逐条审批，
     /// 工作区之外的写入由系统拦截。值为除工作区外额外可写的目录（如 git 公共目录、包缓存）。
     pub sandbox: Option<Vec<PathBuf>>,
+    /// 沙箱里额外允许访问的域名（用户在全局设置里加的）
+    pub extra_domains: Vec<String>,
     /// 额外注入给 CLI 子进程的环境变量（连自定义 LLM 端点时用）；只作用于这个进程
     pub env: Vec<(String, String)>,
 }
-
-/// 沙箱内允许访问的网络域名（包管理器与代码托管）；其他域名仍需审批。
-const SANDBOX_DOMAINS: &[&str] = &[
-    "registry.npmjs.org", "crates.io", "index.crates.io", "static.crates.io",
-    "static.rust-lang.org", "github.com", "pypi.org", "files.pythonhosted.org",
-    // Go：模块代理和校验库（下载依赖、校验哈希）
-    "proxy.golang.org", "sum.golang.org",
-];
 
 /// 如何启动我们自己的 MCP 服务器进程（就是 crewforge 可执行文件的 `mcp-serve` 子命令）。
 #[derive(Debug, Clone)]
@@ -63,7 +57,7 @@ impl McpLaunch {
 
 impl ClaudeSpec {
     pub fn new(session_id: String, resume: bool, persona: String, cwd: PathBuf) -> Self {
-        Self { session_id, resume, persona, cwd, program: "claude".into(), mcp: None, model: None, sandbox: None, env: Vec::new() }
+        Self { session_id, resume, persona, cwd, program: "claude".into(), mcp: None, model: None, sandbox: None, extra_domains: Vec::new(), env: Vec::new() }
     }
 
     pub fn args(&self) -> Vec<String> {
@@ -89,7 +83,7 @@ impl ClaudeSpec {
         }
         if let Some(extra) = &self.sandbox {
             a.push("--settings".into());
-            a.push(sandbox_settings(extra));
+            a.push(sandbox_settings(extra, &self.extra_domains));
         }
         a.push(if self.resume { "--resume" } else { "--session-id" }.into());
         a.push(self.session_id.clone());
@@ -101,14 +95,15 @@ impl ClaudeSpec {
     }
 }
 
-pub fn sandbox_settings(extra_write: &[PathBuf]) -> String {
+pub fn sandbox_settings(extra_write: &[PathBuf], extra_domains: &[String]) -> String {
+    let domains: Vec<&str> = crate::sandbox_net::BUILTIN_DOMAINS.iter().copied().chain(extra_domains.iter().map(String::as_str)).collect();
     let allow: Vec<String> = extra_write.iter().map(|p| p.to_string_lossy().to_string()).collect();
     json!({"sandbox": {
         "enabled": true,
         "autoAllowBashIfSandboxed": true,
         "allowUnsandboxedCommands": false,
         "filesystem": {"allowWrite": allow},
-        "network": {"allowedDomains": SANDBOX_DOMAINS, "allowLocalBinding": true},
+        "network": {"allowedDomains": domains, "allowLocalBinding": true},
     }}).to_string()
 }
 
@@ -495,9 +490,9 @@ mod tests {
 
     #[test]
     fn sandbox_allows_the_go_module_proxy_and_checksum_database() {
-        let v: serde_json::Value = serde_json::from_str(&sandbox_settings(&[PathBuf::from("/x")])).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&sandbox_settings(&[PathBuf::from("/x")], &["extra.example.com".to_string()])).unwrap();
         let domains: Vec<&str> = v["sandbox"]["network"]["allowedDomains"].as_array().unwrap().iter().filter_map(|d| d.as_str()).collect();
-        for d in ["proxy.golang.org", "sum.golang.org", "crates.io", "registry.npmjs.org"] {
+        for d in ["proxy.golang.org", "sum.golang.org", "extra.example.com", "crates.io", "registry.npmjs.org"] {
             assert!(domains.contains(&d), "沙箱白名单缺少 {d}");
         }
     }

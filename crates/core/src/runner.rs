@@ -131,6 +131,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
     let copilot = employee.provider == "copilot";
     if !copilot && !cfg.read_only && db.get_setting("sandbox")?.as_deref() != Some("off") {
         spec.sandbox = Some(sandbox_writable_dirs(&cfg.project_path));
+        spec.extra_domains = db.custom_sandbox_domains();
     }
     if crate::protocol::enabled(db) {
         let style = crate::protocol::style_for(&cfg.purpose);

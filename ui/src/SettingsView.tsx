@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import type { SandboxDomains } from "./types";
 import { Placeholder, hhmm } from "./common";
 import type { SchedStatus, SchedulerConfig } from "./types";
 
@@ -67,6 +68,8 @@ export function SettingsView({ sched, onConcurrency, onAction }: {
           <div className="hint">“忽略额度限制”只是临时的，不会修改阈值；手动暂停优先于它。交互式的操作（会议发言、导入评估）在暂停时会直接提示原因，不会排队。</div>
         </div>
 
+        <SandboxDomainsSetting onAction={onAction} />
+
         <div className="setting">
           <b>员工会话上下文上限</b>
           <div className="hint">员工的会话会一直续接，上下文越大，每一步越贵、越容易跑偏。上一轮结束时超过这个值，该员工的下一次任务会换成新会话，靠项目记忆、任务单和 git 状态衔接。Copilot 员工不受影响。建议 100～200K；填 0 表示不限。当前各会话的大小见“用量 → 员工会话”。</div>
@@ -88,6 +91,35 @@ export function SettingsView({ sched, onConcurrency, onAction }: {
         </div>
       </div>
       <Placeholder title="账号管理">多账号 Profile 暂未实现；目前所有员工共用本机 Claude Code 的登录账号。</Placeholder>
+    </div>
+  );
+}
+
+/** 沙箱网络白名单：内置的包管理器域名（不可删）+ 自己加的域名（可删）。 */
+function SandboxDomainsSetting({ onAction }: { onAction: (fn: () => Promise<unknown>) => Promise<void> }) {
+  const [d, setD] = useState<SandboxDomains | null>(null);
+  const [input, setInput] = useState("");
+  const load = () => { void api.getSandboxDomains().then(setD).catch(() => undefined); };
+  useEffect(load, []);
+  return (
+    <div className="setting">
+      <b>沙箱网络白名单</b>
+      <div className="hint">员工的命令跑在沙箱里，只能连白名单里的域名，其他域名每次都要问你。下载依赖常用的域名可以加在这里；员工请求连接时，审批弹窗里也可以直接“允许并加入白名单”。改动对<b>下一次执行</b>生效，正在跑的这一轮不受影响。</div>
+      <div className="hint" style={{ marginTop: 6 }}>内置（不能删）：{d?.builtin.map((x) => <code key={x} style={{ marginRight: 8 }}>{x}</code>)}</div>
+      <div style={{ margin: "8px 0", display: "grid", gap: 4 }}>
+        {d && d.custom.length === 0 && <div className="hint">你还没有添加过。</div>}
+        {d?.custom.map((c) => (
+          <div key={c.domain} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <code>{c.domain}</code>
+            {c.warning && <span className="badge" title={c.warning} style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>共享托管，有外传风险</span>}
+            <button className="link" onClick={() => void onAction(async () => { await api.removeSandboxDomain(c.domain); load(); })}>移除</button>
+          </div>
+        ))}
+      </div>
+      <div className="row" style={{ gap: 8, alignItems: "center" }}>
+        <input style={{ width: 280 }} placeholder="例如 proxy.golang.org" value={input} onChange={(e) => setInput(e.target.value)} />
+        <button className="btn primary" disabled={!input.trim()} onClick={() => void onAction(async () => { if (await api.addSandboxDomainChecked(input)) { setInput(""); load(); } })}>添加</button>
+      </div>
     </div>
   );
 }

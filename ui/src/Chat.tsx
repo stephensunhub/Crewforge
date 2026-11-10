@@ -215,6 +215,10 @@ export function Chat({
               <pre>{formatApprovalInput(a.tool, a.input)}</pre>
               <div className="btns">
                 <button className="btn primary" onClick={() => onDecide(a, true)}>允许</button>
+                {a.tool === "SandboxNetworkAccess" && typeof a.input?.host === "string" && (
+                  <button className="btn" title="这次允许，并把这个域名加入全局白名单，以后所有员工都不再为它询问你（在设置里可以移除）"
+                    onClick={() => { void api.addSandboxDomainChecked(String(a.input.host)).then((ok) => { if (ok) onDecide(a, true); }).catch((e) => onError(String(e))); }}>允许并加入白名单</button>
+                )}
                 <button className="btn danger" onClick={() => onDecide(a, false)}>拒绝</button>
               </div>
             </div>

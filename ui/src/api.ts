@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Activity, LogRun, Endpoint, EndpointInput, EndpointTest,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Activity, SandboxDomains, DomainCheck, StuckItem, LogRun, Endpoint, EndpointInput, EndpointTest,
 } from "./types";
 
 export const api = {
@@ -49,6 +49,20 @@ export const api = {
   employeeActivities: () => invoke<Activity[]>("employee_activities"),
   employeeLog: (id: string, limit: number) => invoke<LogRun[]>("employee_log", { id, limit }),
   planWaiting: (projectId: string) => invoke<Record<string, string[]>>("plan_waiting", { projectId }),
+  getSandboxDomains: () => invoke<SandboxDomains>("get_sandbox_domains"),
+  checkSandboxDomain: (domain: string) => invoke<DomainCheck>("check_sandbox_domain", { domain }),
+  addSandboxDomain: (domain: string) => invoke<string>("add_sandbox_domain", { domain }),
+  removeSandboxDomain: (domain: string) => invoke<void>("remove_sandbox_domain", { domain }),
+  stuckItems: () => invoke<StuckItem[]>("stuck_items"),
+  /** 加入沙箱白名单：先检查，共享托管域名要用户确认风险；返回是否已加入 */
+  addSandboxDomainChecked: async (domain: string): Promise<boolean> => {
+    const c = await invoke<DomainCheck>("check_sandbox_domain", { domain });
+    if (c.already) return true;
+    const ok = await ask(`把 ${c.domain} 加入沙箱网络白名单？\n\n加入后，所有员工的命令都可以连接它。${c.warning ? `\n\n⚠ ${c.warning}` : ""}`, { title: "加入白名单", kind: "warning", okLabel: "加入", cancelLabel: "取消" });
+    if (!ok) return false;
+    await invoke<string>("add_sandbox_domain", { domain: c.domain });
+    return true;
+  },
   listEndpoints: () => invoke<Endpoint[]>("list_endpoints"),
   addEndpoint: (input: EndpointInput) => invoke<Endpoint>("add_endpoint", { input }),
   updateEndpoint: (id: string, input: EndpointInput) => invoke<void>("update_endpoint", { id, input }),

@@ -1504,3 +1504,41 @@ pub async fn discover_endpoint_models(base_url: String) -> CmdResult<Vec<String>
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|_| "返回的不是 Ollama 的模型清单")?;
     Ok(v["models"].as_array().map(|a| a.iter().filter_map(|m| m["name"].as_str().map(String::from)).collect()).unwrap_or_default())
 }
+
+// ---------- 沙箱网络白名单（全局设置）与卡住的员工 ----------
+
+#[tauri::command]
+pub fn get_sandbox_domains(state: State<'_, AppState>) -> crewforge_core::sandbox_net::SandboxDomains {
+    state.db.sandbox_domains()
+}
+
+#[derive(serde::Serialize)]
+pub struct DomainCheck {
+    domain: String,
+    warning: Option<String>,
+    already: bool,
+}
+
+/// 加入之前先检查：规整后的域名、是否是共享托管域名（要提醒风险）、是否已经在白名单里。
+#[tauri::command]
+pub fn check_sandbox_domain(state: State<'_, AppState>, domain: String) -> CmdResult<DomainCheck> {
+    let d = crewforge_core::sandbox_net::normalize_domain(&domain).map_err(err)?;
+    Ok(DomainCheck { warning: crewforge_core::sandbox_net::shared_host_warning(&d), already: state.db.is_sandbox_domain_allowed(&d), domain: d })
+}
+
+#[tauri::command]
+pub fn add_sandbox_domain(state: State<'_, AppState>, domain: String) -> CmdResult<String> {
+    state.db.add_sandbox_domain(&domain).map_err(err)
+}
+
+#[tauri::command]
+pub fn remove_sandbox_domain(state: State<'_, AppState>, domain: String) -> CmdResult<()> {
+    state.db.remove_sandbox_domain(&domain).map_err(err)
+}
+
+/// 看起来卡住的员工（待办）。
+#[tauri::command]
+pub fn stuck_items(state: State<'_, AppState>) -> CmdResult<Vec<crewforge_core::stuck::StuckItem>> {
+    let names: Vec<String> = state.running.lock().unwrap().iter().cloned().collect();
+    state.db.stuck_items(&names, crewforge_core::db::now_ms()).map_err(err)
+}

@@ -81,3 +81,16 @@ async fn small_endpoint_window_rotates_the_session_early() {
     run_turn(&db, &dev, &cfg(&work, fake(d.path(), 1_000)), "二", &Deny, &NoopObserver).await.unwrap();
     assert_ne!(first, db.get_or_create_session(&dev.id, &work.to_string_lossy()).unwrap().id);
 }
+
+#[tokio::test]
+async fn domains_added_to_the_global_whitelist_reach_the_sandbox_settings_of_the_next_run() {
+    let d = tempfile::tempdir().unwrap();
+    let work = d.path().join("w");
+    std::fs::create_dir_all(&work).unwrap();
+    let db = Db::open(&d.path().join("home")).unwrap();
+    let e = db.add_employee("dev", "工程师", "p").unwrap();
+    db.add_sandbox_domain("https://Extra.Example.com/").unwrap();
+    run_turn(&db, &e, &cfg(&work, fake(d.path(), 10)), "a", &Deny, &NoopObserver).await.unwrap();
+    let log = std::fs::read_to_string(d.path().join("env.log")).unwrap();
+    assert!(log.contains("extra.example.com") && log.contains("proxy.golang.org"), "沙箱设置里应有内置和自己加的域名：{log}");
+}

@@ -357,3 +357,8 @@ export interface Activity { employee: string; what: string; subject: string; pro
 
 export interface LogTool { ts: number; tool: string; summary: string }
 export interface LogRun { started_at: number; ended_at: number | null; what: string; subject: string; prompt: string; project: string | null; origin: string; status: "running" | "done" | "failed" | "interrupted"; error: string | null; duration_ms: number | null; tool_count: number; tools: LogTool[]; last_text: string | null; cost_usd: number | null; tokens: number | null; model: string | null }
+
+export interface DomainEntry { domain: string; warning: string | null }
+export interface SandboxDomains { builtin: string[]; custom: DomainEntry[] }
+export interface DomainCheck { domain: string; warning: string | null; already: boolean }
+export interface StuckItem { employee: string; project_id: string | null; kind: "network" | "bypass" | "silent" | "long"; title: string; detail: string; hosts: string[]; elapsed_min: number; since: number; tab: string; meeting_id: string | null }

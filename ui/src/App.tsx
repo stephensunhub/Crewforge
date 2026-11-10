@@ -7,7 +7,7 @@ import { ModelsView } from "./ModelsView";
 import { UsageView } from "./UsageView";
 import { useNavHistory } from "./useNav";
 import { formatApprovalInput, hhmm, short } from "./common";
-import type { Activity, ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
+import type { Activity, StuckItem, ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
 
 const MAX_EVENTS = 2000;
 const SCOPE_KEY = "crewforge.scope";
@@ -41,6 +41,8 @@ export default function App() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [running, setRunning] = useState<string[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
+  const [stuck, setStuck] = useState<StuckItem[]>([]);
+  const [stuckHidden, setStuckHidden] = useState<string[]>([]);
   const [approvals, setApprovals] = useState<ApprovalReq[]>([]);
   const [sched, setSched] = useState<SchedStatus | null>(null);
   const concurrency = sched?.user_limit ?? 3;
@@ -173,6 +175,7 @@ export default function App() {
     void api.goalProposalCounts().then(setGoalCounts).catch(() => undefined);
     void api.unverifiedCounts().then(setUnverified).catch(() => undefined);
     void api.projects().then(setProjects).catch(() => undefined);
+    void api.stuckItems().then(setStuck).catch(() => undefined);
   }, []);
   useEffect(() => {
     const t = window.setInterval(refreshInbox, 20000);
@@ -213,7 +216,8 @@ export default function App() {
   const activeTab = scope.kind === "company" ? companyTab : projectTab;
   // 角标是待处理事项的总数（不是“有待办的项目数”）：行动项、待验证经验、待确认的计划条目都按条数算
   const sum = (a: [string, string, number][]) => a.reduce((n, x) => n + x[2], 0);
-  const inboxTotal = approvals.length + pending.length + proposals.length + sum(unverified) + sum(actionCounts) + sum(planCounts) + sum(goalCounts);
+  const visibleStuck = stuck.filter((x) => !stuckHidden.includes(`${x.employee}:${x.since}:${x.kind}`));
+  const inboxTotal = visibleStuck.length + approvals.length + pending.length + proposals.length + sum(unverified) + sum(actionCounts) + sum(planCounts) + sum(goalCounts);
   const setTab = (t: string) => (scope.kind === "company" ? setCompanyTab(t as CompanyTab) : setProjectTab(t as ProjectTab));
 
   return (
@@ -297,6 +301,23 @@ export default function App() {
                 <div className="btns"><button className="btn primary" onClick={() => { openProject(p.issue.project_id, "issues"); setInbox(false); }}>去处理</button></div>
               </div>
             ))}
+            {visibleStuck.map((x) => {
+              const key = `${x.employee}:${x.since}:${x.kind}`;
+              return (
+                <div className="inbox-item" key={key}>
+                  <div><span className="badge" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>卡住了</span> <b>{x.title}</b>{x.project_id && <span className="hint"> · {projectName(x.project_id)}</span>}</div>
+                  <div className="hint">{x.detail}</div>
+                  <div className="btns">
+                    {x.hosts.map((h) => (
+                      <button key={h} className="btn primary" title="加入全局沙箱白名单（设置里可以移除），下一次执行起生效"
+                        onClick={() => { void api.addSandboxDomainChecked(h).then((ok) => { if (ok) { refreshInbox(); } }).catch((e) => setError(String(e))); }}>把 {h} 加入白名单</button>
+                    ))}
+                    {x.project_id && <button className="btn" onClick={() => { openProject(x.project_id!, x.tab as ProjectTab); if (x.meeting_id) setMeetingFocus(x.meeting_id); setInbox(false); }}>去看</button>}
+                    <button className="btn" onClick={() => setStuckHidden((h) => [...h, key])}>先不管</button>
+                  </div>
+                </div>
+              );
+            })}
             {approvals.map((a) => (
               <div className="inbox-item" key={a.id}>
                 <div><span className="badge">越权审批</span> <b>{a.employee}</b> 请求 <b>{a.tool}</b>{a.project_id && <span className="hint"> · {projectName(a.project_id)}</span>}</div>
@@ -304,6 +325,10 @@ export default function App() {
                 <code className="hint" style={{ whiteSpace: "pre-wrap" }}>{short(formatApprovalInput(a.tool, a.input), 240)}</code>
                 <div className="btns">
                   <button className="btn primary" onClick={() => void decide(a, true)}>允许</button>
+                  {a.tool === "SandboxNetworkAccess" && typeof a.input?.host === "string" && (
+                    <button className="btn" title="这次允许，并把这个域名加入全局白名单，以后所有员工都不再为它询问你（在设置里可以移除）"
+                      onClick={() => { void api.addSandboxDomainChecked(String(a.input.host)).then((ok) => { if (ok) void decide(a, true); }).catch((e) => setError(String(e))); }}>允许并加入白名单</button>
+                  )}
                   <button className="btn danger" onClick={() => void decide(a, false)}>拒绝</button>
                   {a.project_id && <button className="btn" onClick={() => { openProject(a.project_id!); setInbox(false); }}>去项目</button>}
                 </div>
