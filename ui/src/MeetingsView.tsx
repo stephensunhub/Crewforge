@@ -220,7 +220,7 @@ function MeetingRoom({ id, members, issues, tasks, events, running, onChanged, o
         </div>
       )}
 
-      <ActionPanel meeting={m} members={members} tasks={tasks} events={events} minutesKey={d.meeting.minutes} onError={onError} onChanged={onChanged} />
+      <ActionPanel meeting={m} members={members} tasks={tasks} events={events} running={running} minutesKey={d.meeting.minutes} onError={onError} onChanged={onChanged} />
 
       <div className="minutes">
         <div className="minutes-head"><b>会议纪要</b>
@@ -259,8 +259,8 @@ function MeetingRoom({ id, members, issues, tasks, events, running, onChanged, o
 const ACTION_STATUS: Record<string, string> = { open: "待处理", working: "处理中", done: "已处理", dismissed: "已驳回", dropped: "已撤回" };
 
 /** 纪要里的行动项：可以派给负责人处理、标为已处理或驳回。只有人能关闭行动项，AI 员工没有这个权限。 */
-function ActionPanel({ meeting, members, tasks, events, minutesKey, onError, onChanged }: {
-  meeting: Meeting; members: Member[]; tasks: TaskView[]; events: EventRow[]; minutesKey: string; onError: (m: string) => void; onChanged: () => void;
+function ActionPanel({ meeting, members, tasks, events, running, minutesKey, onError, onChanged }: {
+  meeting: Meeting; members: Member[]; tasks: TaskView[]; events: EventRow[]; running: string[]; minutesKey: string; onError: (m: string) => void; onChanged: () => void;
 }) {
   const [items, setItems] = useState<ActionItem[]>([]);
   const [pick, setPick] = useState<Record<string, string>>({});
@@ -285,6 +285,9 @@ function ActionPanel({ meeting, members, tasks, events, minutesKey, onError, onC
   const owner = tasks.find((t) => t.task.id === meeting.task_id)?.task.employee_id ?? null;
   const open = items.filter((a) => a.status === "open" || a.status === "working");
   const blocking = open.filter((a) => a.blocking && meeting.task_id);
+
+  // 员工正在执行任务时派不了（后端会拒绝）：按钮直接置灰并说明，不要等点了才发现
+  const busyName = (employeeId: string) => { const n = members.find((x) => x.employee_id === employeeId)?.name; return n && running.includes(n) ? n : null; };
 
   async function act(fn: () => Promise<unknown>) { try { await fn(); await load(); onChanged(); } catch (e) { onError(String(e)); } }
 
@@ -328,7 +331,7 @@ function ActionPanel({ meeting, members, tasks, events, minutesKey, onError, onC
                       <option value="">选择负责人…</option>
                       {members.map((m) => <option key={m.employee_id} value={m.employee_id}>{m.name}</option>)}
                     </select>
-                    <button className="btn" disabled={!target} title="让 TA 处理这一项。对进行中任务的评审意见，只能交给该任务的员工，在同一个分支里改"
+                    <button className="btn" disabled={!target || busyName(target) !== null} title={busyName(target) ? `${busyName(target)} 正在执行任务，等他做完再派` : "让 TA 处理这一项。对进行中任务的评审意见，只能交给该任务的员工，在同一个分支里改"}
                       onClick={() => void dispatch(a.id, target)}>{a.status === "working" ? "再派一次" : "交给 TA 处理"}</button>
                   </>
                 )}
@@ -336,6 +339,7 @@ function ActionPanel({ meeting, members, tasks, events, minutesKey, onError, onC
                 <ReasonButton label="驳回" required placeholder="为什么不处理这一项？（会记录下来）" onSubmit={(why) => void act(() => api.setActionStatus(a.id, "dismissed", why))} />
               </div>
             )}
+            {live && !a.for_human && target && busyName(target) && <div className="hint">{busyName(target)} 正在执行任务，做完后才能派给 TA（或换一个负责人）。</div>}
             {live && notice[a.id] && a.status !== "working" && <div className={`hint ${notice[a.id].bad ? "bad" : ""}`}>{notice[a.id].text}</div>}
             {!live && <button className="link" onClick={() => void act(() => api.setActionStatus(a.id, "open"))}>重新打开</button>}
           </div>
