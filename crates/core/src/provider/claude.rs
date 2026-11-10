@@ -44,6 +44,8 @@ pub struct ClaudeSpec {
 const SANDBOX_DOMAINS: &[&str] = &[
     "registry.npmjs.org", "crates.io", "index.crates.io", "static.crates.io",
     "static.rust-lang.org", "github.com", "pypi.org", "files.pythonhosted.org",
+    // Go：模块代理和校验库（下载依赖、校验哈希）
+    "proxy.golang.org", "sum.golang.org",
 ];
 
 /// 如何启动我们自己的 MCP 服务器进程（就是 crewforge 可执行文件的 `mcp-serve` 子命令）。
@@ -489,5 +491,14 @@ mod tests {
     fn unknown_or_garbage_is_ignored() {
         assert!(parse_line("not json").is_empty());
         assert!(parse_line(r#"{"type":"something_new"}"#).is_empty());
+    }
+
+    #[test]
+    fn sandbox_allows_the_go_module_proxy_and_checksum_database() {
+        let v: serde_json::Value = serde_json::from_str(&sandbox_settings(&[PathBuf::from("/x")])).unwrap();
+        let domains: Vec<&str> = v["sandbox"]["network"]["allowedDomains"].as_array().unwrap().iter().filter_map(|d| d.as_str()).collect();
+        for d in ["proxy.golang.org", "sum.golang.org", "crates.io", "registry.npmjs.org"] {
+            assert!(domains.contains(&d), "沙箱白名单缺少 {d}");
+        }
     }
 }

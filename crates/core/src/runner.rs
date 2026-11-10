@@ -309,7 +309,7 @@ fn sandbox_writable_dirs(workdir: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        for sub in [".cargo", ".npm", ".cache", ".rustup", "Library/Caches"] {
+        for sub in [".cargo", ".npm", ".cache", ".rustup", "Library/Caches", "go"] {
             v.push(home.join(sub));
         }
     }
