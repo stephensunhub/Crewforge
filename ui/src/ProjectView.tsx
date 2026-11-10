@@ -10,12 +10,13 @@ import { OnboardingView } from "./OnboardingView";
 import { DocsView } from "./DocsView";
 import { DutiesPanel } from "./DutiesPanel";
 import { PlanPanel } from "./PlanPanel";
+import { ActionsView } from "./ActionsView";
 import { EndProjectModal } from "./EndProject";
 import type { ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
 
-export type ProjectTab = "duties" | "onboarding" | "chat" | "plan" | "tasks" | "issues" | "meetings" | "members" | "memory" | "docs";
+export type ProjectTab = "duties" | "onboarding" | "chat" | "plan" | "tasks" | "issues" | "meetings" | "actions" | "members" | "memory" | "docs";
 export const PROJECT_TABS: [ProjectTab, string][] = [
-  ["duties", "职责"], ["onboarding", "导入"], ["chat", "群聊"], ["plan", "计划"], ["tasks", "任务"], ["issues", "议题"], ["meetings", "会议"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
+  ["duties", "职责"], ["onboarding", "导入"], ["chat", "群聊"], ["plan", "计划"], ["tasks", "任务"], ["issues", "议题"], ["meetings", "会议"], ["actions", "行动项"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
 ];
 const TASK_EVENTS = ["task_created", "checkpoint_committed", "checkpoint_failed", "task_merged", "task_merge_blocked", "task_abandoned", "turn_result", "task_failed", "task_error"];
 
@@ -128,6 +129,8 @@ export function ProjectView({
       <MeetingsView projectId={project.id} meetings={meetings} members={members} issues={issues} tasks={taskViews} events={events} running={running}
         focusId={meetingFocus} onFocused={onFocusHandled} onChanged={() => void refreshBoard()} onError={onError} />
     );
+  if (tab === "actions")
+    return <ActionsView projectId={project.id} members={members} tasks={taskViews} events={events} running={running} onOpenMeeting={onOpenMeeting} onError={onError} onChanged={onChanged} />;
   if (tab === "memory") return <MemoryView scope={{ layer: "project", projectId: project.id }} events={events} members={members} onError={onError} canCurate={members.some((m) => m.role === "lead")} />;
   return <DocsView projectId={project.id} hasLead={members.some((m) => m.role === "lead")} onError={onError} />;
 }

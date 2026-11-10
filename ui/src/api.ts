@@ -118,6 +118,7 @@ export const api = {
   dispatchPlanItem: (id: string, employeeId: string | null) => invoke<void>("dispatch_plan_item", { id, employeeId }),
   startPlanning: (projectId: string, employeeId: string, brief: string) => invoke<string>("start_planning", { projectId, employeeId, brief }),
   // 评审行动项
+  projectActions: (projectId: string) => invoke<ActionItem[]>("list_project_actions", { projectId }),
   actionItems: (meetingId: string) => invoke<ActionItem[]>("list_action_items", { meetingId }),
   setActionStatus: (id: string, status: "done" | "dismissed" | "open", note = "") => invoke<void>("set_action_status", { id, status, note }),
   dispatchAction: (id: string, employeeId: string | null) => invoke<void>("dispatch_action_item", { id, employeeId }),

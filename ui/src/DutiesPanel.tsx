@@ -119,7 +119,7 @@ export function DutiesPanel({ projectId, projectName, events, onGoTab, onOpenMee
           </div>
         )}
         {d && d.later_actions > 0 && (
-          <div className="hint" style={{ marginTop: 10 }}>另有 {d.later_actions} 条“之后再说”的评审行动项，不拦合并，也不需要你决定，留在<button className="link" onClick={() => onGoTab("meetings")}>会议页</button>，不会占你的待办。
+          <div className="hint" style={{ marginTop: 10 }}>另有 {d.later_actions} 条“之后再说”的评审行动项，不拦合并，也不需要你决定，集中在<button className="link" onClick={() => onGoTab("actions")}>行动项页</button>，不会占你的待办。
             {d.later_actions >= 5 && <button className="btn" style={{ marginLeft: 10 }} disabled={triaging} title="负责人逐条看：重复、过时、不必做的驳回，值得做的转成计划条目，拿不准的保留" onClick={async () => { setTriaging(true); setTriaged(null); try { setTriaged((await api.leadTriageActions(projectId)) ?? "数量不多，没有整理"); await load(); } catch (e) { onError(String(e)); } finally { setTriaging(false); } }}>{triaging ? "负责人整理中…" : "让负责人整理"}</button>}
             {triaged && <span className="hint" style={{ marginLeft: 10 }}>结果：{triaged}</span>}</div>
         )}

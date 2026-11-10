@@ -1077,6 +1077,12 @@ pub fn list_action_items(state: State<'_, AppState>, meeting_id: String) -> CmdR
     state.db.actions_for_meeting(&meeting_id).map_err(err)
 }
 
+/// 项目里全部行动项（行动项页用）。
+#[tauri::command]
+pub fn list_project_actions(state: State<'_, AppState>, project_id: String) -> CmdResult<Vec<ActionItem>> {
+    state.db.actions_for_project(&project_id).map_err(err)
+}
+
 /// 只有人类能处理行动项：done（已处理）、dismissed（驳回，必须写原因）、open（重新打开）。
 #[tauri::command]
 pub fn set_action_status(state: State<'_, AppState>, id: String, status: String, note: String) -> CmdResult<()> {

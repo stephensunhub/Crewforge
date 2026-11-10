@@ -128,6 +128,13 @@ impl Db {
         self.query_actions("WHERE a.meeting_id = ?1", &[&meeting_id])
     }
 
+    /// 项目里全部行动项（含已处理、已驳回；不含从纪要里撤回的），新的在前。
+    pub fn actions_for_project(&self, project_id: &str) -> Result<Vec<ActionItem>> {
+        let mut v = self.query_actions("WHERE a.project_id = ?1 AND a.status != 'dropped'", &[&project_id])?;
+        v.reverse();
+        Ok(v)
+    }
+
     pub fn actions_for_task(&self, task_id: &str) -> Result<Vec<ActionItem>> {
         self.query_actions("WHERE a.task_id = ?1 AND a.status != 'dropped'", &[&task_id])
     }
