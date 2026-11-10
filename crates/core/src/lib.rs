@@ -23,6 +23,7 @@ pub mod orchestrator;
 pub mod plan;
 pub mod planning;
 pub mod policy;
+pub mod proc_registry;
 pub mod protocol;
 pub mod provider;
 pub mod ruling;

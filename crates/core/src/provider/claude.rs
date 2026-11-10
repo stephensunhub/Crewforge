@@ -258,6 +258,8 @@ pub fn parse_line(line: &str) -> Vec<AgentEvent> {
 
 pub struct ClaudeProcess {
     child: Child,
+    /// 登记在案：应用退出时会被统一终止，进程结束或丢弃时自动取消登记
+    _registered: Option<crate::proc_registry::Registered>,
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     pending: VecDeque<AgentEvent>,
@@ -300,7 +302,8 @@ impl ClaudeProcess {
             }
         });
 
-        let mut p = Self { child, stdin: Some(stdin), stdout, pending: VecDeque::new(), stderr_tail };
+        let registered = child.id().map(crate::proc_registry::register);
+        let mut p = Self { child, _registered: registered, stdin: Some(stdin), stdout, pending: VecDeque::new(), stderr_tail };
         p.write_json(&json!({"type": "user", "message": {"role": "user", "content": prompt}}))
             .await?;
         Ok(p)

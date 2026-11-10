@@ -15,6 +15,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = default_data_dir();
+            // 上次崩溃或被强制退出时遗留的员工进程（还在改工作区、却没人读输出）先清掉
+            let _ = std::fs::create_dir_all(&data_dir);
+            let _reaped = crewforge_core::proc_registry::init(&data_dir);
             let db = Arc::new(Db::open(&data_dir)?);
             // 把事件表里的新增事件推送给界面。不用进程内的钩子：MCP 服务器和命令行是别的进程，
             // 它们写入的事件只有通过读库才看得到。
@@ -220,6 +223,12 @@ pub fn run() {
             commands::get_concurrency,
             commands::set_concurrency,
         ])
-        .run(tauri::generate_context!())
-        .expect("启动 Crewforge 失败");
+        .build(tauri::generate_context!())
+        .expect("启动 Crewforge 失败")
+        .run(|_app, event| {
+            // 应用退出：把员工的 CLI 进程一起终止，不留下还在改文件的孤儿
+            if let tauri::RunEvent::Exit = event {
+                crewforge_core::proc_registry::terminate_all();
+            }
+        });
 }

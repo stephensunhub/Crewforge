@@ -170,6 +170,8 @@ impl CopilotParser {
 
 pub struct CopilotProcess {
     child: Child,
+    /// 登记在案：应用退出时会被统一终止，进程结束或丢弃时自动取消登记
+    _registered: Option<crate::proc_registry::Registered>,
     stdout: BufReader<ChildStdout>,
     pending: VecDeque<AgentEvent>,
     parser: CopilotParser,
@@ -207,7 +209,8 @@ impl CopilotProcess {
                 }
             }
         });
-        Ok(Self { child, stdout, pending: VecDeque::new(), parser: CopilotParser::new(spec.session_id.clone()), stderr_tail })
+        let registered = child.id().map(crate::proc_registry::register);
+        Ok(Self { child, _registered: registered, stdout, pending: VecDeque::new(), parser: CopilotParser::new(spec.session_id.clone()), stderr_tail })
     }
 
     pub async fn next_event(&mut self) -> Result<Option<AgentEvent>> {
