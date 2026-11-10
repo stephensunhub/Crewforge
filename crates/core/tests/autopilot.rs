@@ -146,15 +146,14 @@ async fn budget_pause_and_human_needed_stop_the_loop_without_starting_new_work()
     assert_eq!(r.status, "paused");
     assert_eq!(e.db.list_tasks(e.repo.to_str().unwrap()).unwrap().len(), 0);
 
-    // 需求类议题等人拍板：负责人不替人决定，停下来
+    // 需求类议题（人提的、待拍板）不再让推进停下来：决策权跟着负责人走，人随时可以自己拍
     let e = setup().await;
     let issue = e.db.create_issue(&e.pid, "要不要支持多币种", "", "requirement", false, None, None, None).unwrap();
     e.db.set_issue_status(&issue.id, "discussing").unwrap();
     e.db.set_issue_status(&issue.id, "pending_decision").unwrap();
     let r = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
-    assert_eq!(r.status, "escalated");
-    assert!(r.reason.contains("只有你能拍板"), "{r:?}");
-    assert_eq!(e.db.list_tasks(e.repo.to_str().unwrap()).unwrap().len(), 0);
+    assert_ne!(r.status, "escalated", "{r:?}");
+    assert_eq!(e.db.get_issue(&issue.id).unwrap().unwrap().status, "pending_decision", "人提的议题负责人不碰，留给提出的人");
 }
 
 #[tokio::test]
@@ -176,7 +175,7 @@ async fn preconditions_are_checked_before_starting() {
 }
 
 #[tokio::test]
-async fn lead_rules_ai_raised_technical_issues_escalates_the_rest_and_never_touches_human_or_requirement_issues() {
+async fn lead_rules_ai_raised_technical_issues_escalates_the_rest_and_never_touches_human_raised_issues() {
     let e = setup().await;
     let alice = e.db.employee_by_name("alice").unwrap().unwrap();
     let bob = e.db.employee_by_name("bob").unwrap().unwrap();
@@ -186,7 +185,7 @@ async fn lead_rules_ai_raised_technical_issues_escalates_the_rest_and_never_touc
     e.db.add_option(&tech.id, "WebSocket", "双向", None).unwrap();
     // 2) 负责人判断不了的 → 升级给人
     let hard = e.db.create_issue(&e.pid, "是否升级线上数据库版本", "", "technical", false, Some(&bob.id), None, None).unwrap();
-    // 3) 需求类（AI 提议）、4) 人提的技术议题 → 不碰
+    // 3) 需求类（AI 提议）→ 负责人也处理；4) 人提的技术议题 → 不碰
     let req = e.db.create_issue(&e.pid, "要不要支持多币种", "", "requirement", false, Some(&bob.id), None, None).unwrap();
     let human = e.db.create_issue(&e.pid, "日志用哪个库", "", "technical", false, None, None, None).unwrap();
 
@@ -207,7 +206,7 @@ async fn lead_rules_ai_raised_technical_issues_escalates_the_rest_and_never_touc
     let h = e.db.get_issue(&hard.id).unwrap().unwrap();
     assert_eq!(h.status, "pending_decision", "升级给人：进入待决策");
     assert!(h.decision.is_none());
-    assert_eq!(e.db.get_issue(&req.id).unwrap().unwrap().status, "open");
+    assert_ne!(e.db.get_issue(&req.id).unwrap().unwrap().status, "open", "AI 提议的需求类议题也由负责人处理");
     assert_eq!(e.db.get_issue(&human.id).unwrap().unwrap().status, "open");
 
     let kinds: Vec<(String, String)> = e.db.recent_events(800).unwrap().into_iter().map(|x| (x.kind, x.payload["text"].as_str().unwrap_or("").to_string())).collect();
@@ -217,7 +216,7 @@ async fn lead_rules_ai_raised_technical_issues_escalates_the_rest_and_never_touc
     // 同一个议题不会在下一批里被反复裁决
     let r2 = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
     let again = e.db.recent_events(800).unwrap().into_iter().filter(|x| x.kind == "autopilot_issue_escalated").count();
-    assert_eq!((r2.status.as_str(), again), ("finished", 1), "{r2:?}");
+    assert_eq!((r2.status.as_str(), again), ("finished", 2), "{r2:?}"); // 升级过的两个议题都只升级一次
 }
 
 #[tokio::test]

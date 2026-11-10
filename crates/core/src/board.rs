@@ -178,23 +178,18 @@ pub fn can_transition(from: &str, to: &str) -> bool {
 
 /// 谁有权拍板：
 /// - 人类始终可以；
-/// - 需求类、高风险类：只能人类；
-/// - 一般技术方案 / 流程 / 风险 / Bug 归因：项目负责人（没有 AI 负责人时只有人类）；
-/// - 代码细节（implementation）：议题负责人。
+/// - 其余的决定都归项目负责人（含需求取舍、高风险议题；没有 AI 负责人时只有人类）；人在事后观察并可以纠正；
+/// - 代码细节（implementation）：议题负责人（项目负责人也可以）。
+/// 高风险操作本身仍要在执行时经过审批，这里只是“做不做这个决定”。
 /// 临时外部 AI（Guest）不是员工，永远无权。
 pub fn check_authority(issue: &Issue, actor: &Actor, lead_id: Option<&str>) -> Result<(), String> {
     let Actor::Employee(eid) = actor else { return Ok(()) };
-    if issue.high_risk || issue.kind == "requirement" {
-        return Err("需求、业务方向和高风险议题只有人类可以拍板".into());
-    }
-    let allowed = if issue.kind == "implementation" { issue.owner_id.as_deref() } else { lead_id };
-    if allowed == Some(eid.as_str()) { Ok(()) } else { Err("你没有权限拍板这个议题".into()) }
+    let is_lead = lead_id == Some(eid.as_str());
+    let is_owner = issue.kind == "implementation" && issue.owner_id.as_deref() == Some(eid.as_str());
+    if is_lead || is_owner { Ok(()) } else { Err("你没有权限拍板这个议题".into()) }
 }
 
 pub fn decider_label(issue: &Issue, lead_name: Option<&str>, owner_name: Option<&str>) -> String {
-    if issue.high_risk || issue.kind == "requirement" {
-        return "仅人类".into();
-    }
     if issue.kind == "implementation" {
         return format!("议题负责人（{}）或人类", owner_name.unwrap_or("未指定"));
     }
@@ -637,10 +632,11 @@ mod tests {
         let (l, d) = (Actor::Employee(lead.clone()), Actor::Employee(dev.clone()));
         assert!(check_authority(&mk("technical", false, None), &l, Some(&lead)).is_ok());
         assert!(check_authority(&mk("technical", false, None), &d, Some(&lead)).is_err());
-        assert!(check_authority(&mk("requirement", false, None), &l, Some(&lead)).is_err(), "需求只能人类");
-        assert!(check_authority(&mk("technical", true, None), &l, Some(&lead)).is_err(), "高风险只能人类");
+        assert!(check_authority(&mk("requirement", false, None), &l, Some(&lead)).is_ok(), "需求类也由负责人拍板");
+        assert!(check_authority(&mk("technical", true, None), &l, Some(&lead)).is_ok(), "高风险议题也由负责人拍板");
+        assert!(check_authority(&mk("requirement", false, None), &d, Some(&lead)).is_err(), "普通员工不行");
         assert!(check_authority(&mk("implementation", false, Some(&dev)), &d, Some(&lead)).is_ok(), "代码细节由议题负责人");
-        assert!(check_authority(&mk("implementation", false, Some(&dev)), &l, Some(&lead)).is_err());
+        assert!(check_authority(&mk("implementation", false, Some(&dev)), &l, Some(&lead)).is_ok());
         assert!(check_authority(&mk("requirement", true, None), &Actor::Human, None).is_ok(), "人类始终可以");
         // 没有 AI 负责人时，AI 不能拍板一般技术议题
         assert!(check_authority(&mk("technical", false, None), &d, None).is_err());
@@ -674,14 +670,15 @@ mod tests {
     }
 
     #[test]
-    fn ai_cannot_decide_requirement_but_lead_can_decide_technical() {
+    fn lead_decides_everything_but_other_employees_cannot() {
         let (db, pid, lead, dev) = setup();
         let req = db.create_issue(&pid, "做不做会员", "", "requirement", false, None, None, None).unwrap();
         to_pending(&db, &req.id);
-        assert!(db.decide_issue(&req.id, &Actor::Employee(lead.clone()), None, "做", "", &HashMap::new()).is_err());
+        assert!(db.decide_issue(&req.id, &Actor::Employee(dev.clone()), None, "做", "", &HashMap::new()).is_err(), "普通员工不能拍需求类");
+        db.decide_issue(&req.id, &Actor::Employee(lead.clone()), None, "做", "符合需求原文", &HashMap::new()).unwrap();
         let tech = db.create_issue(&pid, "选库", "", "technical", false, None, None, None).unwrap();
         to_pending(&db, &tech.id);
-        assert!(db.decide_issue(&tech.id, &Actor::Employee(dev), None, "x", "", &HashMap::new()).is_err());
+        assert!(db.decide_issue(&tech.id, &Actor::Employee(dev.clone()), None, "x", "", &HashMap::new()).is_err());
         db.decide_issue(&tech.id, &Actor::Employee(lead.clone()), None, "用 serde", "生态好", &HashMap::new()).unwrap();
         assert_eq!(db.get_issue(&tech.id).unwrap().unwrap().decided_by.as_deref(), Some(lead.as_str()));
     }

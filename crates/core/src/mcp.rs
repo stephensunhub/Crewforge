@@ -92,7 +92,7 @@ fn tools() -> Value {
             "title": str_prop("议题标题，一句话，不超过 80 字"),
             "summary": str_prop("问题摘要：要决定什么、为什么现在要决定，不超过 600 字"),
             "kind": {"type": "string", "enum": ISSUE_KINDS, "description": "类型，默认 technical；涉及需求/业务方向用 requirement"},
-            "high_risk": {"type": "boolean", "description": "涉及资金、生产环境、不可逆操作或安全时为 true（只能人类拍板）"},
+            "high_risk": {"type": "boolean", "description": "涉及资金、生产环境、不可逆操作或安全时为 true（决定仍由项目负责人做，执行时要经过审批）"},
             "options": {"type": "array", "maxItems": MAX_OPTIONS_PER_PROPOSAL, "description": "你认为可行的候选方案",
                 "items": {"type": "object", "required": ["title"], "properties": {"title": str_prop("方案名"), "description": str_prop("方案说明与利弊")}}}}}},
         {"name": "add_option", "description": "给已有议题补充一个候选方案（议题还没有结论时才可以）。",

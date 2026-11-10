@@ -265,7 +265,7 @@ export default function App() {
               <div className="inbox-item" key={p.issue.id}>
                 <div><span className="badge">拍板</span> 议题待你裁决：<b>{p.issue.title}</b><span className="hint"> · {p.project_name}</span></div>
                 {p.issue.summary && <div className="hint">{short(p.issue.summary, 120)}</div>}
-                <div className="hint">为什么是你：{p.issue.high_risk || p.issue.kind === "requirement" ? "需求类或高风险议题，只有你能拍板，AI 没有这个权限。" : "讨论已结束，等有权限者拍板；你始终可以拍板。"}</div>
+                <div className="hint">为什么是你：负责人没有裁决，或这个项目没有 AI 负责人；你始终可以拍板。</div>
                 <div className="btns"><button className="btn primary" onClick={() => { openProject(p.issue.project_id, "issues"); setInbox(false); }}>去处理</button></div>
               </div>
             ))}

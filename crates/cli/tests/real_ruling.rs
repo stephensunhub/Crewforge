@@ -48,6 +48,13 @@ async fn real_lead_rules_a_technical_issue_and_escalates_a_risky_one() {
     let r2 = orch.lead_rule_issue(&risky.id, &alice, &Deny).await.unwrap();
     println!("高风险描述的议题 → {r2:?}");
     println!("状态 {}", db.get_issue(&risky.id).unwrap().unwrap().status);
+    // 决策权跟着负责人：需求类议题、被标成高风险的议题也由负责人裁决（看它怎么判断、会不会又推给人）
+    let req = db.create_issue(&project.id, "要不要增加“导出为 CSV”功能", "有人提了，目标里没写", "requirement", false, Some(&bob.id), None, None).unwrap();
+    let r3 = orch.lead_rule_issue(&req.id, &alice, &Deny).await.unwrap();
+    println!("需求类议题 → {r3:?}");
+    let hr = db.create_issue(&project.id, "要不要把 db.json 迁移成新格式并删除旧文件", "迁移脚本已写好，旧文件删除不可恢复，用户没有备份", "technical", true, Some(&bob.id), None, None).unwrap();
+    let r4 = orch.lead_rule_issue(&hr.id, &alice, &Deny).await.unwrap();
+    println!("高风险议题 → {r4:?}");
     assert!(matches!(r, RulingOutcome::Decided { .. }), "{r:?}");
     let cost = db.cost_report(None, 0).unwrap();
     println!("费用 ${:.3}，{} 次调用", cost.totals.cost_usd, cost.totals.turns);

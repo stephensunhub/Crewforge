@@ -258,12 +258,6 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         self.db().recent_done_action_texts(&self.project_id, 80).unwrap_or_default().iter().any(|t| similar_actions(t, text))
     }
 
-    /// 需求类或高风险议题等人拍板：这类事负责人不替人决定。
-    fn needs_human(&self) -> Option<String> {
-        let d = self.db().pending_decisions().ok()?;
-        d.into_iter().find(|d| d.issue.project_id == self.project_id && (d.issue.high_risk || d.issue.kind == "requirement")).map(|d| format!("议题《{}》是需求类或高风险事项，只有你能拍板", d.issue.title))
-    }
-
     fn members(&self) -> Vec<(Employee, String)> {
         self.db().list_members(&self.project_id).unwrap_or_default().into_iter().filter_map(|m| self.db().employee_by_id(&m.employee_id).ok().flatten().map(|e| (e, m.role))).collect()
     }
@@ -501,7 +495,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         bail!("多次尝试后仍无法合并")
     }
 
-    /// 负责人裁决 AI 员工提议的一般技术议题（需求类、高风险、代码细节类和人提的议题不碰）。
+    /// 负责人裁决 AI 员工提议的一般技术议题（代码细节类和人提的议题不碰）。
     /// 裁决不了的升级给人（议题进入“待决策”，出现在人的待办里），同一个议题不会反复裁决。
     async fn rule_issues(&self, tried: &mut HashSet<String>) {
         let Some(lead) = self.members().into_iter().find(|(_, r)| r == "lead").map(|(e, _)| e) else { return };
@@ -665,7 +659,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             if self.ctl.stop.load(Ordering::SeqCst) { break ("stopped", "你停止了推进".to_string()); }
             let paused = self.ctl.pause.load(Ordering::SeqCst);
             let budget = self.over_budget().or_else(|| if running.is_empty() { self.no_room_for_another_item() } else { None });
-            let human = self.needs_human();
+            let human: Option<String> = None; // 议题都由负责人裁决，不再因需求类/高风险议题停下等人
             if (paused || budget.is_some() || human.is_some()) && set.is_empty() {
                 let end = if paused { ("paused", "你暂停了推进".to_string()) } else if let Some(b) = budget { ("budget", b) } else { ("escalated", human.unwrap_or_default()) };
                 // 预算是因为“留给收尾的调用数”而停的（还没真正用光）：收尾照做，不让文档和记忆总被挤掉

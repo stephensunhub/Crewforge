@@ -92,20 +92,19 @@ function NewIssue({ members, supersedes, onCreate, onClose }: {
   const [kind, setKind] = useState(supersedes?.issue.kind ?? "technical");
   const [risk, setRisk] = useState(false);
   const [owner, setOwner] = useState("");
-  const humanOnly = risk || kind === "requirement";
-  return (
+    return (
     <Modal title={supersedes ? "新建议题，取代已有决议" : "新议题"} onClose={onClose}>
       <div className="form">
         {supersedes && <div className="note warn">将取代《{supersedes.issue.title}》（当前决议：{supersedes.issue.decision}）。原记录会完整保留。</div>}
         <Field label="标题"><input value={title} autoFocus onChange={(e) => setTitle(e.target.value)} /></Field>
         <Field label="问题摘要" hint="一两句话说清楚要决定什么、为什么要决定。"><textarea rows={3} value={summary} onChange={(e) => setSummary(e.target.value)} /></Field>
-        <Field label="类型" hint={`谁来拍板：${humanOnly ? "仅人类" : kind === "implementation" ? "议题负责人或人类" : "项目负责人或人类"}`}>
+        <Field label="类型" hint={`谁来拍板：${kind === "implementation" ? "议题负责人、项目负责人或人类" : "项目负责人或人类"}`}>
           <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
             {Object.entries(ISSUE_KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
           </select>
         </Field>
         <label className="tog"><input type="checkbox" checked={risk} onChange={(e) => setRisk(e.target.checked)} />
-          涉及资金、生产环境、不可逆操作或安全（只能由人类拍板）</label>
+          涉及资金、生产环境、不可逆操作或安全（高风险：决定仍由负责人做，但执行时要经过审批）</label>
         <Field label="议题负责人（推动解决的人，可选）">
           <select value={owner} onChange={(e) => setOwner(e.target.value)}>
             <option value="">未指定</option>

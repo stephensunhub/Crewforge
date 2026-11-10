@@ -98,7 +98,7 @@ fn prompt_for(issue: &Issue, options: &[IssueOption], discussion: &str, goal: &s
     if !memory.trim().is_empty() {
         p.push_str(&format!("\n{memory}\n"));
     }
-    p.push_str("\n你可以只读地查看代码来核实事实。裁决规则：只在你能给出具体依据时才裁决；涉及需求变更、业务方向、资金、生产、不可逆操作、安全，或你缺少关键信息时，必须升级给人。\n");
+    p.push_str("\n你可以只读地查看代码来核实事实。你是这个项目的最终决策人：议题都由你来定，包括需求取舍和高风险事项（高风险的操作本身仍会在执行时经过审批），人只在事后观察并可以纠正。以需求原文为准，给出具体依据；只有缺少你无法核实、也无法合理假设的关键事实时，才升级给人，并写明缺什么。\n");
     p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n");
     p.push_str("{\"action\":\"decide\",\"option\":<采用的方案编号；用你自己的方案写 0>,\"decision\":\"最终决定，一句话，具体到文件/接口/做法\",\"reason\":\"原因，写出依据\",\"rejected\":{\"<没采纳的方案编号>\":\"没采纳的原因\"}}\n");
     p.push_str("或 {\"action\":\"escalate\",\"reason\":\"为什么需要人来决定\"}");
@@ -106,11 +106,8 @@ fn prompt_for(issue: &Issue, options: &[IssueOption], discussion: &str, goal: &s
 }
 
 impl Orchestrator {
-    /// 议题能不能由负责人处理：一般技术类、非高风险；代码细节类归议题负责人，不由负责人裁决。
+    /// 议题能不能由负责人在自主推进里裁决：除代码细节类（归议题负责人）外都可以，包括需求类和高风险议题。
     pub fn lead_can_rule(issue: &Issue) -> Result<(), String> {
-        if issue.high_risk || issue.kind == "requirement" {
-            return Err("需求类或高风险议题只有人能拍板".into());
-        }
         if issue.kind == "implementation" {
             return Err("代码细节归议题负责人".into());
         }
@@ -211,12 +208,12 @@ mod tests {
     }
 
     #[test]
-    fn lead_only_rules_ordinary_technical_issues() {
+    fn lead_rules_everything_except_code_details() {
         let mk = |kind: &str, high_risk: bool| Issue { id: "i".into(), project_id: "p".into(), title: "t".into(), summary: String::new(), kind: kind.into(), high_risk, status: "open".into(),
             raised_by: None, owner_id: None, decision: None, decision_reason: None, decided_by: None, decided_at: None, supersedes: None, created_at: 0, updated_at: 0 };
         for ok in ["technical", "process", "risk", "bug"] { assert!(Orchestrator::lead_can_rule(&mk(ok, false)).is_ok(), "{ok}"); }
-        assert!(Orchestrator::lead_can_rule(&mk("requirement", false)).is_err());
-        assert!(Orchestrator::lead_can_rule(&mk("technical", true)).is_err());
+        assert!(Orchestrator::lead_can_rule(&mk("requirement", false)).is_ok());
+        assert!(Orchestrator::lead_can_rule(&mk("technical", true)).is_ok());
         assert!(Orchestrator::lead_can_rule(&mk("implementation", false)).is_err());
     }
 }

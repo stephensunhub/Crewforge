@@ -42,14 +42,14 @@ impl Db {
             items.push(DutyItem { kind: "plan".into(), title: format!("AI 起草了 {} 个计划条目", plan.counts.proposed), reason: "计划要你批准后才会派活，批准之前员工不会开始做".into(), goto: "plan".into(), count: plan.counts.proposed, meeting_id: None, action_id: None });
         }
         for d in self.pending_decisions()?.into_iter().filter(|d| d.issue.project_id == project_id) {
-            let only_human = d.issue.high_risk || d.issue.kind == "requirement";
+            let no_ai_lead = !self.list_members(project_id)?.iter().any(|m| m.role == "lead");
             // 负责人在自主推进里没有裁决、升级给人的议题：带上负责人写的原因
             let lead_reason: Option<String> = self.conn.lock().unwrap().query_row(
                 "SELECT json_extract(payload,'$.reason') FROM events WHERE kind = 'autopilot_issue_escalated' AND json_extract(payload,'$.issue_id') = ?1 ORDER BY id DESC LIMIT 1",
                 params![d.issue.id], |r| r.get(0)).ok().flatten();
             items.push(DutyItem { kind: "decision".into(), title: format!("议题待拍板：{}", d.issue.title),
                 reason: if let Some(r) = lead_reason { format!("负责人没有裁决，交给你：{r}") }
-                    else if only_human { "需求类或高风险议题，只有你能拍板（AI 没有拍板权限）".into() }
+                    else if no_ai_lead { "这个项目没有 AI 负责人，所有议题由你来拍板".into() }
                     else { "讨论已结束，等有权限者拍板；你始终可以拍板".into() }, goto: "issues".into(), count: 1, meeting_id: None, action_id: None });
         }
         for d in self.ai_proposals()?.into_iter().filter(|d| d.issue.project_id == project_id) {
@@ -141,7 +141,7 @@ mod tests {
         }
         // 每一项都说明为什么轮到你，并指向页签
         assert!(d.items.iter().all(|i| !i.reason.is_empty() && !i.goto.is_empty()));
-        assert!(d.items.iter().find(|i| i.kind == "decision").unwrap().reason.contains("只有你能拍板"));
+        assert!(d.items.iter().find(|i| i.kind == "decision").unwrap().reason.contains("拍板"));
         assert!(d.items.iter().find(|i| i.kind == "merge").unwrap().title.contains("转账"));
         assert!(d.items.iter().find(|i| i.kind == "review").unwrap().title.contains("提现"));
         // 负责人是 AI：会议里“人类”的决定归负责人处理，不进你的待办；“之后”类只计数
