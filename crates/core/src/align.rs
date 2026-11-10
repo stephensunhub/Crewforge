@@ -107,7 +107,7 @@ impl Db {
     pub fn close_orphaned_reviews(&self) -> Result<usize> {
         self.close_orphans(
             "kind = 'code_review' AND status = 'open'
-               AND EXISTS (SELECT 1 FROM meeting_messages m WHERE m.meeting_id = meetings.id AND m.author_kind = 'human' AND m.content LIKE '%这条消息由负责人流程自动发出%')
+               AND EXISTS (SELECT 1 FROM meeting_messages m WHERE m.meeting_id = meetings.id AND (m.author_kind = 'autopilot' OR (m.author_kind = 'human' AND m.content LIKE '%这条消息由负责人流程自动发出%')))
                AND NOT EXISTS (SELECT 1 FROM meeting_messages m WHERE m.meeting_id = meetings.id AND m.author_kind = 'employee')",
             "评审人还没来得及发言，这一轮就被打断了（应用重启或退出，或批次被停止；评审人在等模型名额、或在换新会话写交接摘要时也看不到任何动静），没有人再接着评审，已自动结束。这个任务的评审结果以之后重新发起的评审会为准。")
     }
@@ -289,6 +289,9 @@ mod tests {
         // 1) 自动发起、评审人没来得及回复：被打断的
         let orphan = db.create_meeting(&p, "code_review", "评审：A", Some(&alice), None, &[], 4).unwrap();
         db.post_message(&orphan.id, "human", None, auto).unwrap();
+        // 1b) 新数据里自动发出的请求作者是 autopilot
+        let orphan2 = db.create_meeting(&p, "code_review", "评审：A2", Some(&alice), None, &[], 4).unwrap();
+        db.post_message(&orphan2.id, "autopilot", None, "@Ollama-3-QA 请评审改动。").unwrap();
         // 2) 自动发起、评审人已经回复了：有内容，不动
         let replied = db.create_meeting(&p, "code_review", "评审：B", Some(&alice), None, &[], 4).unwrap();
         db.post_message(&replied.id, "human", None, auto).unwrap();
@@ -300,7 +303,7 @@ mod tests {
         let design = db.create_meeting(&p, "design", "方案讨论", Some(&alice), None, &[], 4).unwrap();
         db.post_message(&design.id, "human", None, auto).unwrap();
 
-        assert_eq!(db.close_orphaned_reviews().unwrap(), 1);
+        assert_eq!(db.close_orphaned_reviews().unwrap(), 2);
         let said = db.meeting_messages(&orphan.id, 0).unwrap();
         assert!(said.iter().any(|m| m.author_kind == "system" && m.content.contains("被打断")), "空会结束前要留下说明：{said:?}");
         let st = |id: &str| db.get_meeting(id).unwrap().unwrap().status;

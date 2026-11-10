@@ -62,7 +62,7 @@ CREATE TABLE meeting_issues (
 CREATE TABLE meeting_messages (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     meeting_id   TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
-    author_kind  TEXT NOT NULL,                   -- human | employee | system
+    author_kind  TEXT NOT NULL,                   -- human | employee | system | autopilot（自主推进自动发出的请求）
     employee_id  TEXT,
     content      TEXT NOT NULL,
     created_at   INTEGER NOT NULL

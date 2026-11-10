@@ -178,7 +178,7 @@ export interface Meeting {
 export interface MeetingMessage {
   id: number;
   meeting_id: string;
-  author_kind: "human" | "employee" | "system";
+  author_kind: "human" | "employee" | "system" | "autopilot";
   employee_id: string | null;
   content: string;
   created_at: number;

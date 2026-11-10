@@ -198,8 +198,11 @@ function MeetingRoom({ id, members, issues, tasks, events, running, onChanged, o
         {d.messages.length === 0 && <div className="empty"><p>会议开始了。用 <code>@{names[0] ?? "成员"}</code> 点名发言；没被点名的成员只旁听，不会调用模型。</p></div>}
         {d.messages.map((x) => {
           if (x.author_kind === "system") return <div className="line warn" key={x.id} style={{ paddingLeft: 0 }}><span>ⓘ {x.content}</span><span className="time">{hhmm(x.created_at)}</span></div>;
-          if (x.author_kind === "human")
-            return <div className="msg me" key={x.id}><div><div className="who" style={{ textAlign: "right" }}>你 · {hhmm(x.created_at)}</div><div className="bubble">{x.content}</div></div></div>;
+          if (x.author_kind === "human" || x.author_kind === "autopilot") {
+            // 旧数据里自动发出的请求也记成了 human，按末尾的标记认出来
+            const auto = x.author_kind === "autopilot" || x.content.includes("这条消息由负责人流程自动发出");
+            return <div className="msg me" key={x.id}><div><div className="who" style={{ textAlign: "right" }}>{auto ? "自主推进" : "你"} · {hhmm(x.created_at)}</div><div className="bubble">{x.content}</div></div></div>;
+          }
           const n = nameOf(x.employee_id);
           return <div className="msg" key={x.id}><Avatar name={n} /><div><div className="who">{n} · {hhmm(x.created_at)}</div><div className="bubble">{x.content}</div></div></div>;
         })}

@@ -606,7 +606,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         };
         if let Some(rv) = reviewer {
             let m = self.db().create_meeting(&self.project_id, "code_review", &format!("评审：{}", item.title), lead.as_ref().map(|l| l.id.as_str()), Some(&task.id), &[], 6)?;
-            self.db().post_message(&m.id, "human", None, &format!("@{} 请评审 {} 的改动《{}》。重点看：逻辑是否正确、边界情况、测试是否充分、是否符合项目目标；发现需要团队决定的设计问题请先 list_issues 再 propose_issue。（这条消息由负责人流程自动发出）", rv.name, emp.name, item.title))?;
+            self.db().post_message(&m.id, "autopilot", None, &format!("@{} 请评审 {} 的改动《{}》。重点看：逻辑是否正确、边界情况、测试是否充分、是否符合项目目标；发现需要团队决定的设计问题请先 list_issues 再 propose_issue。（这条消息由负责人流程自动发出）", rv.name, emp.name, item.title))?;
             {
                 let _p = self.permit_for(Some(&rv)).await;
                 let _busy = self.busy_scope(&rv.name);

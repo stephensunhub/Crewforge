@@ -41,6 +41,7 @@ pub fn format_messages(msgs: &[MeetingMessage], name_of: &dyn Fn(Option<&str>) -
         let who = match m.author_kind.as_str() {
             "human" => "人类".to_string(),
             "system" => "系统".to_string(),
+            "autopilot" => "自主推进".to_string(),
             _ => name_of(m.employee_id.as_deref()),
         };
         let line = format!("[{who}] {}", clip(&m.content, MAX_MSG_CHARS));
