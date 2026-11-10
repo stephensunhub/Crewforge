@@ -102,10 +102,10 @@ async fn discard_needs_the_exact_name_removes_worktrees_and_records_but_keeps_th
     let e = setup().await;
     let wt = PathBuf::from(&e.db.list_tasks(&e.repo.to_string_lossy()).unwrap()[0].worktree_path);
     let branch = e.db.list_tasks(&e.repo.to_string_lossy()).unwrap()[0].branch.clone();
-    assert!(e.orch.discard_project(&e.pid, "shop", false).await.unwrap_err().to_string().contains("完整的项目名称"));
+    assert!(e.orch.discard_project(&e.pid, "shop", false, "").await.unwrap_err().to_string().contains("完整的项目名称"));
     assert!(wt.exists(), "名称不对时什么都没动");
 
-    let r = e.orch.discard_project(&e.pid, "Shop", false).await.unwrap();
+    let r = e.orch.discard_project(&e.pid, "Shop", false, "").await.unwrap();
     assert_eq!((r.tasks_removed, r.folder_trashed), (1, None));
     assert!(!wt.exists(), "员工的 worktree 被清理");
     assert!(e.repo.join("README.md").exists(), "项目文件夹还在");
@@ -131,21 +131,40 @@ async fn deleting_the_folder_is_limited_to_clean_new_projects_and_goes_to_the_tr
 
     // 有未提交的改动 → 拒绝，并且什么都没删
     std::fs::write(e.repo.join("scratch.txt"), "未保存").unwrap();
-    let err = e.orch.discard_project(&e.pid, "Shop", true).await.unwrap_err().to_string();
+    let err = e.orch.discard_project(&e.pid, "Shop", true, "").await.unwrap_err().to_string();
     assert!(err.contains("未提交") && err.contains("scratch.txt"), "{err}");
     assert!(e.db.get_project(&e.pid).unwrap().is_some() && e.repo.exists());
     std::fs::remove_file(e.repo.join("scratch.txt")).unwrap();
 
-    // 导入的已有项目 → 拒绝连文件夹一起删
+    // 导入的已有项目 → 要再输入一次目录名；不输入或输错都拒绝，什么都没删
     e.db.set_onboarding(&e.pid, "confirmed").unwrap();
-    let err = e.orch.discard_project(&e.pid, "Shop", true).await.unwrap_err().to_string();
-    assert!(err.contains("导入"), "{err}");
-    e.db.set_onboarding(&e.pid, "none").unwrap();
+    for wrong in ["", "shop", "别的目录"] {
+        let err = e.orch.discard_project(&e.pid, "Shop", true, wrong).await.unwrap_err().to_string();
+        assert!(err.contains("目录名「proj」"), "{err}");
+        assert!(e.repo.exists() && e.db.get_project(&e.pid).unwrap().is_some());
+    }
+    // 输对目录名但目录不干净 → 仍然拒绝
+    std::fs::write(e.repo.join("scratch.txt"), "未保存").unwrap();
+    let err = e.orch.discard_project(&e.pid, "Shop", true, "proj").await.unwrap_err().to_string();
+    assert!(err.contains("未提交"), "{err}");
+    std::fs::remove_file(e.repo.join("scratch.txt")).unwrap();
 
+    // 导入的项目输对了目录名、目录又干净 → 移到废纸篓；新建的项目不需要目录名（下面的情形）
+    let r = e.orch.discard_project(&e.pid, "Shop", true, "proj").await.unwrap();
+    assert!(!e.repo.exists() && PathBuf::from(r.folder_trashed.unwrap()).join("README.md").exists());
+}
+
+#[tokio::test]
+async fn a_new_project_folder_goes_to_the_trash_without_the_directory_name() {
+    let e = setup().await;
+    // 两个测试都会改 HOME（进程内共享），所以这里只检查落在某个 .Trash 里
+    let home = e.root.join("fakehome2");
+    std::fs::create_dir_all(&home).unwrap();
+    unsafe { std::env::set_var("HOME", &home); }
     // 干净的新项目 → 文件夹移到废纸篓，数据目录之外的东西没被删
-    let r = e.orch.discard_project(&e.pid, "Shop", true).await.unwrap();
+    let r = e.orch.discard_project(&e.pid, "Shop", true, "").await.unwrap();
     let trashed = PathBuf::from(r.folder_trashed.unwrap());
-    assert!(!e.repo.exists() && trashed.join("README.md").exists() && trashed.starts_with(home.join(".Trash")));
+    assert!(!e.repo.exists() && trashed.join("README.md").exists() && trashed.parent().unwrap().ends_with(".Trash"));
     assert!(e.data.exists(), "数据目录还在");
     assert!(e.db.get_project(&e.pid).unwrap().is_none());
 }

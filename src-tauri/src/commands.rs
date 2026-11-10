@@ -154,9 +154,9 @@ pub async fn end_project(state: State<'_, AppState>, id: String, kind: String, r
 
 /// 不做了：彻底删除；`delete_folder` 时把项目文件夹移到废纸篓。需要输入项目名确认。
 #[tauri::command]
-pub async fn discard_project(state: State<'_, AppState>, id: String, confirm_name: String, delete_folder: bool) -> CmdResult<crewforge_core::closeout::DiscardReport> {
+pub async fn discard_project(state: State<'_, AppState>, id: String, confirm_name: String, delete_folder: bool, confirm_dir: Option<String>) -> CmdResult<crewforge_core::closeout::DiscardReport> {
     quiesce_project(&state, &id)?;
-    state.orch.discard_project(&id, &confirm_name, delete_folder).await.map_err(err)
+    state.orch.discard_project(&id, &confirm_name, delete_folder, confirm_dir.as_deref().unwrap_or("")).await.map_err(err)
 }
 
 #[tauri::command]

@@ -3,7 +3,7 @@
 //! - 已完成：要求所有任务都已合并或放弃；标记项目结束，什么都不删。
 //! - 归档：标记项目结束；进行中的任务会被放弃（改动保存为 WIP、保留分支和工作区），目录一律不动。可以恢复。
 //! - 不做了：彻底删除——员工在这个项目里的 worktree 和分支、项目的全部记录；可选连项目文件夹一起移到废纸篓。
-//!   用量记录（`turn_result`）保留，因为那是真实花掉的额度。
+//!   导入的已有项目要再输入一次目录名才能连文件夹一起删。用量记录（`turn_result`）保留，因为那是真实花掉的额度。
 
 use crate::db::{Db, Project, now_ms};
 use crate::orchestrator::Orchestrator;
@@ -130,12 +130,15 @@ impl Db {
     }
 }
 
-/// 项目文件夹能不能被整个移走：只允许 Crewforge 新建的项目，且目录是干净的 Git 仓库。
-pub async fn check_folder_deletable(p: &Project, data_dir: &Path) -> Result<PathBuf> {
-    if p.onboarding != "none" {
-        bail!("这是导入的已有项目，不能连文件夹一起删；请取消勾选“同时把项目文件夹移到废纸篓”，只删除 Crewforge 里的内容");
-    }
+/// 项目文件夹能不能被整个移走：目录必须是干净的 Git 仓库；导入的已有项目要再输入一次目录名确认（那往往是你自己的代码仓库）。
+pub async fn check_folder_deletable(p: &Project, data_dir: &Path, confirm_dir: &str) -> Result<PathBuf> {
     let dir = Path::new(&p.path).canonicalize().with_context(|| format!("项目目录不存在：{}", p.path))?;
+    if p.onboarding != "none" {
+        let base = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if confirm_dir.trim() != base {
+            bail!("这是导入的已有项目，目录可能是你自己的代码仓库。要连文件夹一起删，请再输入一次目录名「{base}」确认");
+        }
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from).and_then(|h| h.canonicalize().ok());
     if dir.components().count() < 4 || home.as_ref().is_some_and(|h| h == &dir || h.starts_with(&dir)) {
         bail!("目录太靠近根目录或家目录，拒绝删除：{}", dir.display());
@@ -192,13 +195,13 @@ impl Orchestrator {
     }
 
     /// 不做了：彻底删除。先全部校验，再动手。
-    pub async fn discard_project(&self, id: &str, confirm_name: &str, delete_folder: bool) -> Result<DiscardReport> {
+    pub async fn discard_project(&self, id: &str, confirm_name: &str, delete_folder: bool, confirm_dir: &str) -> Result<DiscardReport> {
         let p = self.db.get_project(id)?.context("项目不存在")?;
         if confirm_name.trim() != p.name {
             bail!("请输入完整的项目名称来确认删除");
         }
         let data_dir = self.ws.data_dir().canonicalize().unwrap_or_else(|_| self.ws.data_dir());
-        let folder = if delete_folder { Some(check_folder_deletable(&p, &data_dir).await?) } else { None };
+        let folder = if delete_folder { Some(check_folder_deletable(&p, &data_dir, confirm_dir).await?) } else { None };
 
         let repo = PathBuf::from(&p.path);
         let tasks = self.db.list_tasks(&p.path)?;
