@@ -30,6 +30,8 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
   const [calls, setCalls] = useState(30);
   const [minutes, setMinutes] = useState(60);
   const [busy, setBusy] = useState(false);
+  const [resume, setResume] = useState(true);
+  useEffect(() => { void api.getAutopilotResume(projectId).then(setResume).catch(() => setResume(true)); }, [projectId]);
   const refresh = useCallback(async () => { try { setSt(await api.autopilotStatus(projectId)); } catch { /* 忽略 */ } }, [projectId]);
   const timeline = useMemo(() => events.filter((e) => e.project_id === projectId && e.kind.startsWith("autopilot_")).slice(-40).reverse(), [events, projectId]);
   const lastId = timeline[0]?.id ?? 0;
@@ -63,6 +65,10 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
           {run.status === "escalated" && <> · <button className="link" onClick={() => onGoTab("issues")}>去看议题</button></>}
         </div>
       )}
+      <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }} title="应用被关掉或重启时，正在推进的批次会中断。勾选后，下次打开应用约 5 秒后自动接着推进，预算是剩余的部分，也不会替你批准重启期间 AI 新提议的计划条目。">
+        <input type="checkbox" checked={resume} onChange={(e) => { const v = e.target.checked; setResume(v); void api.setAutopilotResume(projectId, v).catch((er) => { setResume(!v); onError(String(er)); }); }} />
+        应用重启后自动接着推进（用上次剩下的预算）
+      </label>
       <div className="hint" style={{ marginBottom: 6 }}>你可以随时在<button className="link" onClick={() => onGoTab("chat")}>群聊</button>里 @ 员工或负责人纠偏；需要停就点“暂停”。</div>
       {timeline.length === 0 ? <div className="hint">还没有动态。</div> : (
         <div className="ap-timeline">

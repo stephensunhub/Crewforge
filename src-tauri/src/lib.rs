@@ -18,7 +18,7 @@ pub fn run() {
             let db = Arc::new(Db::open(&data_dir)?);
             // 把事件表里的新增事件推送给界面。不用进程内的钩子：MCP 服务器和命令行是别的进程，
             // 它们写入的事件只有通过读库才看得到。
-            let _ = db.close_orphaned_autopilot_runs();
+            let interrupted = db.take_orphaned_autopilot_runs().unwrap_or_default();
             let st = state::AppState::new(db.clone(), &data_dir);
             let sched = st.sched.clone();
             let handle = app.handle().clone();
@@ -46,6 +46,8 @@ pub fn run() {
                 }
             });
             app.manage(st);
+            // 上次被中断的自主推进批次：按项目设置接着推进（默认开启）
+            tauri::async_runtime::spawn(commands::resume_interrupted_autopilots(app.handle().clone(), interrupted));
             // 对齐会定时：启动一分钟后开始，每 10 分钟检查一次哪些项目到点
             let tick_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -87,6 +89,8 @@ pub fn run() {
             commands::lead_triage_actions,
             commands::lead_draft_plan,
             commands::start_autopilot,
+            commands::get_autopilot_resume,
+            commands::set_autopilot_resume,
             commands::pause_autopilot,
             commands::stop_autopilot,
             commands::autopilot_status,

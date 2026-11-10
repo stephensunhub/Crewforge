@@ -15,7 +15,7 @@ use crewforge_core::runner::NoopObserver;
 use crewforge_core::workspace::{MergeOutcome, RepoStatus};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 type CmdResult<T> = Result<T, String>;
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -961,19 +961,64 @@ pub async fn lead_draft_plan(app: AppHandle, state: State<'_, AppState>, project
 #[tauri::command]
 pub fn start_autopilot(app: AppHandle, state: State<'_, AppState>, project_id: String, max_calls: i64, max_minutes: i64) -> CmdResult<crewforge_core::autopilot::AutopilotRun> {
     let run = crewforge_core::autopilot::Autopilot::<UiApprover>::prepare(&state.orch, &project_id, max_calls, max_minutes).map_err(err)?;
+    launch_autopilot(&app, &state, &run);
+    Ok(run)
+}
+
+/// 把已创建好的批次跑起来（后台任务）。
+fn launch_autopilot(app: &AppHandle, state: &AppState, run: &crewforge_core::autopilot::AutopilotRun) {
+    let project_id = run.project_id.clone();
     let ctl = Arc::new(crewforge_core::autopilot::AutopilotCtl::default());
     state.autopilots.lock().unwrap().insert(project_id.clone(), ctl.clone());
     let approver = Arc::new(UiApprover { app: app.clone(), pending: state.pending.clone(), project_id: Some(project_id.clone()) });
     let (running, autopilots, orch, sched) = (state.running.clone(), state.autopilots.clone(), state.orch.clone(), state.sched.clone());
     let emit_app = app.clone();
     let on_busy: Arc<dyn Fn(Vec<String>) + Send + Sync> = Arc::new(move |names| { let _ = emit_app.emit("crewforge://running", names); });
-    let ap = crewforge_core::autopilot::Autopilot::new_with_busy(orch, sched, approver, ctl, &run, running, on_busy).map_err(err)?;
-    let pid = project_id.clone();
-    tauri::async_runtime::spawn(async move {
-        ap.run().await;
-        autopilots.lock().unwrap().remove(&pid);
-    });
-    Ok(run)
+    match crewforge_core::autopilot::Autopilot::new_with_busy(orch, sched, approver, ctl, run, running, on_busy) {
+        Ok(ap) => {
+            tauri::async_runtime::spawn(async move {
+                ap.run().await;
+                autopilots.lock().unwrap().remove(&project_id);
+            });
+        }
+        Err(e) => {
+            state.autopilots.lock().unwrap().remove(&project_id);
+            let _ = state.db.set_autopilot_run(&run.id, "failed", 0, &e.to_string());
+        }
+    }
+}
+
+/// 应用启动时：上次被中断的批次，按项目里的设置（默认开启）接着推进，预算是剩余的那部分。
+/// 稍等几秒再开始，让界面和事件推送先就绪；每个项目恢复前都会重新检查条件（有负责人、没有归档等）。
+pub async fn resume_interrupted_autopilots(app: AppHandle, interrupted: Vec<crewforge_core::autopilot::AutopilotRun>) {
+    if interrupted.is_empty() {
+        return;
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    let state = app.state::<AppState>();
+    let now = crewforge_core::db::now_ms();
+    for old in interrupted {
+        let Some((calls, minutes)) = state.db.plan_autopilot_resume(&old, now) else { continue };
+        match crewforge_core::autopilot::Autopilot::<UiApprover>::prepare_resume(&state.orch, &old.project_id, calls, minutes) {
+            Ok(run) => {
+                let _ = state.db.append_event_for(Some(&old.project_id), "autopilot_step", None, None, &serde_json::json!({"text": format!("应用重启，自动接着上次的推进：剩余预算 {calls} 次调用 / {minutes} 分钟。不想自动恢复，可以在“我的职责”页关掉这个选项")}));
+                launch_autopilot(&app, &state, &run);
+            }
+            Err(e) => {
+                let _ = state.db.append_event_for(Some(&old.project_id), "autopilot_step", None, None, &serde_json::json!({"text": format!("应用重启后没有自动恢复推进：{e}")}));
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_autopilot_resume(state: State<'_, AppState>, project_id: String) -> bool {
+    state.db.autopilot_resume_enabled(&project_id)
+}
+
+#[tauri::command]
+pub fn set_autopilot_resume(state: State<'_, AppState>, project_id: String, enabled: bool) -> CmdResult<()> {
+    state.db.set_autopilot_resume(&project_id, enabled).map_err(err)
 }
 
 /// 暂停：手上正在做的做完就停，不再派新活。

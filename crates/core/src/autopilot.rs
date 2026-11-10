@@ -100,6 +100,44 @@ impl Db {
         Ok(())
     }
 
+    /// 应用重启后是否自动接着推进（按项目设置，默认开启）。
+    pub fn autopilot_resume_enabled(&self, project_id: &str) -> bool {
+        self.get_setting(&format!("autopilot_resume.{project_id}")).ok().flatten().as_deref() != Some("off")
+    }
+
+    pub fn set_autopilot_resume(&self, project_id: &str, enabled: bool) -> Result<()> {
+        self.set_setting(&format!("autopilot_resume.{project_id}"), if enabled { "on" } else { "off" })
+    }
+
+    /// 应用启动时调用：把上次还在“推进中”的批次标为已停止（进程已经随应用退出），并返回它们，
+    /// 由调用方决定要不要接着推进。
+    pub fn take_orphaned_autopilot_runs(&self) -> Result<Vec<AutopilotRun>> {
+        let runs: Vec<AutopilotRun> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT id, project_id, status, max_calls, max_minutes, calls, started_at, ended_at, reason FROM autopilot_runs WHERE status = 'running'")?;
+            let rows = stmt.query_map([], Self::run_row)?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        self.close_orphaned_autopilot_runs()?;
+        Ok(runs)
+    }
+
+    /// 被中断的批次要不要自动恢复，以及恢复时的剩余预算 (调用数, 分钟)。
+    /// 不恢复的情况：项目里关了这个选项；剩余预算太少；这个批次启动不到一分钟就被中断
+    /// （避免应用反复崩溃时不停地重新开始）。
+    pub fn plan_autopilot_resume(&self, run: &AutopilotRun, now: i64) -> Option<(i64, i64)> {
+        if !self.autopilot_resume_enabled(&run.project_id) {
+            return None;
+        }
+        let ran_ms = now - run.started_at;
+        if ran_ms < 60_000 {
+            return None;
+        }
+        let calls = run.max_calls - run.calls;
+        let minutes = run.max_minutes - ran_ms / 60_000;
+        (calls >= 3 && minutes >= 5).then_some((calls, minutes))
+    }
+
     /// 应用重启后，上次还在“推进中”的批次已经没有进程在跑：标为已停止。
     pub fn close_orphaned_autopilot_runs(&self) -> Result<usize> {
         Ok(self.conn.lock().unwrap().execute("UPDATE autopilot_runs SET status = 'stopped', reason = '应用重启，推进已停止', ended_at = ?1 WHERE status = 'running'", [now_ms()])?)
@@ -166,6 +204,16 @@ fn clip(s: &str, n: usize) -> String {
 impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     /// 开始前的检查：项目要有 AI 负责人；此时点“开始”就是人对计划的最后确认——提议的条目一并批准。
     pub fn prepare(orch: &Arc<Orchestrator>, project_id: &str, max_calls: i64, max_minutes: i64) -> Result<AutopilotRun> {
+        Self::prepare_inner(orch, project_id, max_calls, max_minutes, true)
+    }
+
+    /// 应用重启后接着推进：条件与 `prepare` 相同，但不批准计划——人当初批准的是那时的计划，
+    /// 之后 AI 新提议的条目仍然要等人确认。
+    pub fn prepare_resume(orch: &Arc<Orchestrator>, project_id: &str, max_calls: i64, max_minutes: i64) -> Result<AutopilotRun> {
+        Self::prepare_inner(orch, project_id, max_calls, max_minutes, false)
+    }
+
+    fn prepare_inner(orch: &Arc<Orchestrator>, project_id: &str, max_calls: i64, max_minutes: i64, approve: bool) -> Result<AutopilotRun> {
         let db = &orch.db;
         let project = db.get_project(project_id)?.context("项目不存在")?;
         if project.status != "active" {
@@ -189,9 +237,9 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         if view.items.iter().filter(|i| i.status != "cancelled").count() == 0 {
             bail!("项目还没有计划。请先在“计划”页点“让负责人起草计划”，或手动添加条目");
         }
-        let approved = db.approve_proposed_plan(project_id)?;
+        let approved = if approve { db.approve_proposed_plan(project_id)? } else { 0 };
         let run = db.create_autopilot_run(project_id, max_calls, max_minutes)?;
-        db.append_event_for(Some(project_id), "autopilot_started", None, None, &json!({"run_id": run.id, "text": format!("负责人开始自主推进（预算 {max_calls} 次调用 / {max_minutes} 分钟）{}", if approved > 0 { format!("，并批准了 {approved} 个提议的计划条目") } else { String::new() }), "max_calls": max_calls, "max_minutes": max_minutes}))?;
+        db.append_event_for(Some(project_id), "autopilot_started", None, None, &json!({"run_id": run.id, "text": format!("负责人{}自主推进（预算 {max_calls} 次调用 / {max_minutes} 分钟）{}", if approve { "开始" } else { "接着" }, if approved > 0 { format!("，并批准了 {approved} 个提议的计划条目") } else { String::new() }), "max_calls": max_calls, "max_minutes": max_minutes}))?;
         Ok(run)
     }
 

@@ -458,3 +458,38 @@ async fn items_expected_to_touch_the_same_file_never_run_in_parallel() {
     let v = e.db.plan_view(&e.pid).unwrap();
     assert!(v.items.iter().filter(|i| i.title == "A" || i.title == "C").all(|i| i.status == "done"));
 }
+
+#[tokio::test]
+async fn interrupted_batches_resume_with_the_remaining_budget_without_approving_new_proposals() {
+    let e = setup().await;
+    let ai = e.db.employee_by_name("alice").unwrap().unwrap().id;
+    let new_item = |t: &str| NewPlanItem { title: t.into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: None, deps: vec![] };
+
+    // 应用被关掉时批次停在“推进中”
+    let run = Autopilot::<Deny>::prepare(&e.orch, &e.pid, 40, 60).unwrap();
+    e.db.set_autopilot_run(&run.id, "running", 10, "").unwrap();
+    let orphans = e.db.take_orphaned_autopilot_runs().unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(e.db.latest_autopilot_run(&e.pid).unwrap().unwrap().status, "stopped", "重启后旧批次先标为已停止");
+
+    // 恢复条件：默认开启；剩余预算 = 总预算 - 已用；刚启动不到一分钟的不恢复（防止崩溃循环）
+    let old = orphans[0].clone();
+    let later = old.started_at + 20 * 60_000;
+    assert_eq!(e.db.plan_autopilot_resume(&old, later), Some((30, 40)));
+    assert_eq!(e.db.plan_autopilot_resume(&old, old.started_at + 30_000), None, "刚启动就被中断：不恢复");
+    assert_eq!(e.db.plan_autopilot_resume(&old, old.started_at + 58 * 60_000), None, "剩余时间太少：不恢复");
+    let mut spent = old.clone();
+    spent.calls = 39;
+    assert_eq!(e.db.plan_autopilot_resume(&spent, later), None, "剩余调用太少：不恢复");
+    e.db.set_autopilot_resume(&e.pid, false).unwrap();
+    assert_eq!(e.db.plan_autopilot_resume(&old, later), None, "项目里关掉了这个选项");
+    e.db.set_autopilot_resume(&e.pid, true).unwrap();
+
+    // 恢复时不批准计划：重启期间 AI 新提议的条目仍要等人确认
+    e.db.create_plan_item(&e.pid, &new_item("重启后 AI 才提议的"), Some(&ai)).unwrap();
+    let resumed = Autopilot::<Deny>::prepare_resume(&e.orch, &e.pid, 30, 40).unwrap();
+    assert_eq!((resumed.status.as_str(), resumed.max_calls), ("running", 30));
+    let v = e.db.plan_view(&e.pid).unwrap();
+    assert_eq!(v.counts.proposed, 1, "恢复不等于人批准了新提议");
+    assert!(e.db.recent_events(50).unwrap().iter().any(|x| x.kind == "autopilot_started" && x.payload["text"].as_str().unwrap_or("").contains("接着")));
+}
