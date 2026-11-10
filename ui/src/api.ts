@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Endpoint, EndpointInput, EndpointTest,
 } from "./types";
 
 export const api = {
@@ -43,6 +43,14 @@ export const api = {
   applyRecommendedModels: () => invoke<number>("apply_recommended_models"),
   setPurposeModel: (provider: string, purpose: string, model: string) => invoke<void>("set_purpose_model", { provider, purpose, model }),
   discoverCopilotModels: () => invoke<number>("discover_copilot_models"),
+  listEndpoints: () => invoke<Endpoint[]>("list_endpoints"),
+  addEndpoint: (input: EndpointInput) => invoke<Endpoint>("add_endpoint", { input }),
+  updateEndpoint: (id: string, input: EndpointInput) => invoke<void>("update_endpoint", { id, input }),
+  setEndpointEnabled: (id: string, enabled: boolean) => invoke<void>("set_endpoint_enabled", { id, enabled }),
+  removeEndpoint: (id: string) => invoke<void>("remove_endpoint", { id }),
+  setEmployeeEndpoint: (id: string, endpointId: string | null, model: string) => invoke<void>("set_employee_endpoint", { id, endpointId, model }),
+  testEndpoint: (baseUrl: string, model: string, token: string | null, id: string | null) => invoke<EndpointTest>("test_endpoint", { baseUrl, model, token, id }),
+  discoverEndpointModels: (baseUrl: string) => invoke<string[]>("discover_endpoint_models", { baseUrl }),
   installCopilot: () => invoke<string>("install_copilot"),
   setCopilotProgram: (path: string) => invoke<void>("set_copilot_program", { path }),
   usageOverview: (filter: UsageFilter) => invoke<UsageOverview>("usage_overview", { filter, tzOffsetMinutes: -new Date().getTimezoneOffset() }),

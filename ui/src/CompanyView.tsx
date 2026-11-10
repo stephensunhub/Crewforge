@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import { Avatar, Field, Modal, Placeholder, basename } from "./common";
 import { MemoryView } from "./MemoryView";
-import type { Company, EmployeeCard, EventRow, ModelsOverview, ProjectSummary } from "./types";
+import type { Company, Endpoint, EmployeeCard, EventRow, ModelsOverview, ProjectSummary } from "./types";
 
 export type CompanyTab = "employees" | "projects" | "memory" | "docs" | "manage";
 export const COMPANY_TABS: [CompanyTab, string][] = [
@@ -14,8 +14,8 @@ export const COMPANY_TABS: [CompanyTab, string][] = [
 const ROLES = ["全栈工程师", "QA 测试工程师", "架构师 / CTO", "其他"];
 
 function EmployeeForm({ initial, onSubmit, onClose }: {
-  initial?: { name: string; role: string; persona: string; provider?: string; model?: string };
-  onSubmit: (name: string, role: string, persona: string, provider: string, model: string) => Promise<void>;
+  initial?: { name: string; role: string; persona: string; provider?: string; model?: string; endpointId?: string | null };
+  onSubmit: (name: string, role: string, persona: string, provider: string, model: string, endpointId: string) => Promise<void>;
   onClose: () => void;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
@@ -25,7 +25,10 @@ function EmployeeForm({ initial, onSubmit, onClose }: {
   const [model, setModel] = useState(initial?.model ?? "");
   const [busy, setBusy] = useState(false);
   const [cat, setCat] = useState<ModelsOverview | null>(null);
-  useEffect(() => { void api.modelsOverview().then(setCat).catch(() => setCat(null)); }, []);
+  const [eps, setEps] = useState<Endpoint[]>([]);
+  const [epId, setEpId] = useState(initial?.endpointId ?? "");
+  useEffect(() => { void api.modelsOverview().then(setCat).catch(() => setCat(null)); void api.listEndpoints().then(setEps).catch(() => setEps([])); }, []);
+  const ep = provider === "claude" ? eps.find((x) => x.id === epId) : undefined;
   const enabledProv = (p: string) => !cat || (cat.providers.find((x) => x.provider === p)?.enabled ?? true) || initial?.provider === p;
   const valid = name.trim() !== "" && !/[\s@]/.test(name);
   return (
@@ -42,21 +45,38 @@ function EmployeeForm({ initial, onSubmit, onClose }: {
         <Field label="执行引擎" hint={initial
           ? (provider !== initial.provider ? "⚠ 切换后 TA 之前的对话上下文不会带过去（任务分支、工作区、历史记录和记忆都保留）；TA 正在工作时不能切换。" : "可以随时切换，下次执行时生效。")
           : "Claude：可以边做边向你请求权限，按订阅额度计量。Copilot：权限在启动时一次定好（没有列入的命令会被直接拒绝，不会来问你），按 Copilot 高级请求计量。"}>
-          <select value={provider} onChange={(e) => { setProvider(e.target.value); setModel(""); }}>
+          <select value={provider} onChange={(e) => { setProvider(e.target.value); setModel(""); if (e.target.value !== "claude") setEpId(""); }}>
             <option value="claude" disabled={!enabledProv("claude")}>Claude Code{enabledProv("claude") ? "" : "（已停用）"}</option><option value="copilot" disabled={!enabledProv("copilot")}>GitHub Copilot CLI{enabledProv("copilot") ? "" : "（已停用）"}</option>
           </select>
         </Field>
+        {provider === "claude" && (
+          <Field label="LLM" hint={eps.length === 0 ? "默认用本机 Claude 订阅。要接其他模型（如另一台电脑上的 Ollama），先到“模型 → LLM 端点”添加。" : "默认用本机 Claude 订阅；选端点后，只有 TA 的进程连到那个服务，不影响本机。换 LLM 会清掉 TA 的旧会话。"}>
+            <select value={epId} onChange={(e) => { setEpId(e.target.value); setModel(""); }}>
+              <option value="">Claude 订阅（本机登录）</option>
+              {eps.map((x) => <option key={x.id} value={x.id} disabled={!x.enabled && x.id !== initial?.endpointId}>{x.name}{x.enabled ? "" : "（已停用）"}</option>)}
+            </select>
+          </Field>
+        )}
+        {ep ? (
+          <Field label="模型" hint="只能选这个端点上配置的模型；留空用第一个。本地模型的工具调用较弱，更适合做范围明确的开发任务，不建议当负责人。">
+            <select value={model} onChange={(e) => setModel(e.target.value)}>
+              <option value="">{ep.models[0]}（默认）</option>
+              {ep.models.slice(1).map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </Field>
+        ) : (
         <Field label="模型" hint="留空使用引擎默认。可填别名或完整模型名；名称不对时 TA 会在下次执行时报错，改回即可。">
           <input list={`models-${provider}`} value={model} placeholder="默认（可在“模型”页按用途设置默认模型）" onChange={(e) => setModel(e.target.value.trim())} />
           <datalist id={`models-${provider}`}>{(cat?.models ?? []).filter((m) => m.provider === provider && m.enabled).map((m) => <option key={m.model_id} value={m.model_id}>{m.label}</option>)}</datalist>
         </Field>
+        )}
         <Field label="身份说明" hint="告诉 TA 是谁、怎么沟通、擅长什么。留空会使用默认说明。">
           <textarea rows={5} value={persona} onChange={(e) => setPersona(e.target.value)} />
         </Field>
         <div className="form-btns">
           <button className="btn primary" disabled={!valid || busy} onClick={async () => {
             setBusy(true);
-            try { await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`, provider, model); } finally { setBusy(false); }
+            try { await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`, provider, model, provider === "claude" ? epId : ""); } finally { setBusy(false); }
           }}>{initial ? "保存" : "创建"}</button>
         </div>
       </div>
@@ -147,7 +167,7 @@ export function CompanyView({
                   <Avatar name={c.employee.name} size={38} />
                   <div style={{ minWidth: 0 }}>
                     <b>{c.employee.name}</b>
-                    <div className="hint">{c.employee.role}{c.employee.provider === "copilot" && <span className="badge" style={{ marginLeft: 6 }}>Copilot</span>}{c.employee.model && <span className="badge" style={{ marginLeft: 6 }}>{c.employee.model}</span>}</div>
+                    <div className="hint">{c.employee.role}{c.employee.provider === "copilot" && <span className="badge" style={{ marginLeft: 6 }}>Copilot</span>}{c.employee.endpoint_id && <span className="badge" style={{ marginLeft: 6 }} title="连的是自定义 LLM 端点，不是本机 Claude 订阅">本地模型</span>}{c.employee.model && <span className="badge" style={{ marginLeft: 6 }}>{c.employee.model}</span>}</div>
                   </div>
                   <span className={`status ${busy ? "run" : ""}`}>{busy ? "● 工作中" : "○ 空闲"}</span>
                 </div>
@@ -171,7 +191,7 @@ export function CompanyView({
             );
           })}
         </div>
-        {modal === "new-emp" && <EmployeeForm onClose={() => setModal(null)} onSubmit={async (n, r, p, pv, md) => { if (await guard(() => api.addEmployee(n, r, p, pv, md))) setModal(null); }} />}
+        {modal === "new-emp" && <EmployeeForm onClose={() => setModal(null)} onSubmit={async (n, r, p, pv, md, ep) => { if (await guard(async () => { const e = await api.addEmployee(n, r, p, pv, ep ? "" : md); if (ep) await api.setEmployeeEndpoint(e.id, ep, md); })) setModal(null); }} />}
         {modal && typeof modal === "object" && "memory" in modal && (
           <Modal title={`${modal.memory.employee.name} 的个人记忆`} onClose={() => setModal(null)} width={760}>
             <MemoryView embedded scope={{ layer: "employee", employeeId: modal.memory.employee.id, name: modal.memory.employee.name }} events={events} onError={onError} />
@@ -179,9 +199,15 @@ export function CompanyView({
         )}
         {modal && typeof modal === "object" && "edit" in modal && (
           <EmployeeForm
-            initial={{ name: modal.edit.employee.name, role: modal.edit.employee.role, persona: modal.edit.employee.persona, provider: modal.edit.employee.provider, model: modal.edit.employee.model }}
+            initial={{ name: modal.edit.employee.name, role: modal.edit.employee.role, persona: modal.edit.employee.persona, provider: modal.edit.employee.provider, model: modal.edit.employee.model, endpointId: modal.edit.employee.endpoint_id }}
             onClose={() => setModal(null)}
-            onSubmit={async (_n, r, p, pv, md) => { if (await guard(() => api.updateEmployee(modal.edit.employee.id, r, p, pv, md))) setModal(null); }}
+            onSubmit={async (_n, r, p, pv, md, ep) => {
+              const emp = modal.edit.employee;
+              if (await guard(async () => {
+                await api.updateEmployee(emp.id, r, p, pv, md);
+                if (ep || emp.endpoint_id) await api.setEmployeeEndpoint(emp.id, ep || null, md);
+              })) setModal(null);
+            }}
           />
         )}
       </div>

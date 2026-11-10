@@ -36,6 +36,8 @@ pub struct ClaudeSpec {
     /// 命令沙箱（macOS Seatbelt，由 CLI 自带）：沙箱内的命令不再逐条审批，
     /// 工作区之外的写入由系统拦截。值为除工作区外额外可写的目录（如 git 公共目录、包缓存）。
     pub sandbox: Option<Vec<PathBuf>>,
+    /// 额外注入给 CLI 子进程的环境变量（连自定义 LLM 端点时用）；只作用于这个进程
+    pub env: Vec<(String, String)>,
 }
 
 /// 沙箱内允许访问的网络域名（包管理器与代码托管）；其他域名仍需审批。
@@ -59,7 +61,7 @@ impl McpLaunch {
 
 impl ClaudeSpec {
     pub fn new(session_id: String, resume: bool, persona: String, cwd: PathBuf) -> Self {
-        Self { session_id, resume, persona, cwd, program: "claude".into(), mcp: None, model: None, sandbox: None }
+        Self { session_id, resume, persona, cwd, program: "claude".into(), mcp: None, model: None, sandbox: None, env: Vec::new() }
     }
 
     pub fn args(&self) -> Vec<String> {
@@ -270,6 +272,7 @@ impl ClaudeProcess {
     pub async fn spawn(spec: &ClaudeSpec, prompt: &str) -> Result<Self> {
         let mut cmd = Command::new(&spec.program);
         cmd.args(spec.args())
+            .envs(spec.env.iter().map(|(k, v)| (k, v)))
             .current_dir(&spec.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

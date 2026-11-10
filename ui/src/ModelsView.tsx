@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
-import type { ModelsOverview, ProviderStatus } from "./types";
+import { EndpointsPanel } from "./EndpointsView";
+import type { Endpoint, ModelsOverview, ProviderStatus } from "./types";
 
 const PROVIDER_HINT: Record<string, string> = {
   claude: "用你本机已登录的 Claude Code 账号，按订阅额度（5 小时 / 7 天窗口）计量，可以边做边向你请求权限。",
@@ -9,6 +10,7 @@ const PROVIDER_HINT: Record<string, string> = {
 
 export function ModelsView({ onError }: { onError: (m: string) => void }) {
   const [o, setO] = useState<ModelsOverview | null>(null);
+  const [eps, setEps] = useState<Endpoint[]>([]);
   const [sel, setSel] = useState<string>(() => { try { return localStorage.getItem("models.sel") ?? "claude"; } catch { return "claude"; } });
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState("");
@@ -18,7 +20,7 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
   const pick = (k: string) => { setSel(k); try { localStorage.setItem("models.sel", k); } catch { /* 忽略 */ } };
 
   const load = useCallback(async () => {
-    try { const v = await api.modelsOverview(); setO(v); setPath(v.providers.find((p) => p.provider === "copilot")?.program ?? ""); } catch (e) { onError(String(e)); }
+    try { const v = await api.modelsOverview(); setEps(await api.listEndpoints()); setO(v); setPath(v.providers.find((p) => p.provider === "copilot")?.program ?? ""); } catch (e) { onError(String(e)); }
   }, [onError]);
   useEffect(() => { void load(); }, [load]);
 
@@ -42,6 +44,10 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
               <div className="hint">{!p.enabled ? "已停用" : p.installed ? `已就绪 · ${p.employees} 名员工` : "未检测到"}</div>
             </button>
           ))}
+          <button className={`mitem ${sel === "endpoints" ? "on" : ""}`} onClick={() => pick("endpoints")}>
+            <div className="mitem-title">LLM 端点</div>
+            <div className="hint">{eps.length ? `${eps.length} 个，如另一台电脑上的 Ollama` : "接本地或自建模型服务"}</div>
+          </button>
           <button className={`mitem ${sel === "purposes" ? "on" : ""}`} onClick={() => pick("purposes")}>
             <div className="mitem-title">按用途的默认模型</div>
             <div className="hint">量大的用强模型，量小的用便宜模型</div>
@@ -54,6 +60,8 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
           {note && <div className="note" style={{ marginBottom: 10 }}>{note}</div>}
           {prov && <ProviderPanel p={prov} models={modelsOf(prov.provider)} busy={busy} path={path} setPath={setPath}
             newId={newId} setNewId={setNewId} newLabel={newLabel} setNewLabel={setNewLabel} act={act} />}
+
+          {sel === "endpoints" && <EndpointsPanel endpoints={eps} reload={load} onError={onError} />}
 
           {sel === "purposes" && (
             <>

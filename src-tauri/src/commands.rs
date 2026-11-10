@@ -1294,3 +1294,139 @@ pub fn start_planning(app: AppHandle, state: State<'_, AppState>, project_id: St
     post_and_wake(&app, &state, &m.id, &ask)?;
     Ok(m.id)
 }
+
+// ---------- LLM 端点（系统级配置） ----------
+
+#[tauri::command]
+pub fn list_endpoints(state: State<'_, AppState>) -> CmdResult<Vec<crewforge_core::endpoint::Endpoint>> {
+    state.db.list_endpoints().map_err(err)
+}
+
+#[tauri::command]
+pub fn add_endpoint(state: State<'_, AppState>, input: crewforge_core::endpoint::EndpointInput) -> CmdResult<crewforge_core::endpoint::Endpoint> {
+    state.db.add_endpoint(&input).map_err(err)
+}
+
+#[tauri::command]
+pub fn update_endpoint(state: State<'_, AppState>, id: String, input: crewforge_core::endpoint::EndpointInput) -> CmdResult<()> {
+    state.db.update_endpoint(&id, &input).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_endpoint_enabled(state: State<'_, AppState>, id: String, enabled: bool) -> CmdResult<()> {
+    state.db.set_endpoint_enabled(&id, enabled).map_err(err)
+}
+
+#[tauri::command]
+pub fn remove_endpoint(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.db.remove_endpoint(&id).map_err(err)
+}
+
+/// 给员工选端点（endpoint_id 为空 = 本机 Claude 订阅）和模型。
+#[tauri::command]
+pub fn set_employee_endpoint(state: State<'_, AppState>, id: String, endpoint_id: Option<String>, model: String) -> CmdResult<()> {
+    let emp = state.db.employee_by_id(&id).map_err(err)?.ok_or("员工不存在")?;
+    if emp.endpoint_id != endpoint_id && state.running.lock().unwrap().contains(&emp.name) {
+        return Err("该员工正在执行任务，等 TA 完成后再切换".into());
+    }
+    state.db.set_employee_endpoint(&id, endpoint_id.as_deref().filter(|e| !e.is_empty()), &model).map_err(err)
+}
+
+#[derive(serde::Serialize)]
+pub struct EndpointTest {
+    ok: bool,
+    millis: u64,
+    /// 成功时是模型的回复，失败时是原因
+    detail: String,
+}
+
+/// 由应用进程自己连一次 TCP。macOS 的“本地网络”权限只拦第三方进程，而系统自带的 curl 不受限，
+/// 所以只用 curl 测会“测试通过、员工却连不上”；这一步让测试和员工实际遇到的限制一致。
+async fn precheck_reachable(base: &str) -> Result<(), String> {
+    let rest = base.split("://").nth(1).unwrap_or(base);
+    let hostport = rest.split('/').next().unwrap_or(rest);
+    let addr = if hostport.contains(':') { hostport.to_string() } else { format!("{hostport}:{}", if base.starts_with("https") { 443 } else { 80 }) };
+    match tokio::time::timeout(std::time::Duration::from_secs(8), tokio::net::TcpStream::connect(&addr)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) if e.raw_os_error() == Some(65) => Err(format!("连不上 {addr}：系统返回“无路由”。如果这个地址在浏览器里或用 curl 能通，多半是 macOS 的“本地网络”权限拦住了：到 系统设置 → 隐私与安全性 → 本地网络，打开 Crewforge（从终端运行时要打开终端 App）。没有这一项时，可以先退出并重新打开 Crewforge 再测一次触发授权弹窗。")),
+        Ok(Err(e)) => Err(format!("连不上 {addr}：{e}。检查地址和端口、对方电脑的防火墙，以及 Ollama 是否设了 OLLAMA_HOST=0.0.0.0")),
+        Err(_) => Err(format!("连接 {addr} 超时（8 秒）。检查对方电脑是否开机、是否在同一网络。")),
+    }
+}
+
+/// 用 curl 发一个请求（令牌走标准输入的配置，不出现在进程参数里）。返回 (HTTP 状态码, 响应体)。
+async fn curl_json(url: &str, token: Option<&str>, body: Option<&str>, secs: u32) -> Result<(u16, String), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut cfg = String::new();
+    if let Some(t) = token {
+        let t = t.replace('\\', "\\\\").replace('"', "\\\"");
+        cfg += &format!("header = \"x-api-key: {t}\"\nheader = \"authorization: Bearer {t}\"\n");
+    }
+    cfg += "header = \"anthropic-version: 2023-06-01\"\nheader = \"content-type: application/json\"\n";
+    let tmp = std::env::temp_dir().join(format!("crewforge-ep-{}-{}.json", std::process::id(), crewforge_core::db::now_ms()));
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.args(["-sS", "-K", "-", "--max-time", &secs.to_string(), "-w", "\n%{http_code}"]);
+    // 配置走 -K -（标准输入），请求体走临时文件，避免两个都占标准输入
+    if let Some(b) = body {
+        std::fs::write(&tmp, b).map_err(err)?;
+        cmd.args(["-X", "POST", "--data-binary"]).arg(format!("@{}", tmp.display()));
+    }
+    cmd.arg(url).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("无法运行 curl：{e}"))?;
+    child.stdin.take().unwrap().write_all(cfg.as_bytes()).await.map_err(err)?;
+    let out = child.wait_with_output().await.map_err(err)?;
+    let _ = std::fs::remove_file(&tmp);
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("连不上 {url}：{}。检查地址、端口、防火墙，以及对方 Ollama 是否设了 OLLAMA_HOST=0.0.0.0", why.trim()));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let (body, code) = text.rsplit_once('\n').unwrap_or((&text, "0"));
+    Ok((code.trim().parse().unwrap_or(0), body.to_string()))
+}
+
+/// 测试连接：发一个最小的 Anthropic 消息请求，确认网络、模型名和接口兼容性都没问题。
+/// 填了 id 且没填令牌时，用已保存的令牌。
+#[tauri::command]
+pub async fn test_endpoint(state: State<'_, AppState>, base_url: String, model: String, token: Option<String>, id: Option<String>) -> CmdResult<EndpointTest> {
+    let base = crewforge_core::endpoint::normalize_base_url(&base_url).map_err(err)?;
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Err("先填一个模型名".into());
+    }
+    precheck_reachable(&base).await?;
+    let token = token.filter(|t| !t.trim().is_empty()).or_else(|| id.as_deref().and_then(|i| state.db.endpoint_token(i)));
+    let body = serde_json::json!({"model": model, "max_tokens": 128, "messages": [{"role": "user", "content": "只回复两个字母：ok"}]}).to_string();
+    let t0 = std::time::Instant::now();
+    // 第一次请求要把模型载入显存，给足时间
+    let (code, text) = curl_json(&format!("{base}/v1/messages"), token.as_deref().or(Some("ollama")), Some(&body), 180).await?;
+    let millis = t0.elapsed().as_millis() as u64;
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    if code == 200 {
+        let reply = v["content"].as_array().map(|a| a.iter().filter_map(|c| c["text"].as_str()).collect::<String>()).unwrap_or_default();
+        if reply.trim().is_empty() && v["content"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
+            return Ok(EndpointTest { ok: false, millis, detail: format!("接口返回了 200 但没有内容，可能不是 Anthropic 兼容接口：{}", text.chars().take(200).collect::<String>()) });
+        }
+        return Ok(EndpointTest { ok: true, millis, detail: format!("模型回复：{}", reply.trim()) });
+    }
+    let msg = v["error"]["message"].as_str().or(v["error"].as_str()).map(String::from).unwrap_or_else(|| text.chars().take(200).collect());
+    let hint = match code {
+        404 => "（模型名可能不对，或这个服务不支持 /v1/messages；Ollama 需要较新版本）",
+        401 | 403 => "（令牌不对）",
+        _ => "",
+    };
+    Ok(EndpointTest { ok: false, millis, detail: format!("HTTP {code}：{msg}{hint}") })
+}
+
+/// 从 Ollama 读出服务器上已有的模型（/api/tags），方便填清单。
+#[tauri::command]
+pub async fn discover_endpoint_models(base_url: String) -> CmdResult<Vec<String>> {
+    let base = crewforge_core::endpoint::normalize_base_url(&base_url).map_err(err)?;
+    precheck_reachable(&base).await?;
+    let (code, text) = curl_json(&format!("{base}/api/tags"), None, None, 15).await?;
+    if code != 200 {
+        return Err(format!("读取模型清单失败（HTTP {code}）。不是 Ollama 的话请手动填写模型名。"));
+    }
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|_| "返回的不是 Ollama 的模型清单")?;
+    Ok(v["models"].as_array().map(|a| a.iter().filter_map(|m| m["name"].as_str().map(String::from)).collect()).unwrap_or_default())
+}

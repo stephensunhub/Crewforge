@@ -8,6 +8,7 @@ pub mod cost;
 pub mod curate;
 pub mod db;
 pub mod docs;
+pub mod endpoint;
 pub mod duties;
 pub mod guest;
 pub mod lead_actions;

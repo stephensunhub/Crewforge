@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Crewforge 需要访问局域网里的 LLM 服务（例如另一台电脑上的 Ollama），让你选定的员工使用本地模型。</string>
+</dict>
+</plist>

@@ -7,6 +7,7 @@ export interface Employee {
   archived: boolean;
   provider: "claude" | "copilot";
   model: string;
+  endpoint_id: string | null;
 }
 export interface Company {
   name: string;
@@ -347,3 +348,7 @@ export interface AlignConfig {
   last_at: number | null; last_meeting_id: string | null; last_goal_note: string | null; last_check: string | null;
 }
 export interface AlignOverviewRow { project_id: string; name: string; config: AlignConfig; open_points: number }
+
+export interface Endpoint { id: string; name: string; base_url: string; models: string[]; extra_env: Record<string, string>; max_concurrency: number; context_tokens: number; has_token: boolean; enabled: boolean; employees: number }
+export interface EndpointInput { name: string; base_url: string; models: string[]; extra_env: Record<string, string>; max_concurrency: number; context_tokens: number; token: string | null }
+export interface EndpointTest { ok: boolean; millis: number; detail: string }

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 迁移列表：下标 + 1 即版本号。只能追加，不能修改已发布的迁移。
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10, MIGRATION_11, MIGRATION_12, crate::models::MIGRATION_13, crate::autopilot::MIGRATION_14, crate::plan::MIGRATION_15, crate::closeout::MIGRATION_16, crate::plan::MIGRATION_17, crate::align::MIGRATION_18];
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10, MIGRATION_11, MIGRATION_12, crate::models::MIGRATION_13, crate::autopilot::MIGRATION_14, crate::plan::MIGRATION_15, crate::closeout::MIGRATION_16, crate::plan::MIGRATION_17, crate::align::MIGRATION_18, crate::endpoint::MIGRATION_19];
 
 /// 员工使用的执行引擎：claude（默认）或 copilot
 const MIGRATION_11: &str = "ALTER TABLE employees ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';";
@@ -125,6 +125,8 @@ pub struct Employee {
     pub provider: String,
     /// 指定模型（传给 CLI 的 --model）；空表示用引擎默认
     pub model: String,
+    /// 连哪个 LLM 端点；None = 本机 Claude 订阅
+    pub endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -292,6 +294,7 @@ impl Db {
         let e = Employee {
             provider: provider.into(),
             model: String::new(),
+            endpoint_id: None,
             id: uuid::Uuid::new_v4().to_string(),
             name: name.into(),
             role: role.into(),
@@ -312,7 +315,7 @@ impl Db {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id, name, role, persona, archived, provider, model FROM employees WHERE name = ?1",
+                "SELECT id, name, role, persona, archived, provider, model, endpoint_id FROM employees WHERE name = ?1",
                 [name],
                 row_to_employee,
             )
@@ -325,7 +328,7 @@ impl Db {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id, name, role, persona, archived, provider, model FROM employees WHERE id = ?1",
+                "SELECT id, name, role, persona, archived, provider, model, endpoint_id FROM employees WHERE id = ?1",
                 [id],
                 row_to_employee,
             )
@@ -334,7 +337,7 @@ impl Db {
 
     pub fn list_employees(&self) -> Result<Vec<Employee>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, role, persona, archived, provider, model FROM employees WHERE archived = 0 AND role != 'guest' ORDER BY created_at")?;
+        let mut stmt = conn.prepare("SELECT id, name, role, persona, archived, provider, model, endpoint_id FROM employees WHERE archived = 0 AND role != 'guest' ORDER BY created_at")?;
         let rows = stmt.query_map([], row_to_employee)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -848,7 +851,7 @@ impl Db {
 }
 
 fn row_to_employee(r: &rusqlite::Row<'_>) -> rusqlite::Result<Employee> {
-    Ok(Employee { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, persona: r.get(3)?, archived: r.get::<_, i64>(4)? != 0, provider: r.get(5)?, model: r.get(6)? })
+    Ok(Employee { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, persona: r.get(3)?, archived: r.get::<_, i64>(4)? != 0, provider: r.get(5)?, model: r.get(6)?, endpoint_id: r.get(7)? })
 }
 
 fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {

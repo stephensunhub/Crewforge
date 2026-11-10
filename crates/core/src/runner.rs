@@ -61,9 +61,18 @@ pub async fn run_turn<A: Approver, O: Observer>(
     let project = cfg.project_path.to_string_lossy().to_string();
     let mut session = db.get_or_create_session(&employee.id, &project)?;
     let pid0 = cfg.project_id.as_deref();
+    // 员工连的 LLM 端点（没选就是本机 Claude 订阅，什么都不注入）
+    let resolved = db.resolve_endpoint(employee)?;
     // 会话上下文过大时换新会话：每一步都要重读整个上下文，越大越贵、越容易跑偏。
     let mut rotated_from: Option<u64> = None;
-    let limit = context_limit(db);
+    let mut limit = context_limit(db);
+    if let Some(r) = &resolved {
+        // 本地模型的窗口小得多：用到窗口的七成就换新会话，不能等到默认的 15 万
+        let cap = (r.endpoint.context_tokens as u64) * 7 / 10;
+        if cap > 0 && (limit == 0 || cap < limit) {
+            limit = cap;
+        }
+    }
     if limit > 0 && session.started && session.status != "running" {
         if let Some(ctx) = db.session_context_tokens(&session.id)? {
             if ctx > limit {
@@ -103,6 +112,16 @@ pub async fn run_turn<A: Approver, O: Observer>(
     }
     // 模型：员工指定 > 该引擎在这个用途下的默认模型 > 引擎默认
     spec.model = db.effective_model(&employee.provider, &employee.model, &cfg.purpose)?;
+    if let Some(r) = &resolved {
+        // 端点上的模型名与 Claude 的别名（opus/sonnet…）不通用，用途默认模型不适用
+        spec.model = Some(r.model.clone());
+        spec.env = r.env.clone();
+    }
+    // 同一个端点同时最多 max_concurrency 个员工在用（本地模型通常只能串行）；等待期间会话仍是空闲
+    let _slot = match &resolved {
+        Some(r) => Some(crate::endpoint::acquire_slot(&r.endpoint).await),
+        None => None,
+    };
     if cfg.mcp.is_some() {
         spec.persona = format!("{}\n\n{}", spec.persona, crate::mcp::TEAM_TOOLS_HINT);
         spec.mcp = cfg.mcp.clone();
@@ -190,7 +209,9 @@ pub async fn run_turn<A: Approver, O: Observer>(
                 AgentEvent::Result(r) => {
                     db.append_event_for(pid, "turn_result", eid, sid, &json!({
                         "task_id": cfg.task_id, "meeting_id": cfg.meeting_id, "purpose": cfg.purpose, "project_id": cfg.attr_project,
-                        "duration_ms": started_at.elapsed().as_millis() as u64, "is_error": r.is_error, "subtype": r.subtype, "cost_usd": r.cost_usd,
+                        "duration_ms": started_at.elapsed().as_millis() as u64, "is_error": r.is_error, "subtype": r.subtype,
+                        // 自建端点没有按量计费：Claude Code 按自己的价目表估算出的金额没有意义，记 0
+                        "cost_usd": if resolved.is_some() { Some(0.0) } else { r.cost_usd }, "endpoint": resolved.as_ref().map(|x| x.endpoint.name.clone()),
                         "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
                         "cache_read_tokens": r.cache_read_tokens, "cache_creation_tokens": r.cache_creation_tokens,
                         "models": r.models, "ttft_ms": r.ttft_ms,
