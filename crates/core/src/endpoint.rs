@@ -40,6 +40,8 @@ pub struct Endpoint {
     pub extra_env: BTreeMap<String, String>,
     pub max_concurrency: i64,
     pub context_tokens: i64,
+    /// 这个端点上的调用是否计入自主推进批次的调用预算（调用数据始终统计；关掉只是不限制）。默认限制。
+    pub limit_budget: bool,
     pub has_token: bool,
     pub enabled: bool,
     /// 有几位员工在用
@@ -56,10 +58,15 @@ pub struct EndpointInput {
     pub max_concurrency: i64,
     #[serde(default)]
     pub context_tokens: i64,
+    /// 是否限制（计入批次预算）；不填按默认：限制
+    #[serde(default = "default_true")]
+    pub limit_budget: bool,
     /// None：不改令牌；Some("")：清除；Some(x)：设置
     #[serde(default)]
     pub token: Option<String>,
 }
+
+fn default_true() -> bool { true }
 
 // ---------- 钥匙串 ----------
 const KEYCHAIN_SERVICE: &str = "Crewforge LLM endpoint";
@@ -151,11 +158,12 @@ fn row_endpoint(r: &rusqlite::Row<'_>) -> rusqlite::Result<Endpoint> {
         extra_env: serde_json::from_str(&env).unwrap_or_default(),
         max_concurrency: r.get(5)?, context_tokens: r.get(6)?,
         has_token: r.get::<_, i64>(7)? != 0, enabled: r.get::<_, i64>(8)? != 0, employees: r.get::<_, i64>(9)? as usize,
+        limit_budget: r.get::<_, i64>(10)? != 0,
     })
 }
 
 const SELECT: &str = "SELECT e.id, e.name, e.base_url, e.models, e.extra_env, e.max_concurrency, e.context_tokens, e.has_token, e.enabled, \
-    (SELECT COUNT(*) FROM employees m WHERE m.endpoint_id = e.id AND m.archived = 0) FROM llm_endpoints e";
+    (SELECT COUNT(*) FROM employees m WHERE m.endpoint_id = e.id AND m.archived = 0), e.limit_budget FROM llm_endpoints e";
 
 fn validate(i: &EndpointInput) -> Result<(String, Vec<String>)> {
     let name = i.name.trim();
@@ -207,8 +215,8 @@ impl Db {
                 bail!("已经有叫 {} 的端点了", i.name.trim());
             }
             conn.execute(
-                "INSERT INTO llm_endpoints (id, name, base_url, models, extra_env, max_concurrency, context_tokens, has_token, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                params![id, i.name.trim(), url, serde_json::to_string(&models)?, serde_json::to_string(&i.extra_env)?, i.max_concurrency, i.context_tokens, token.is_some() as i64, now_ms()])?;
+                "INSERT INTO llm_endpoints (id, name, base_url, models, extra_env, max_concurrency, context_tokens, has_token, created_at, limit_budget) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![id, i.name.trim(), url, serde_json::to_string(&models)?, serde_json::to_string(&i.extra_env)?, i.max_concurrency, i.context_tokens, token.is_some() as i64, now_ms(), i.limit_budget as i64])?;
         }
         if let Some(t) = token {
             if let Err(e) = secret_set(&id, t) {
@@ -235,8 +243,8 @@ impl Db {
             bail!("已经有叫 {} 的端点了", i.name.trim());
         }
         conn.execute(
-            "UPDATE llm_endpoints SET name=?2, base_url=?3, models=?4, extra_env=?5, max_concurrency=?6, context_tokens=?7, has_token=?8 WHERE id=?1",
-            params![id, i.name.trim(), url, serde_json::to_string(&models)?, serde_json::to_string(&i.extra_env)?, i.max_concurrency, i.context_tokens, has_token as i64])?;
+            "UPDATE llm_endpoints SET name=?2, base_url=?3, models=?4, extra_env=?5, max_concurrency=?6, context_tokens=?7, has_token=?8, limit_budget=?9 WHERE id=?1",
+            params![id, i.name.trim(), url, serde_json::to_string(&models)?, serde_json::to_string(&i.extra_env)?, i.max_concurrency, i.context_tokens, has_token as i64, i.limit_budget as i64])?;
         Ok(())
     }
 
@@ -315,7 +323,7 @@ mod tests {
     use super::*;
 
     fn input(name: &str) -> EndpointInput {
-        EndpointInput { name: name.into(), base_url: "http://192.168.1.20:11434/".into(), models: vec!["qwen3:27b".into()], extra_env: BTreeMap::new(), max_concurrency: 1, context_tokens: 32768, token: None }
+        EndpointInput { name: name.into(), base_url: "http://192.168.1.20:11434/".into(), models: vec!["qwen3:27b".into()], extra_env: BTreeMap::new(), max_concurrency: 1, context_tokens: 32768, limit_budget: true, token: None }
     }
 
     #[test]
@@ -387,5 +395,20 @@ mod tests {
         assert!(second.is_err(), "名额被占，第二个要等");
         drop(first);
         assert!(tokio::time::timeout(std::time::Duration::from_secs(5), acquire_slot(&ep)).await.is_ok(), "名额放回后应当很快拿到（给足时间，避免机器忙时误报）");
+    }
+
+    #[test]
+    fn the_budget_switch_defaults_to_limiting_and_is_remembered_per_endpoint() {
+        let db = Db::open_memory().unwrap();
+        // 前端没传这个字段时按默认：限制
+        let input: EndpointInput = serde_json::from_str(r#"{"name":"本地","base_url":"http://10.0.0.5:11434","models":["qwen3:27b"],"max_concurrency":1}"#).unwrap();
+        assert!(input.limit_budget, "默认限制");
+        let ep = db.add_endpoint(&input).unwrap();
+        assert!(ep.limit_budget);
+        let mut off = input.clone();
+        off.limit_budget = false;
+        db.update_endpoint(&ep.id, &off).unwrap();
+        assert!(!db.endpoint(&ep.id).unwrap().unwrap().limit_budget, "关掉后只统计、不限制");
+        assert!(!db.list_endpoints().unwrap()[0].limit_budget);
     }
 }

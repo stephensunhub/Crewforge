@@ -88,7 +88,7 @@ async fn endpoint_employees_hand_off_with_a_summary_and_get_goal_and_memory_agai
     std::fs::create_dir_all(&work).unwrap();
     let db = Db::open(&d.path().join("home")).unwrap();
     let e = db.add_employee("local", "dev", "p").unwrap();
-    let ep = db.add_endpoint(&EndpointInput { name: "本地".into(), base_url: "http://10.0.0.5:11434".into(), models: vec!["qwen3:27b".into()], extra_env: Default::default(), max_concurrency: 1, context_tokens: 32_000, token: None }).unwrap();
+    let ep = db.add_endpoint(&EndpointInput { name: "本地".into(), base_url: "http://10.0.0.5:11434".into(), models: vec!["qwen3:27b".into()], extra_env: Default::default(), max_concurrency: 1, context_tokens: 32_000, limit_budget: true, token: None }).unwrap();
     db.set_employee_endpoint(&e.id, Some(&ep.id), "").unwrap();
     let e = db.employee_by_id(&e.id).unwrap().unwrap();
 

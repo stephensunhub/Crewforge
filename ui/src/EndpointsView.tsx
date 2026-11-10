@@ -27,7 +27,7 @@ export function EndpointsPanel({ endpoints, reload, onError }: { endpoints: Endp
         <section key={ep.id} className="panel-box">
           <div className="page-head" style={{ marginBottom: 6 }}>
             <div><h4 className="group-title" style={{ margin: 0 }}>{ep.name} {!ep.enabled && <span className="badge">已停用</span>}</h4>
-              <div className="hint"><code>{ep.base_url}</code> · 模型 {ep.models.join("、")} · 同时最多 {ep.max_concurrency} 位员工用{ep.context_tokens > 0 ? ` · 上下文 ${Math.round(ep.context_tokens / 1000)}K` : ""} · {ep.employees} 位员工在用</div></div>
+              <div className="hint"><code>{ep.base_url}</code> · 模型 {ep.models.join("、")} · 同时最多 {ep.max_concurrency} 位员工用{ep.context_tokens > 0 ? ` · 上下文 ${Math.round(ep.context_tokens / 1000)}K` : ""} · {ep.limit_budget ? "限制批次预算" : "不限制批次预算（只统计）"} · {ep.employees} 位员工在用</div></div>
             <div style={{ display: "flex", gap: 8, flex: "none" }}>
               <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={ep.enabled} onChange={(e) => void run(() => api.setEndpointEnabled(ep.id, e.target.checked))} /> 启用</label>
               <button className="btn" onClick={() => setEditing(ep)}>编辑</button>
@@ -48,13 +48,14 @@ function EndpointForm({ initial, onClose, onSaved, onError }: { initial: Endpoin
   const [models, setModels] = useState((initial?.models ?? []).join("\n"));
   const [conc, setConc] = useState(initial?.max_concurrency ?? 1);
   const [ctx, setCtx] = useState(initial?.context_tokens ?? 32768);
+  const [limit, setLimit] = useState(initial?.limit_budget ?? true);
   const [token, setToken] = useState("");
   const [clearToken, setClearToken] = useState(false);
   const [env, setEnv] = useState(envToText(initial?.extra_env ?? {}));
   const [test, setTest] = useState<EndpointTest | null>(null);
   const [busy, setBusy] = useState("");
   const list = splitModels(models);
-  const input = (): EndpointInput => ({ name, base_url: url, models: list, extra_env: textToEnv(env), max_concurrency: conc, context_tokens: ctx, token: clearToken ? "" : token ? token : null });
+  const input = (): EndpointInput => ({ name, base_url: url, models: list, extra_env: textToEnv(env), max_concurrency: conc, context_tokens: ctx, limit_budget: limit, token: clearToken ? "" : token ? token : null });
   const act = async (k: string, f: () => Promise<void>) => { setBusy(k); try { await f(); } catch (e) { onError(String(e)); } finally { setBusy(""); } };
   return (
     <Modal title={initial ? `编辑 ${initial.name}` : "添加 LLM 端点"} onClose={onClose} width={560}>
@@ -69,6 +70,10 @@ function EndpointForm({ initial, onClose, onSaved, onError }: { initial: Endpoin
             <div style={{ flex: 1 }}><Field label="上下文窗口（token，0 不限）"><input type="number" min={0} step={1024} value={ctx} onChange={(e) => setCtx(Number(e.target.value))} /></Field></div>
           </div>
           <div className="hint" style={{ marginTop: -4 }}>上下文窗口要和 Ollama 里实际设置一致（OLLAMA_CONTEXT_LENGTH，Claude Code 至少要 32K）。会话用到它的七成就会换新会话，避免被截断。</div>
+          <label className="tog" style={{ alignItems: "flex-start" }}>
+            <input type="checkbox" checked={limit} onChange={(e) => setLimit(e.target.checked)} />
+            <span>限制批次预算<span className="hint" style={{ display: "block" }}>勾选：这个端点上员工的调用计入自主推进批次的“调用预算”，用完批次就停。不勾选：调用照样统计（用量页能看到），但不计入预算，不会因为它停下来。本地模型不花钱也不占订阅额度，通常可以不勾选；默认勾选。</span></span>
+          </label>
           <Field label="令牌（可选）">
             <input type="password" value={token} onChange={(e) => { setToken(e.target.value); setClearToken(false); }} placeholder={initial?.has_token && !clearToken ? "已保存在钥匙串，留空不改" : "没有认证就留空"} />
             {initial?.has_token && <label className="hint"><input type="checkbox" checked={clearToken} onChange={(e) => setClearToken(e.target.checked)} /> 清除已保存的令牌</label>}</Field>

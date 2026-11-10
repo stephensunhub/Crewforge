@@ -322,7 +322,8 @@ export interface UsagePageData { total: number; rows: CallRec[] }
 export interface DutyItem { kind: string; title: string; reason: string; goto: string; count: number; meeting_id: string | null; action_id: string | null }
 export interface Duties { items: DutyItem[]; later_actions: number; plan_done: number; plan_total: number; plan_percent: number }
 
-export interface AutopilotRun { id: string; project_id: string; status: string; max_calls: number; max_minutes: number; calls: number; started_at: number; ended_at: number | null; reason: string }
+export interface AutopilotRun { id: string; project_id: string; status: string; max_calls: number; max_minutes: number; calls: number; started_at: number; ended_at: number | null; reason: string; uncounted_calls: number; chain: number }
+export interface AutopilotConfig { max_calls: number; max_minutes: number; auto_continue: boolean; max_batches: number }
 export interface AutopilotStatus { run: AutopilotRun | null; live: boolean }
 
 export interface DocFile { path: string; size: number; managed: boolean }
@@ -349,8 +350,8 @@ export interface AlignConfig {
 }
 export interface AlignOverviewRow { project_id: string; name: string; config: AlignConfig; open_points: number }
 
-export interface Endpoint { id: string; name: string; base_url: string; models: string[]; extra_env: Record<string, string>; max_concurrency: number; context_tokens: number; has_token: boolean; enabled: boolean; employees: number }
-export interface EndpointInput { name: string; base_url: string; models: string[]; extra_env: Record<string, string>; max_concurrency: number; context_tokens: number; token: string | null }
+export interface Endpoint { id: string; name: string; base_url: string; models: string[]; extra_env: Record<string, string>; max_concurrency: number; context_tokens: number; limit_budget: boolean; has_token: boolean; enabled: boolean; employees: number }
+export interface EndpointInput { name: string; base_url: string; models: string[]; extra_env: Record<string, string>; max_concurrency: number; context_tokens: number; limit_budget: boolean; token: string | null }
 export interface EndpointTest { ok: boolean; millis: number; detail: string }
 
 export interface Activity { employee: string; what: string; subject: string; project: string | null; started_at: number; last_tool: string | null; last_tool_at: number | null; origin: string; project_id: string | null; tab: string; meeting_id: string | null }

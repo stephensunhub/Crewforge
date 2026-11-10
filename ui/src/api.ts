@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Activity, SandboxDomains, DomainCheck, StuckItem, BlockedMerge, InterventionReport, LogRun, Endpoint, EndpointInput, EndpointTest,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Activity, SandboxDomains, DomainCheck, StuckItem, BlockedMerge, AutopilotConfig, InterventionReport, LogRun, Endpoint, EndpointInput, EndpointTest,
 } from "./types";
 
 export const api = {
@@ -89,6 +89,8 @@ export const api = {
   startAutopilot: (projectId: string, maxCalls: number, maxMinutes: number) => invoke<AutopilotRun>("start_autopilot", { projectId, maxCalls, maxMinutes }),
   pauseAutopilot: (projectId: string) => invoke<void>("pause_autopilot", { projectId }),
   stopAutopilot: (projectId: string) => invoke<void>("stop_autopilot", { projectId }),
+  getAutopilotConfig: (projectId: string) => invoke<AutopilotConfig>("get_autopilot_config", { projectId }),
+  setAutopilotConfig: (projectId: string, c: AutopilotConfig) => invoke<void>("set_autopilot_config", { projectId, maxCalls: c.max_calls, maxMinutes: c.max_minutes, autoContinue: c.auto_continue, maxBatches: c.max_batches }),
   autopilotStatus: (projectId: string) => invoke<AutopilotStatus>("autopilot_status", { projectId }),
   myDuties: (projectId: string) => invoke<Duties>("my_duties", { projectId }),
   costCalls: (a: { days: number | null; employeeId: string | null; projectId: string | null; purpose: string | null; provider: string | null; onlyErrors: boolean; limit: number; offset: number }) => invoke<CallPage>("cost_calls", a),

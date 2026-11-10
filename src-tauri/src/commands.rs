@@ -999,15 +999,40 @@ fn launch_autopilot(app: &AppHandle, state: &AppState, run: &crewforge_core::aut
     let on_busy: Arc<dyn Fn(Vec<String>) + Send + Sync> = Arc::new(move |names| { let _ = emit_app.emit("crewforge://running", names); });
     match crewforge_core::autopilot::Autopilot::new_with_busy(orch, sched, approver, ctl, run, running, on_busy) {
         Ok(ap) => {
+            let app2 = app.clone();
             tauri::async_runtime::spawn(async move {
-                ap.run().await;
+                let finished = ap.run().await;
                 autopilots.lock().unwrap().remove(&project_id);
+                continue_after_budget(&app2, finished);
             });
         }
         Err(e) => {
             state.autopilots.lock().unwrap().remove(&project_id);
             let _ = state.db.set_autopilot_run(&run.id, "failed", 0, &e.to_string());
         }
+    }
+}
+
+/// 批次结束后：预算正常用完且项目开了“自动续批次”，就接着开下一个；到了连续批次的上限就停下并说明。
+fn continue_after_budget(app: &AppHandle, finished: crewforge_core::autopilot::AutopilotRun) {
+    use crewforge_core::autopilot::AutoContinue;
+    let state = app.state::<AppState>();
+    match state.db.auto_continue_decision(&finished) {
+        Ok(AutoContinue::Next { max_calls, max_minutes, chain }) => {
+            match crewforge_core::autopilot::Autopilot::<UiApprover>::prepare_continue(&state.orch, &finished.project_id, max_calls, max_minutes, chain) {
+                Ok(run) => {
+                    let _ = state.db.append_event_for(Some(&finished.project_id), "autopilot_step", None, None, &serde_json::json!({"text": format!("上一个批次预算用完，自动续批次（连续第 {} 个）", chain + 1)}));
+                    launch_autopilot(app, &state, &run);
+                }
+                Err(e) => {
+                    let _ = state.db.append_event_for(Some(&finished.project_id), "autopilot_step", None, None, &serde_json::json!({"text": format!("自动续批次没有开始：{e}")}));
+                }
+            }
+        }
+        Ok(AutoContinue::LimitReached { batches }) => {
+            let _ = state.db.append_event_for(Some(&finished.project_id), "autopilot_chain_limit", None, None, &serde_json::json!({"text": format!("自动续批次已经连续 {batches} 个批次，到了设置的上限，停下来等你。可以到“我的职责”页调整上限，或手动再开一个批次")}));
+        }
+        _ => {}
     }
 }
 
@@ -1021,10 +1046,20 @@ pub async fn resume_interrupted_autopilots(app: AppHandle, interrupted: Vec<crew
     let state = app.state::<AppState>();
     let now = crewforge_core::db::now_ms();
     for old in interrupted {
-        let Some((calls, minutes)) = state.db.plan_autopilot_resume(&old, now) else { continue };
-        match crewforge_core::autopilot::Autopilot::<UiApprover>::prepare_resume(&state.orch, &old.project_id, calls, minutes) {
+        use crewforge_core::autopilot::{Autopilot, ResumeDecision};
+        let decision = state.db.resume_decision(&old, now).unwrap_or(ResumeDecision::Skip);
+        let (prepared, note) = match decision {
+            ResumeDecision::Skip => continue,
+            ResumeDecision::Resume { calls, minutes } => (
+                Autopilot::<UiApprover>::prepare_resume(&state.orch, &old.project_id, calls, minutes),
+                format!("应用重启，自动接着上次的推进：剩余预算 {calls} 次调用 / {}。不想自动恢复，可以在“我的职责”页关掉这个选项", if minutes > 0 { format!("{minutes} 分钟") } else { "不限时间".to_string() })),
+            ResumeDecision::FreshBatch { calls, minutes, chain } => (
+                Autopilot::<UiApprover>::prepare_continue(&state.orch, &old.project_id, calls, minutes, chain),
+                format!("应用重启，上次批次的预算已经不够，按项目设置自动续批次（连续第 {} 个）", chain + 1)),
+        };
+        match prepared {
             Ok(run) => {
-                let _ = state.db.append_event_for(Some(&old.project_id), "autopilot_step", None, None, &serde_json::json!({"text": format!("应用重启，自动接着上次的推进：剩余预算 {calls} 次调用 / {minutes} 分钟。不想自动恢复，可以在“我的职责”页关掉这个选项")}));
+                let _ = state.db.append_event_for(Some(&old.project_id), "autopilot_step", None, None, &serde_json::json!({"text": note}));
                 launch_autopilot(&app, &state, &run);
             }
             Err(e) => {
@@ -1607,4 +1642,14 @@ pub async fn stuck_tick(app: &AppHandle) {
         let script = format!("display notification \"{}\" with title \"Crewforge：{}\"", esc(&body), esc(&x.title));
         let _ = tokio::process::Command::new("osascript").args(["-e", &script]).output().await;
     }
+}
+
+#[tauri::command]
+pub fn get_autopilot_config(state: State<'_, AppState>, project_id: String) -> CmdResult<crewforge_core::autopilot::AutopilotConfig> {
+    state.db.autopilot_config(&project_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_autopilot_config(state: State<'_, AppState>, project_id: String, max_calls: i64, max_minutes: i64, auto_continue: bool, max_batches: i64) -> CmdResult<()> {
+    state.db.set_autopilot_config(&project_id, &crewforge_core::autopilot::AutopilotConfig { max_calls, max_minutes, auto_continue, max_batches }).map_err(err)
 }

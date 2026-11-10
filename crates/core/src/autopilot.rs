@@ -20,7 +20,7 @@ use crate::runner::{Approver, NoopObserver};
 use crate::scheduler::{Permit, Scheduler};
 use crate::workspace::MergeOutcome;
 use anyhow::{Context, Result, bail};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashSet;
@@ -43,6 +43,48 @@ CREATE TABLE autopilot_runs (
 CREATE INDEX idx_autopilot_project ON autopilot_runs(project_id, started_at);
 "#;
 
+/// 迁移 20：批次预算只统计“限制”的调用（另记不限制的）、自动续批次的链、项目级自主推进设置；端点上的“限制批次预算”开关。
+pub const MIGRATION_20: &str = r#"
+ALTER TABLE llm_endpoints ADD COLUMN limit_budget INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE autopilot_runs ADD COLUMN uncounted_calls INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE autopilot_runs ADD COLUMN chain INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE autopilot_config (
+    project_id    TEXT PRIMARY KEY REFERENCES projects(id),
+    max_calls     INTEGER NOT NULL DEFAULT 30,
+    max_minutes   INTEGER NOT NULL DEFAULT 60,   -- 0 = 不限时间
+    auto_continue INTEGER NOT NULL DEFAULT 0,
+    max_batches   INTEGER NOT NULL DEFAULT 6     -- 自动续批次最多连续几个（含第一个）
+);
+"#;
+
+/// 应用重启后被打断的批次的处理。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResumeDecision {
+    Skip,
+    Resume { calls: i64, minutes: i64 },
+    FreshBatch { calls: i64, minutes: i64, chain: i64 },
+}
+
+/// 批次结束后的下一步。
+#[derive(Debug, Clone, PartialEq)]
+pub enum AutoContinue {
+    No,
+    Next { max_calls: i64, max_minutes: i64, chain: i64 },
+    LimitReached { batches: i64 },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AutopilotConfig {
+    pub max_calls: i64,
+    pub max_minutes: i64,
+    pub auto_continue: bool,
+    pub max_batches: i64,
+}
+
+impl Default for AutopilotConfig {
+    fn default() -> Self { Self { max_calls: 30, max_minutes: 60, auto_continue: false, max_batches: 6 } }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AutopilotRun {
     pub id: String,
@@ -54,6 +96,10 @@ pub struct AutopilotRun {
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub reason: String,
+    /// 没有计入预算的调用数（连的是不限制的端点），只统计
+    pub uncounted_calls: i64,
+    /// 自动续批次的第几个（人手动开的是 0）
+    pub chain: i64,
 }
 
 pub fn status_label(s: &str) -> &'static str {
@@ -70,26 +116,76 @@ pub fn status_label(s: &str) -> &'static str {
 
 impl Db {
     fn run_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AutopilotRun> {
-        Ok(AutopilotRun { id: r.get(0)?, project_id: r.get(1)?, status: r.get(2)?, max_calls: r.get(3)?, max_minutes: r.get(4)?, calls: r.get(5)?, started_at: r.get(6)?, ended_at: r.get(7)?, reason: r.get(8)? })
+        Ok(AutopilotRun { id: r.get(0)?, project_id: r.get(1)?, status: r.get(2)?, max_calls: r.get(3)?, max_minutes: r.get(4)?, calls: r.get(5)?, started_at: r.get(6)?, ended_at: r.get(7)?, reason: r.get(8)?, uncounted_calls: r.get(9)?, chain: r.get(10)? })
+    }
+
+    /// 项目的自主推进设置（每批次预算、自动续批次）；没设置过用默认值。
+    pub fn autopilot_config(&self, project_id: &str) -> Result<AutopilotConfig> {
+        Ok(self.conn.lock().unwrap().query_row(
+            "SELECT max_calls, max_minutes, auto_continue, max_batches FROM autopilot_config WHERE project_id = ?1", [project_id],
+            |r| Ok(AutopilotConfig { max_calls: r.get(0)?, max_minutes: r.get(1)?, auto_continue: r.get::<_, i64>(2)? != 0, max_batches: r.get(3)? })).optional()?.unwrap_or_default())
+    }
+
+    pub fn set_autopilot_config(&self, project_id: &str, c: &AutopilotConfig) -> Result<()> {
+        if !(1..=1000).contains(&c.max_calls) {
+            bail!("每批次的调用预算要在 1 到 1000 之间");
+        }
+        if !(0..=2880).contains(&c.max_minutes) {
+            bail!("每批次的时间预算要在 0 到 2880 分钟之间（0 表示不限时间）");
+        }
+        if !(1..=50).contains(&c.max_batches) {
+            bail!("自动续批次最多连续的批次数要在 1 到 50 之间");
+        }
+        self.get_project(project_id)?.context("项目不存在")?;
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO autopilot_config (project_id, max_calls, max_minutes, auto_continue, max_batches) VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(project_id) DO UPDATE SET max_calls=?2, max_minutes=?3, auto_continue=?4, max_batches=?5",
+            params![project_id, c.max_calls, c.max_minutes, c.auto_continue as i64, c.max_batches])?;
+        Ok(())
+    }
+
+    /// 批次结束后要不要自动开下一个：只在“预算正常用完”时续；遇到升级、失败、完成、人停止都不续。
+    pub fn auto_continue_decision(&self, run: &AutopilotRun) -> Result<AutoContinue> {
+        if run.status != "budget" {
+            return Ok(AutoContinue::No);
+        }
+        let c = self.autopilot_config(&run.project_id)?;
+        if !c.auto_continue {
+            return Ok(AutoContinue::No);
+        }
+        if run.chain + 1 >= c.max_batches {
+            return Ok(AutoContinue::LimitReached { batches: run.chain + 1 });
+        }
+        Ok(AutoContinue::Next { max_calls: c.max_calls, max_minutes: c.max_minutes, chain: run.chain + 1 })
     }
 
     pub fn create_autopilot_run(&self, project_id: &str, max_calls: i64, max_minutes: i64) -> Result<AutopilotRun> {
+        self.create_autopilot_run_chained(project_id, max_calls, max_minutes, 0)
+    }
+
+    pub fn create_autopilot_run_chained(&self, project_id: &str, max_calls: i64, max_minutes: i64, chain: i64) -> Result<AutopilotRun> {
         let id = uuid::Uuid::new_v4().to_string();
         self.conn.lock().unwrap().execute(
-            "INSERT INTO autopilot_runs (id, project_id, status, max_calls, max_minutes, started_at) VALUES (?1,?2,'running',?3,?4,?5)",
-            params![id, project_id, max_calls, max_minutes, now_ms()])?;
+            "INSERT INTO autopilot_runs (id, project_id, status, max_calls, max_minutes, started_at, chain) VALUES (?1,?2,'running',?3,?4,?5,?6)",
+            params![id, project_id, max_calls, max_minutes, now_ms(), chain])?;
         Ok(self.get_autopilot_run(&id)?.context("批次创建失败")?)
     }
 
     pub fn get_autopilot_run(&self, id: &str) -> Result<Option<AutopilotRun>> {
-        Ok(self.conn.lock().unwrap().query_row("SELECT id, project_id, status, max_calls, max_minutes, calls, started_at, ended_at, reason FROM autopilot_runs WHERE id = ?1", [id], Self::run_row).ok())
+        Ok(self.conn.lock().unwrap().query_row("SELECT id, project_id, status, max_calls, max_minutes, calls, started_at, ended_at, reason, uncounted_calls, chain FROM autopilot_runs WHERE id = ?1", [id], Self::run_row).ok())
     }
 
     /// 项目最近一个批次。
     pub fn latest_autopilot_run(&self, project_id: &str) -> Result<Option<AutopilotRun>> {
         Ok(self.conn.lock().unwrap().query_row(
-            "SELECT id, project_id, status, max_calls, max_minutes, calls, started_at, ended_at, reason FROM autopilot_runs WHERE project_id = ?1 ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            "SELECT id, project_id, status, max_calls, max_minutes, calls, started_at, ended_at, reason, uncounted_calls, chain FROM autopilot_runs WHERE project_id = ?1 ORDER BY started_at DESC, rowid DESC LIMIT 1",
             [project_id], Self::run_row).ok())
+    }
+
+    /// 运行中更新两个计数：计入预算的调用数和只统计不限制的调用数。
+    pub fn set_autopilot_counts(&self, id: &str, calls: i64, uncounted: i64) -> Result<()> {
+        self.conn.lock().unwrap().execute("UPDATE autopilot_runs SET calls = ?2, uncounted_calls = ?3 WHERE id = ?1", params![id, calls, uncounted])?;
+        Ok(())
     }
 
     pub fn set_autopilot_run(&self, id: &str, status: &str, calls: i64, reason: &str) -> Result<()> {
@@ -114,7 +210,7 @@ impl Db {
     pub fn take_orphaned_autopilot_runs(&self) -> Result<Vec<AutopilotRun>> {
         let runs: Vec<AutopilotRun> = {
             let conn = self.conn.lock().unwrap();
-            let mut stmt = conn.prepare("SELECT id, project_id, status, max_calls, max_minutes, calls, started_at, ended_at, reason FROM autopilot_runs WHERE status = 'running'")?;
+            let mut stmt = conn.prepare("SELECT id, project_id, status, max_calls, max_minutes, calls, started_at, ended_at, reason, uncounted_calls, chain FROM autopilot_runs WHERE status = 'running'")?;
             let rows = stmt.query_map([], Self::run_row)?;
             rows.collect::<std::result::Result<_, _>>()?
         };
@@ -134,8 +230,24 @@ impl Db {
             return None;
         }
         let calls = run.max_calls - run.calls;
-        let minutes = run.max_minutes - ran_ms / 60_000;
-        (calls >= 3 && minutes >= 5).then_some((calls, minutes))
+        // 时间预算为 0 表示不限时间：只看调用数
+        let minutes = if run.max_minutes == 0 { 0 } else { run.max_minutes - ran_ms / 60_000 };
+        (calls >= 3 && (run.max_minutes == 0 || minutes >= 5)).then_some((calls, minutes))
+    }
+
+    /// 应用重启后被打断的批次怎么办：剩余预算够就接着做；不够但项目开了自动续批次就开一个新批次（预算按项目设置）；否则不动。
+    pub fn resume_decision(&self, run: &AutopilotRun, now: i64) -> Result<ResumeDecision> {
+        if !self.autopilot_resume_enabled(&run.project_id) || now - run.started_at < 60_000 {
+            return Ok(ResumeDecision::Skip);
+        }
+        if let Some((calls, minutes)) = self.plan_autopilot_resume(run, now) {
+            return Ok(ResumeDecision::Resume { calls, minutes });
+        }
+        let c = self.autopilot_config(&run.project_id)?;
+        if c.auto_continue && run.chain + 1 < c.max_batches {
+            return Ok(ResumeDecision::FreshBatch { calls: c.max_calls, minutes: c.max_minutes, chain: run.chain + 1 });
+        }
+        Ok(ResumeDecision::Skip)
     }
 
     /// 应用重启后，上次还在“推进中”的批次已经没有进程在跑：标为已停止。
@@ -169,6 +281,8 @@ pub struct Autopilot<A: Approver + Send + Sync + 'static> {
     last_standup_at_merged: AtomicUsize,
     last_curated_at_merged: AtomicUsize,
     last_triaged_at_merged: AtomicUsize,
+    /// 没有计入预算的调用数（员工连的是不限制的端点）
+    uncounted: AtomicUsize,
     standups: AtomicUsize,
     /// 正在被占用的员工名（与应用里“工作中”的集合共用，避免人和负责人同时驱动同一员工的会话）
     /// 本批次里已经派出去处理的评审意见文本（并行的任务里相同的意见只处理一次）
@@ -225,16 +339,21 @@ impl Drop for BusyScope {
 impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     /// 开始前的检查：项目要有 AI 负责人；此时点“开始”就是人对计划的最后确认——提议的条目一并批准。
     pub fn prepare(orch: &Arc<Orchestrator>, project_id: &str, max_calls: i64, max_minutes: i64) -> Result<AutopilotRun> {
-        Self::prepare_inner(orch, project_id, max_calls, max_minutes, true)
+        Self::prepare_inner(orch, project_id, max_calls, max_minutes, true, 0)
     }
 
     /// 应用重启后接着推进：条件与 `prepare` 相同，但不批准计划——人当初批准的是那时的计划，
     /// 之后 AI 新提议的条目仍然要等人确认。
     pub fn prepare_resume(orch: &Arc<Orchestrator>, project_id: &str, max_calls: i64, max_minutes: i64) -> Result<AutopilotRun> {
-        Self::prepare_inner(orch, project_id, max_calls, max_minutes, false)
+        Self::prepare_inner(orch, project_id, max_calls, max_minutes, false, 0)
     }
 
-    fn prepare_inner(orch: &Arc<Orchestrator>, project_id: &str, max_calls: i64, max_minutes: i64, approve: bool) -> Result<AutopilotRun> {
+    /// 自动续批次：同样不批准计划；`chain` 是这一串自动续批次里的第几个。
+    pub fn prepare_continue(orch: &Arc<Orchestrator>, project_id: &str, max_calls: i64, max_minutes: i64, chain: i64) -> Result<AutopilotRun> {
+        Self::prepare_inner(orch, project_id, max_calls, max_minutes, false, chain)
+    }
+
+    fn prepare_inner(orch: &Arc<Orchestrator>, project_id: &str, max_calls: i64, max_minutes: i64, approve: bool, chain: i64) -> Result<AutopilotRun> {
         let db = &orch.db;
         let project = db.get_project(project_id)?.context("项目不存在")?;
         if project.status != "active" {
@@ -251,16 +370,16 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 bail!("已经有一个批次在推进中");
             }
         }
-        if max_calls < 1 || max_minutes < 1 {
-            bail!("预算必须大于 0");
+        if max_calls < 1 || max_minutes < 0 {
+            bail!("调用预算必须大于 0；时间预算不能为负（0 表示不限时间）");
         }
         let view = db.plan_view(project_id)?;
         if view.items.iter().filter(|i| i.status != "cancelled").count() == 0 {
             bail!("项目还没有计划。请先在“计划”页点“让负责人起草计划”，或手动添加条目");
         }
         let approved = if approve { db.approve_proposed_plan(project_id)? } else { 0 };
-        let run = db.create_autopilot_run(project_id, max_calls, max_minutes)?;
-        db.append_event_for(Some(project_id), "autopilot_started", None, None, &json!({"run_id": run.id, "text": format!("负责人{}自主推进（预算 {max_calls} 次调用 / {max_minutes} 分钟）{}", if approve { "开始" } else { "接着" }, if approved > 0 { format!("，并批准了 {approved} 个提议的计划条目") } else { String::new() }), "max_calls": max_calls, "max_minutes": max_minutes}))?;
+        let run = db.create_autopilot_run_chained(project_id, max_calls, max_minutes, chain)?;
+        db.append_event_for(Some(project_id), "autopilot_started", None, None, &json!({"run_id": run.id, "text": format!("负责人{}自主推进（预算 {max_calls} 次调用 / {}）{}", if approve { "开始" } else if chain > 0 { "自动续批次" } else { "接着" }, if max_minutes > 0 { format!("{max_minutes} 分钟") } else { "不限时间".to_string() }, if approved > 0 { format!("，并批准了 {approved} 个提议的计划条目") } else { String::new() }), "max_calls": max_calls, "max_minutes": max_minutes}))?;
         Ok(run)
     }
 
@@ -277,7 +396,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         Ok(Arc::new(Self {
             orch, sched, approver, ctl, project_id: run.project_id.clone(), run_id: run.id.clone(), repo: std::path::PathBuf::from(project.path),
             calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()),
-            merged: AtomicUsize::new(0), last_standup_at_merged: AtomicUsize::new(0), last_curated_at_merged: AtomicUsize::new(0), last_triaged_at_merged: AtomicUsize::new(0), standups: AtomicUsize::new(0),
+            merged: AtomicUsize::new(0), last_standup_at_merged: AtomicUsize::new(0), last_curated_at_merged: AtomicUsize::new(0), last_triaged_at_merged: AtomicUsize::new(0), uncounted: AtomicUsize::new(0), standups: AtomicUsize::new(0),
             handled_actions: std::sync::Mutex::new(Vec::new()), busy, on_busy_change,
         }))
     }
@@ -290,10 +409,19 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let _ = self.db().append_event_for(Some(&self.project_id), kind, None, None, &json!({"run_id": self.run_id, "text": text.to_string()}));
     }
 
-    async fn permit(&self) -> Permit {
+    /// 这位员工的调用是否计入批次预算：订阅员工一定计入；连自建端点的看端点上的“限制批次预算”开关（默认限制）。
+    fn counts_toward_budget(&self, emp: Option<&Employee>) -> bool {
+        match emp.map(|e| self.db().resolve_endpoint(e)) {
+            Some(Ok(Some(r))) => r.endpoint.limit_budget,
+            _ => true,
+        }
+    }
+
+    /// 拿一个并发名额并记一次调用：计入预算的加到 `calls`，不限制的只加到 `uncounted`（统计，不限制）。
+    async fn permit_for(&self, emp: Option<&Employee>) -> Permit {
         let p = self.sched.acquire().await;
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        let _ = self.db().set_autopilot_run(&self.run_id, "running", self.calls.load(Ordering::SeqCst) as i64, "");
+        if self.counts_toward_budget(emp) { self.calls.fetch_add(1, Ordering::SeqCst); } else { self.uncounted.fetch_add(1, Ordering::SeqCst); }
+        let _ = self.db().set_autopilot_counts(&self.run_id, self.calls.load(Ordering::SeqCst) as i64, self.uncounted.load(Ordering::SeqCst) as i64);
         p
     }
 
@@ -301,7 +429,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         if self.calls.load(Ordering::SeqCst) >= self.max_calls {
             return Some(format!("调用次数达到预算 {}", self.max_calls));
         }
-        if self.started.elapsed() > Duration::from_secs(self.max_minutes * 60) {
+        if self.max_minutes > 0 && self.started.elapsed() > Duration::from_secs(self.max_minutes * 60) {
             return Some(format!("时间达到预算 {} 分钟", self.max_minutes));
         }
         None
@@ -310,7 +438,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     /// 软预算：用到预算的 80% 之后，只做必须做的（开发、验证、评审、合并），可选的步骤一律跳过。
     fn soft_budget(&self) -> bool {
         self.calls.load(Ordering::SeqCst) as f64 >= self.max_calls as f64 * SOFT_BUDGET_RATIO
-            || self.started.elapsed().as_secs_f64() >= self.max_minutes as f64 * 60.0 * SOFT_BUDGET_RATIO
+            || (self.max_minutes > 0 && self.started.elapsed().as_secs_f64() >= self.max_minutes as f64 * 60.0 * SOFT_BUDGET_RATIO)
     }
 
     /// 剩下的调用数不够再做一个条目（按本批次已合并条目的平均调用数估计）：不再开始新条目，避免超出预算。
@@ -351,7 +479,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     }
 
     async fn work(&self, emp: &Employee, prompt: &str) -> Result<()> {
-        let _p = self.permit().await;
+        let _p = self.permit_for(Some(emp)).await;
         let r = self.orch.assign(emp, &self.repo, prompt, &*self.approver, &NoopObserver).await?;
         if r.is_error {
             bail!("{} 本轮出错：{}", emp.name, r.subtype);
@@ -446,7 +574,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         self.say("autopilot_step", format!("派《{}》给 {}", item.title, emp.name));
         let (emp, path, prompt) = self.orch.prepare_plan_dispatch(&item_id, Some(&emp.id))?;
         {
-            let _p = self.permit().await;
+            let _p = self.permit_for(Some(&emp)).await;
             let r = self.orch.assign_for_plan(&emp, &path, &prompt, &item_id, &*self.approver, &NoopObserver).await?;
             self.say("autopilot_step", format!("{} 做完《{}》第一轮：{}", emp.name, item.title, clip(&r.text, 140)));
         }
@@ -478,7 +606,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             let m = self.db().create_meeting(&self.project_id, "code_review", &format!("评审：{}", item.title), lead.as_ref().map(|l| l.id.as_str()), Some(&task.id), &[], 6)?;
             self.db().post_message(&m.id, "human", None, &format!("@{} 请评审 {} 的改动《{}》。重点看：逻辑是否正确、边界情况、测试是否充分、是否符合项目目标；发现需要团队决定的设计问题请先 list_issues 再 propose_issue。（这条消息由负责人流程自动发出）", rv.name, emp.name, item.title))?;
             {
-                let _p = self.permit().await;
+                let _p = self.permit_for(Some(&rv)).await;
                 let _busy = self.busy_scope(&rv.name);
                 match self.orch.meeting_reply(&m.id, &rv, &*self.approver).await {
                     Ok(t) => self.say("autopilot_step", format!("{} 评审《{}》：{}", rv.name, item.title, clip(&t, 200))),
@@ -486,7 +614,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 }
             }
             {
-                let _p = self.permit().await;
+                let _p = self.permit_for(lead.as_ref()).await;
                 if let Err(e) = self.orch.draft_minutes(&m.id, &*self.approver).await {
                     self.say("autopilot_step", format!("纪要没有起草：{e}"));
                 }
@@ -519,7 +647,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 self.handled_actions.lock().unwrap().push(a.text.clone());
                 self.say("autopilot_step", format!("评审意见交给 {}：{}", emp.name, clip(&a.text, 100)));
                 {
-                    let _p = self.permit().await;
+                    let _p = self.permit_for(Some(&emp)).await;
                     let (e2, p2, pr2) = self.orch.prepare_action_dispatch(&a.id, Some(&emp.id))?;
                     self.orch.assign_for_action(&e2, &p2, &pr2, &a.id, &*self.approver, &NoopObserver).await?;
                 }
@@ -593,7 +721,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             if escalated > 0 { continue; }
             tried.insert(i.id.clone());
             n += 1;
-            let _p = self.permit().await;
+            let _p = self.permit_for(Some(&lead)).await;
             let _busy = self.busy_scope(&lead.name);
             match self.orch.lead_rule_issue(&i.id, &lead, &*self.approver).await {
                 Ok(RulingOutcome::Decided { decision, reason }) => self.say("autopilot_decided", format!("{} 裁决《{}》：{}（原因：{}）", lead.name, i.title, clip(&decision, 120), clip(&reason, 120))),
@@ -616,7 +744,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             if tried.contains(&id) { continue; }
             tried.insert(id.clone());
             n += 1;
-            let _p = self.permit().await;
+            let _p = self.permit_for(Some(&lead)).await;
             let _busy = self.busy_scope(&lead.name);
             match self.orch.lead_handle_action(&id, &lead, &*self.approver).await {
                 Ok(Some(ActionOutcome::Decided { decision, follow_ups })) => self.say("autopilot_decided", format!("{} 处理了一项标给人的事项：{}{}", lead.name, clip(&decision, 120), if follow_ups.is_empty() { String::new() } else { format!("（追加了计划条目：{}）", follow_ups.join("、")) })),
@@ -641,7 +769,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let Some(lead) = self.lead() else { return };
         if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) { return; }
         if self.orch.later_actions(&self.project_id).map(|v| v.len()).unwrap_or(0) < crate::lead_triage::MIN_ITEMS_TO_TRIAGE { return; }
-        let _p = self.permit().await;
+        let _p = self.permit_for(Some(&lead)).await;
         let _busy = self.busy_scope(&lead.name);
         match self.orch.lead_triage_later(&self.project_id, &lead, &*self.approver).await {
             Ok(Some(t)) => {
@@ -660,7 +788,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     /// 负责人调整计划（失败后或完成度复盘）。返回应用的结果；把改动、被拒绝的改动和升级都写进动态。
     async fn adjust_plan(&self, trigger: AdjustTrigger, failure: &str) -> Option<Applied> {
         let lead = self.lead()?;
-        let _p = self.permit().await;
+        let _p = self.permit_for(Some(&lead)).await;
         let _busy = self.busy_scope(&lead.name);
         match self.orch.lead_adjust_plan(&self.project_id, &lead, trigger, failure, &*self.approver).await {
             Ok(a) => {
@@ -690,7 +818,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let merged = self.merged.load(Ordering::SeqCst);
         if unverified == 0 || (!force && (unverified < 3 || merged < self.last_curated_at_merged.load(Ordering::SeqCst) + 2)) { return; }
         self.last_curated_at_merged.store(merged, Ordering::SeqCst);
-        let _p = self.permit().await;
+        let _p = self.permit_for(Some(&lead)).await;
         let _busy = self.busy_scope(&lead.name);
         match self.orch.lead_curate_memory(&self.project_id, &lead, &*self.approver).await {
             Ok(c) => {
@@ -710,7 +838,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     async fn update_docs(&self) {
         let Some(lead) = self.lead() else { return };
         if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) { return; }
-        let _p = self.permit().await;
+        let _p = self.permit_for(Some(&lead)).await;
         let _busy = self.busy_scope(&lead.name);
         match self.orch.update_project_docs(&self.project_id, &lead, true, &*self.approver).await {
             Ok(r) => self.say("autopilot_docs", format!("{} 更新了项目文档（docs/crewforge/）：{}", lead.name, r.note)),
@@ -731,7 +859,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         self.last_standup_at_merged.store(merged, Ordering::SeqCst);
         self.say("autopilot_step", format!("{active} 个任务并行，开站会对齐：{}", who.iter().map(|e| e.name.clone()).collect::<Vec<_>>().join("、")));
         for w in &who {
-            let _p = self.permit().await;
+            let _p = self.permit_for(Some(w)).await;
             let _busy = self.busy_scope(&w.name);
             if let Err(e) = self.orch.meeting_reply(&m.id, w, &*self.approver).await {
                 self.say("autopilot_step", format!("站会：{}：{e}", w.name));
@@ -740,7 +868,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         if let Ok(text) = self.orch.standup_alignment_check(&m.id).await {
             self.say("autopilot_step", clip(&text, 240));
         }
-        let _p = self.permit().await;
+        let _p = self.permit_for(self.lead().as_ref()).await;
         let _ = self.orch.draft_minutes(&m.id, &*self.approver).await;
         let _ = self.db().close_meeting(&m.id);
     }

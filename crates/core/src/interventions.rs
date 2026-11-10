@@ -151,7 +151,7 @@ impl Db {
                     OR (e.kind = 'issue_decided' AND json_extract(e.payload,'$.decided_by') = 'human')
                     OR e.kind IN ('sandbox_domain_added','sandbox_domain_removed','plan_approved','plan_goal_decided','plan_goal_proposed',
                                   'task_merge_blocked','stuck_detected','autopilot_issue_escalated','lead_escalated_action',
-                                  'onboarding_confirmed','human_intervention','task_failed','task_error','checkpoint_failed','ui_error')
+                                  'onboarding_confirmed','human_intervention','autopilot_chain_limit','task_failed','task_error','checkpoint_failed','ui_error')
                     OR (e.kind = 'autopilot_step' AND (json_extract(e.payload,'$.text') LIKE '%没做成%' OR json_extract(e.payload,'$.text') LIKE '%没有完成%'
                          OR json_extract(e.payload,'$.text') LIKE '%没有自动恢复%' OR json_extract(e.payload,'$.text') LIKE '%被拒绝%')))
                  ORDER BY e.id DESC LIMIT 3000")?;
@@ -198,6 +198,7 @@ impl Db {
                 "ui_error" => { error = Some(s("text")); ("error", "操作出错".into(), clip(&s("text"), 300), "chat") }
                 "autopilot_step" => { error = Some(s("text")); ("error", "自主推进遇到问题".into(), clip(&s("text"), 300), "plan") }
                 "autopilot_issue_escalated" => ("escalated", clip(&s("text"), 160), String::new(), "issues"),
+                "autopilot_chain_limit" => ("escalated", clip(&s("text"), 200), String::new(), "duties"),
                 "lead_escalated_action" => ("escalated", "负责人把一条行动项交给你".into(), clip(&s("reason"), 140), "actions"),
                 "onboarding_confirmed" => ("import", "确认导入项目".into(), String::new(), "onboarding"),
                 "human_intervention" => ("note", clip(&s("text"), 200), String::new(), "chat"),

@@ -43,7 +43,7 @@ async fn only_employees_on_an_endpoint_get_its_env_and_model() {
     let dev = db.add_employee("dev", "工程师", "p").unwrap();
     let ep = db.add_endpoint(&EndpointInput {
         name: "本地".into(), base_url: "http://10.0.0.5:11434".into(), models: vec!["qwen3:27b".into()],
-        extra_env: Default::default(), max_concurrency: 1, context_tokens: 0, token: None,
+        extra_env: Default::default(), max_concurrency: 1, context_tokens: 0, limit_budget: true, token: None,
     }).unwrap();
     db.set_employee_endpoint(&dev.id, Some(&ep.id), "").unwrap();
     let dev = db.employee_by_id(&dev.id).unwrap().unwrap();
@@ -71,7 +71,7 @@ async fn small_endpoint_window_rotates_the_session_early() {
     let dev = db.add_employee("dev", "工程师", "p").unwrap();
     let ep = db.add_endpoint(&EndpointInput {
         name: "本地".into(), base_url: "http://10.0.0.5:11434".into(), models: vec!["qwen3:27b".into()],
-        extra_env: Default::default(), max_concurrency: 1, context_tokens: 32_000, token: None,
+        extra_env: Default::default(), max_concurrency: 1, context_tokens: 32_000, limit_budget: true, token: None,
     }).unwrap();
     db.set_employee_endpoint(&dev.id, Some(&ep.id), "").unwrap();
     let dev = db.employee_by_id(&dev.id).unwrap().unwrap();

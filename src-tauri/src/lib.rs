@@ -114,6 +114,8 @@ pub fn run() {
             commands::record_ui_error,
             commands::add_intervention_note,
             commands::start_autopilot,
+            commands::get_autopilot_config,
+            commands::set_autopilot_config,
             commands::get_autopilot_resume,
             commands::set_autopilot_resume,
             commands::pause_autopilot,

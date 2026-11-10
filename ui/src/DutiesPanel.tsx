@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { focusAction } from "./common";
 import { AlignBox } from "./AlignBox";
-import type { AutopilotStatus, Duties, EventRow } from "./types";
+import type { AutopilotConfig, AutopilotStatus, Duties, EventRow } from "./types";
 import type { ProjectTab } from "./ProjectView";
 
 const KIND_LABEL: Record<string, string> = { plan: "确认计划", decision: "拍板", proposal: "确认议题", merge: "确认合并", review: "确认评审意见", action: "你的事项", memory: "验证经验", goal: "确认改目标" };
@@ -27,8 +27,12 @@ const hms = (ts: number) => { const d = new Date(ts); const p = (n: number) => S
 /** 自主推进：讨论定稿后由负责人推进，人旁观和纠偏。批次有预算，用完自动暂停。 */
 function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: string; events: EventRow[]; onGoTab: (t: ProjectTab) => void; onError: (m: string) => void }) {
   const [st, setSt] = useState<AutopilotStatus | null>(null);
-  const [calls, setCalls] = useState(30);
-  const [minutes, setMinutes] = useState(60);
+  // 每批次的预算和自动续批次的设置按项目保存，不用每次重填
+  const [cfg, setCfg] = useState<AutopilotConfig>({ max_calls: 30, max_minutes: 60, auto_continue: false, max_batches: 6 });
+  useEffect(() => { void api.getAutopilotConfig(projectId).then(setCfg).catch(() => undefined); }, [projectId]);
+  const saveCfg = (next: AutopilotConfig) => { setCfg(next); void api.setAutopilotConfig(projectId, next).catch((e) => onError(String(e))); };
+  const calls = cfg.max_calls;
+  const minutes = cfg.max_minutes;
   const [busy, setBusy] = useState(false);
   const [resume, setResume] = useState(true);
   useEffect(() => { void api.getAutopilotResume(projectId).then(setResume).catch(() => setResume(true)); }, [projectId]);
@@ -51,17 +55,17 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
           </div>
         ) : (
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <label className="hint" style={{ whiteSpace: "nowrap" }}>最多 <input type="number" min={1} style={{ width: 64 }} value={calls} onChange={(e) => setCalls(Number(e.target.value))} /> 次调用</label>
-            <label className="hint" style={{ whiteSpace: "nowrap" }}><input type="number" min={1} style={{ width: 64 }} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} /> 分钟</label>
+            <label className="hint" style={{ whiteSpace: "nowrap" }} title="只统计计入预算的调用；连不限制预算的 LLM 端点的员工，调用不计入（在“模型 → LLM 端点”里设置）">最多 <input type="number" min={1} style={{ width: 64 }} value={calls} onChange={(e) => setCfg({ ...cfg, max_calls: Math.max(1, Number(e.target.value) || 1) })} onBlur={() => saveCfg(cfg)} /> 次调用</label>
+            <label className="hint" style={{ whiteSpace: "nowrap" }} title="0 表示不限时间">最长 <input type="number" min={0} style={{ width: 64 }} value={minutes} onChange={(e) => setCfg({ ...cfg, max_minutes: Math.max(0, Number(e.target.value) || 0) })} onBlur={() => saveCfg(cfg)} /> 分钟（0 不限）</label>
             <button className="btn primary" disabled={busy} onClick={() => void act(async () => {
-              if (await api.confirm(`开始自主推进？\n\n• 提议中的计划条目会一并批准（这就是你对计划的最后确认）\n• 本批次最多 ${calls} 次调用、${minutes} 分钟，用完自动暂停\n• 需求类或高风险议题、反复失败时会停下来等你`, "开始自主推进")) await api.startAutopilot(projectId, calls, minutes);
+              if (await api.confirm(`开始自主推进？\n\n• 提议中的计划条目会一并批准（这就是你对计划的最后确认）\n• 本批次最多 ${calls} 次调用（只统计计入预算的）、${minutes > 0 ? `${minutes} 分钟` : "不限时间"}，用完自动暂停${cfg.auto_continue ? `；之后自动续批次，最多连续 ${cfg.max_batches} 个` : ""}\n• 遇到必须由你决定的事（改项目目标、危险命令）、反复失败时会停下来等你`, "开始自主推进")) await api.startAutopilot(projectId, calls, minutes);
             })}>{run ? "再开一个批次" : "开始自主推进"}</button>
           </div>
         )}
       </div>
       {run && (
         <div className="hint" style={{ marginBottom: 8 }}>
-          本批次：{run.calls}/{run.max_calls} 次调用 · 预算 {run.max_minutes} 分钟 · 开始于 {hms(run.started_at)}{run.reason && !live ? ` · ${run.reason}` : ""}
+          本批次：{run.calls}/{run.max_calls} 次调用{run.uncounted_calls > 0 ? `（另有 ${run.uncounted_calls} 次调用不计入预算）` : ""} · 预算 {run.max_minutes > 0 ? `${run.max_minutes} 分钟` : "不限时间"}{run.chain > 0 ? ` · 自动续批次第 ${run.chain + 1} 个` : ""} · 开始于 {hms(run.started_at)}{run.reason && !live ? ` · ${run.reason}` : ""}
           {run.status === "escalated" && <> · <button className="link" onClick={() => onGoTab("issues")}>去看议题</button></>}
         </div>
       )}
@@ -69,6 +73,14 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
         <input type="checkbox" checked={resume} onChange={(e) => { const v = e.target.checked; setResume(v); void api.setAutopilotResume(projectId, v).catch((er) => { setResume(!v); onError(String(er)); }); }} />
         应用重启后自动接着推进（用上次剩下的预算）
       </label>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
+        <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center" }} title="只在预算正常用完时续；遇到升级、失败、计划做完、你手动停止都不续。到了连续批次的上限会停下来通知你。">
+          <input type="checkbox" checked={cfg.auto_continue} onChange={(e) => saveCfg({ ...cfg, auto_continue: e.target.checked })} />
+          预算用完后自动续批次，最多连续
+        </label>
+        <input type="number" min={1} max={50} style={{ width: 56 }} value={cfg.max_batches} disabled={!cfg.auto_continue} onChange={(e) => setCfg({ ...cfg, max_batches: Math.max(1, Math.min(50, Number(e.target.value) || 1)) })} onBlur={() => saveCfg(cfg)} />
+        <span className="hint">个批次</span>
+      </div>
       <div className="hint" style={{ marginBottom: 6 }}>你可以随时在<button className="link" onClick={() => onGoTab("chat")}>群聊</button>里 @ 员工或负责人纠偏；需要停就点“暂停”。</div>
       {timeline.length === 0 ? <div className="hint">还没有动态。</div> : (
         <div className="ap-timeline">

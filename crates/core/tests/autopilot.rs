@@ -537,3 +537,80 @@ async fn the_lead_shows_as_busy_while_ruling_issues_and_is_released_afterwards()
     assert!(s.iter().any(|n| n.iter().any(|x| x == "alice")), "裁决议题期间负责人应显示为工作中：{s:?}");
     assert!(busy.lock().unwrap().is_empty(), "批次结束后没有人还被标记为忙");
 }
+
+#[tokio::test]
+async fn calls_on_an_unlimited_endpoint_are_counted_for_statistics_but_do_not_use_up_the_budget() {
+    use crewforge_core::endpoint::EndpointInput;
+    let mk = |limit: bool| EndpointInput { name: format!("本地-{limit}"), base_url: "http://10.0.0.5:11434".into(), models: vec!["qwen3:27b".into()], extra_env: Default::default(), max_concurrency: 8, context_tokens: 0, limit_budget: limit, token: None };
+
+    // 默认限制：员工连的端点限制预算 → 调用计入预算
+    let e = setup().await;
+    let ep = e.db.add_endpoint(&mk(true)).unwrap();
+    for n in ["alice", "bob"] { let emp = e.db.employee_by_name(n).unwrap().unwrap(); e.db.set_employee_endpoint(&emp.id, Some(&ep.id), "").unwrap(); }
+    let r = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
+    assert!(r.calls > 0 && r.uncounted_calls == 0, "限制的端点：计入预算 {r:?}");
+
+    // 关掉限制：只统计，不计入预算，预算 3 次也能把整个计划做完
+    let e = setup().await;
+    let ep = e.db.add_endpoint(&mk(false)).unwrap();
+    for n in ["alice", "bob", "carol"] { let emp = e.db.employee_by_name(n).unwrap().unwrap(); e.db.set_employee_endpoint(&emp.id, Some(&ep.id), "").unwrap(); }
+    let r = run(&e, 3, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!((r.status.as_str(), r.calls), ("finished", 0), "预算只有 3 次，但这些调用不计入：{r:?}");
+    assert!(r.uncounted_calls > 3, "调用照样统计：{r:?}");
+
+    // 混合：只有订阅员工（carol，没连端点）的调用计入预算，其余只统计
+    let e = setup().await;
+    let ep = e.db.add_endpoint(&mk(false)).unwrap();
+    for n in ["alice", "bob"] { let emp = e.db.employee_by_name(n).unwrap().unwrap(); e.db.set_employee_endpoint(&emp.id, Some(&ep.id), "").unwrap(); }
+    let r = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
+    assert!(r.calls > 0 && r.uncounted_calls > 0, "混合项目：两边各记各的 {r:?}");
+    let stored = e.db.get_autopilot_run(&r.id).unwrap().unwrap();
+    assert_eq!(stored.uncounted_calls, r.uncounted_calls);
+}
+
+#[tokio::test]
+async fn zero_minutes_means_no_time_limit() {
+    let e = setup().await;
+    let run = Autopilot::<Deny>::prepare(&e.orch, &e.pid, 100, 0).unwrap();
+    assert_eq!(run.max_minutes, 0);
+    let r = Autopilot::new(e.orch.clone(), e.sched.clone(), Arc::new(Deny), Arc::new(AutopilotCtl::default()), &run).unwrap().run().await;
+    assert_eq!(r.status, "finished", "不限时间时不会因为时间预算停下：{r:?}");
+    assert!(Autopilot::<Deny>::prepare(&e.orch, &e.pid, 0, 10).is_err(), "调用预算必须大于 0");
+}
+
+#[tokio::test]
+async fn project_config_is_remembered_and_validated_and_drives_auto_continue_and_restart_decisions() {
+    use crewforge_core::autopilot::{AutoContinue, AutopilotConfig, ResumeDecision};
+    let e = setup().await;
+    assert_eq!(e.db.autopilot_config(&e.pid).unwrap().max_calls, 30, "没设置过用默认值");
+    let cfg = AutopilotConfig { max_calls: 40, max_minutes: 0, auto_continue: true, max_batches: 3 };
+    e.db.set_autopilot_config(&e.pid, &cfg).unwrap();
+    let got = e.db.autopilot_config(&e.pid).unwrap();
+    assert_eq!((got.max_calls, got.max_minutes, got.auto_continue, got.max_batches), (40, 0, true, 3));
+    for bad in [AutopilotConfig { max_calls: 0, ..cfg.clone() }, AutopilotConfig { max_minutes: -1, ..cfg.clone() }, AutopilotConfig { max_batches: 0, ..cfg.clone() }] {
+        assert!(e.db.set_autopilot_config(&e.pid, &bad).is_err());
+    }
+
+    // 预算正常用完 → 续；链到上限 → 停并说明；其他结束原因 → 不续
+    let mk = |status: &str, chain: i64| { let mut r = e.db.create_autopilot_run_chained(&e.pid, 40, 0, chain).unwrap(); r.status = status.into(); r };
+    assert_eq!(e.db.auto_continue_decision(&mk("budget", 0)).unwrap(), AutoContinue::Next { max_calls: 40, max_minutes: 0, chain: 1 });
+    assert_eq!(e.db.auto_continue_decision(&mk("budget", 2)).unwrap(), AutoContinue::LimitReached { batches: 3 }, "第 3 个批次用完：到上限");
+    for st in ["escalated", "finished", "stopped", "paused", "failed"] { assert_eq!(e.db.auto_continue_decision(&mk(st, 0)).unwrap(), AutoContinue::No, "{st} 不续"); }
+    e.db.set_autopilot_config(&e.pid, &AutopilotConfig { auto_continue: false, ..cfg.clone() }).unwrap();
+    assert_eq!(e.db.auto_continue_decision(&mk("budget", 0)).unwrap(), AutoContinue::No, "没开自动续");
+
+    // 应用重启：剩余预算够就接着做；不够且开了自动续 → 新批次；不够没开 → 不动
+    e.db.set_autopilot_config(&e.pid, &cfg).unwrap();
+    let mut r = e.db.create_autopilot_run_chained(&e.pid, 40, 60, 0).unwrap();
+    let later = r.started_at + 20 * 60_000;
+    assert_eq!(e.db.resume_decision(&r, later).unwrap(), ResumeDecision::Resume { calls: 40, minutes: 40 });
+    assert_eq!(e.db.resume_decision(&r, r.started_at + 30_000).unwrap(), ResumeDecision::Skip, "刚启动就被打断：不动（防崩溃循环）");
+    r.calls = 39;
+    assert_eq!(e.db.resume_decision(&r, later).unwrap(), ResumeDecision::FreshBatch { calls: 40, minutes: 0, chain: 1 }, "预算不够但开了自动续");
+    e.db.set_autopilot_config(&e.pid, &AutopilotConfig { auto_continue: false, ..cfg.clone() }).unwrap();
+    assert_eq!(e.db.resume_decision(&r, later).unwrap(), ResumeDecision::Skip);
+    // 不限时间的批次：只看调用数
+    let mut u = e.db.create_autopilot_run_chained(&e.pid, 40, 0, 0).unwrap();
+    u.calls = 10;
+    assert_eq!(e.db.resume_decision(&u, u.started_at + 500 * 60_000).unwrap(), ResumeDecision::Resume { calls: 30, minutes: 0 });
+}
