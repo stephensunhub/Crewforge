@@ -1542,3 +1542,30 @@ pub fn stuck_items(state: State<'_, AppState>) -> CmdResult<Vec<crewforge_core::
     let names: Vec<String> = state.running.lock().unwrap().iter().cloned().collect();
     state.db.stuck_items(&names, crewforge_core::db::now_ms()).map_err(err)
 }
+
+#[derive(serde::Serialize)]
+pub struct BlockedMergeView {
+    #[serde(flatten)]
+    item: crewforge_core::stuck::BlockedMerge,
+    /// 主工作区现在还有哪些未提交的改动（只列已跟踪文件，它们才会挡住合并）；已经干净则为空
+    dirty_files: Vec<String>,
+    /// 现在是否可以直接重试合并
+    can_retry: bool,
+}
+
+/// 合并被拦的任务（待办）。被“主工作区有未提交改动”拦下的，实时看主工作区现在干净了没有。
+#[tauri::command]
+pub async fn blocked_merges(state: State<'_, AppState>) -> CmdResult<Vec<BlockedMergeView>> {
+    let mut out = Vec::new();
+    for item in state.db.blocked_merges(crewforge_core::db::now_ms()).map_err(err)? {
+        let mut dirty_files = Vec::new();
+        if item.kind == "blocked" && item.reason.contains("未提交") {
+            if let Ok(o) = tokio::process::Command::new("git").arg("-C").arg(&item.repo_path).args(["status", "--porcelain", "--untracked-files=no"]).output().await {
+                dirty_files = String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+            }
+        }
+        let can_retry = item.kind != "blocked" || dirty_files.is_empty();
+        out.push(BlockedMergeView { item, dirty_files, can_retry });
+    }
+    Ok(out)
+}

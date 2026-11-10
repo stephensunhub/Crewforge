@@ -7,7 +7,7 @@ import { ModelsView } from "./ModelsView";
 import { UsageView } from "./UsageView";
 import { useNavHistory } from "./useNav";
 import { formatApprovalInput, hhmm, short } from "./common";
-import type { Activity, StuckItem, ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
+import type { Activity, BlockedMerge, StuckItem, ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
 
 const MAX_EVENTS = 2000;
 const SCOPE_KEY = "crewforge.scope";
@@ -42,6 +42,7 @@ export default function App() {
   const [running, setRunning] = useState<string[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [stuck, setStuck] = useState<StuckItem[]>([]);
+  const [blockedMerges, setBlockedMerges] = useState<BlockedMerge[]>([]);
   const [stuckHidden, setStuckHidden] = useState<string[]>([]);
   const [approvals, setApprovals] = useState<ApprovalReq[]>([]);
   const [sched, setSched] = useState<SchedStatus | null>(null);
@@ -176,6 +177,7 @@ export default function App() {
     void api.unverifiedCounts().then(setUnverified).catch(() => undefined);
     void api.projects().then(setProjects).catch(() => undefined);
     void api.stuckItems().then(setStuck).catch(() => undefined);
+    void api.blockedMerges().then(setBlockedMerges).catch(() => undefined);
   }, []);
   useEffect(() => {
     const t = window.setInterval(refreshInbox, 20000);
@@ -217,7 +219,7 @@ export default function App() {
   // 角标是待处理事项的总数（不是“有待办的项目数”）：行动项、待验证经验、待确认的计划条目都按条数算
   const sum = (a: [string, string, number][]) => a.reduce((n, x) => n + x[2], 0);
   const visibleStuck = stuck.filter((x) => !stuckHidden.includes(`${x.employee}:${x.since}:${x.kind}`));
-  const inboxTotal = visibleStuck.length + approvals.length + pending.length + proposals.length + sum(unverified) + sum(actionCounts) + sum(planCounts) + sum(goalCounts);
+  const inboxTotal = blockedMerges.length + visibleStuck.length + approvals.length + pending.length + proposals.length + sum(unverified) + sum(actionCounts) + sum(planCounts) + sum(goalCounts);
   const setTab = (t: string) => (scope.kind === "company" ? setCompanyTab(t as CompanyTab) : setProjectTab(t as ProjectTab));
 
   return (
@@ -299,6 +301,22 @@ export default function App() {
                 {p.issue.summary && <div className="hint">{short(p.issue.summary, 120)}</div>}
                 <div className="hint">为什么是你：负责人没有裁决，或这个项目没有 AI 负责人；你始终可以拍板。</div>
                 <div className="btns"><button className="btn primary" onClick={() => { openProject(p.issue.project_id, "issues"); setInbox(false); }}>去处理</button></div>
+              </div>
+            ))}
+            {blockedMerges.map((b) => (
+              <div className="inbox-item" key={b.task_id}>
+                <div><span className="badge" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>合并被拦</span> <b>《{b.title}》</b> <span className="hint">· {b.employee}{b.project_id ? ` · ${projectName(b.project_id)}` : ""}</span></div>
+                {b.kind === "conflict"
+                  ? <div className="hint">合并冲突：{b.files.join("、")}。需要让 {b.employee} 先处理冲突，再合并。</div>
+                  : b.dirty_files.length > 0
+                    ? <div className="hint">主项目目录有未提交的改动，合并会被覆盖，所以被拦下了：<code>{b.dirty_files.join("、")}</code>。到终端里提交或还原这些文件（例如 <code>git -C {b.repo_path} checkout -- &lt;文件&gt;</code>），然后回来点“重新合并”。</div>
+                    : <div className="hint">{b.reason}。主项目目录现在是干净的，可以重新合并。</div>}
+                <div className="btns">
+                  <button className="btn primary" disabled={!b.can_retry} title={b.can_retry ? "再合并一次" : "先处理主项目目录里未提交的改动"}
+                    onClick={() => { void api.mergeTask(b.task_id).then((r) => { if (r.outcome === "conflict") setError(`合并冲突：${r.files.join("、")}`); else if (r.outcome === "blocked") setError(`仍然无法合并：${r.reason}`); else if (r.outcome === "open_action_items") setError(`评审里还有 ${r.items.length} 条“合并前”的行动项没处理，请先到会议页处理`); refreshInbox(); }).catch((e) => setError(String(e))); }}>重新合并</button>
+                  {b.project_id && <button className="btn" onClick={() => { openProject(b.project_id!, "tasks"); setInbox(false); }}>去任务页</button>}
+                  <button className="btn" onClick={() => refreshInbox()}>刷新</button>
+                </div>
               </div>
             ))}
             {visibleStuck.map((x) => {

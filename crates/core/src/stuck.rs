@@ -166,3 +166,71 @@ mod tests {
         assert!(db.stuck_items(&["dev".into()], now).unwrap().is_empty());
     }
 }
+
+/// 合并被拦、还没合并的任务（待办）：主工作区有未提交改动、合并冲突。
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockedMerge {
+    pub task_id: String,
+    pub employee: String,
+    pub project_id: Option<String>,
+    pub repo_path: String,
+    pub title: String,
+    /// blocked（被拦下，比如主工作区有未提交改动）| conflict（合并冲突）
+    pub kind: String,
+    pub reason: String,
+    pub files: Vec<String>,
+    pub since: i64,
+}
+
+impl Db {
+    /// 任务还在进行中、最近一次合并尝试被拦下的（最近 3 天内）。合并成功或任务放弃后自然消失。
+    pub fn blocked_merges(&self, now: i64) -> Result<Vec<BlockedMerge>> {
+        let rows: Vec<(String, String, String, String, String, i64, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut st = conn.prepare(
+                "SELECT t.id, e.name, t.title, t.repo_path, ev.payload, ev.ts, COALESCE(ev.project_id, '')
+                 FROM tasks t JOIN employees e ON e.id = t.employee_id
+                 JOIN events ev ON ev.id = (SELECT MAX(id) FROM events x WHERE x.kind = 'task_merge_blocked' AND json_extract(x.payload, '$.task_id') = t.id)
+                 WHERE t.status = 'active' AND ev.ts > ?1")?;
+            st.query_map([now - 3 * 24 * 3_600_000], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?.collect::<std::result::Result<_, _>>()?
+        };
+        let mut out = Vec::new();
+        for (task_id, employee, title, repo_path, payload, since, pid) in rows {
+            let v: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
+            let kind = v["kind"].as_str().unwrap_or("");
+            if kind != "blocked" && kind != "conflict" { continue; } // 评审行动项没处理等由负责人处理，不是人的事
+            let files = v["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(String::from)).collect();
+            let project_id = (!pid.is_empty()).then_some(pid).or_else(|| self.project_by_path(&repo_path).ok().flatten().map(|p| p.id));
+            out.push(BlockedMerge { task_id, employee, project_id, repo_path, title, kind: kind.into(), reason: v["reason"].as_str().unwrap_or("").into(), files, since });
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod blocked_merge_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_merge_blocked_task_is_a_todo_until_it_is_merged() {
+        let db = Db::open_memory().unwrap();
+        let p = db.create_project("P", "", "/tmp/bm-p").unwrap();
+        let e = db.add_employee("dev", "工程师", "x").unwrap();
+        let t = crate::db::Task { id: "t1".into(), repo_path: "/tmp/bm-p".into(), employee_id: e.id.clone(), title: "HTTP API 处理器".into(), branch: "b".into(), base_branch: "main".into(), base_commit: "0".into(), worktree_path: "/x".into(), status: "active".into(), merged_commit: None, created_at: 0, updated_at: 0 };
+        db.create_task(&t).unwrap();
+        let now = crate::db::now_ms();
+        db.append_event_for(Some(&p.id), "task_merge_blocked", Some(&e.id), None, &json!({"task_id": "t1", "kind": "blocked", "reason": "主工作区有未提交的改动"})).unwrap();
+        let b = db.blocked_merges(now).unwrap();
+        assert_eq!((b.len(), b[0].kind.as_str(), b[0].title.as_str(), b[0].project_id.as_deref()), (1, "blocked", "HTTP API 处理器", Some(p.id.as_str())), "{b:?}");
+        // 评审里还有行动项没处理：由负责人处理，不是人的待办
+        db.append_event_for(Some(&p.id), "task_merge_blocked", Some(&e.id), None, &json!({"task_id": "t1", "kind": "action_items", "items": ["x"]})).unwrap();
+        assert!(db.blocked_merges(now).unwrap().is_empty());
+        // 冲突
+        db.append_event_for(Some(&p.id), "task_merge_blocked", Some(&e.id), None, &json!({"task_id": "t1", "kind": "conflict", "files": ["go.mod"]})).unwrap();
+        assert_eq!(db.blocked_merges(now).unwrap()[0].files, vec!["go.mod"]);
+        // 合并之后任务不再是进行中：待办消失
+        db.conn.lock().unwrap().execute("UPDATE tasks SET status = 'merged' WHERE id = 't1'", []).unwrap();
+        assert!(db.blocked_merges(now).unwrap().is_empty());
+    }
+}

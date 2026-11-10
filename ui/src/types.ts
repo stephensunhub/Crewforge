@@ -362,3 +362,5 @@ export interface DomainEntry { domain: string; warning: string | null }
 export interface SandboxDomains { builtin: string[]; custom: DomainEntry[] }
 export interface DomainCheck { domain: string; warning: string | null; already: boolean }
 export interface StuckItem { employee: string; project_id: string | null; kind: "network" | "bypass" | "silent" | "long"; title: string; detail: string; hosts: string[]; elapsed_min: number; since: number; tab: string; meeting_id: string | null }
+
+export interface BlockedMerge { task_id: string; employee: string; project_id: string | null; repo_path: string; title: string; kind: "blocked" | "conflict"; reason: string; files: string[]; since: number; dirty_files: string[]; can_retry: boolean }
