@@ -104,3 +104,36 @@ async fn endpoint_employees_hand_off_with_a_summary_and_get_goal_and_memory_agai
     let rotated = db.recent_events(50).unwrap().into_iter().find(|x| x.kind == "session_rotated").unwrap();
     assert_eq!(rotated.payload["handoff"].as_str(), Some("ok"), "摘要写进了换会话事件，便于在日志里追溯");
 }
+
+#[tokio::test]
+async fn a_turn_that_goes_silent_is_terminated_instead_of_hanging_forever() {
+    let d = tempfile::tempdir().unwrap();
+    let work = d.path().join("w");
+    std::fs::create_dir_all(&work).unwrap();
+    let db = Db::open(&d.path().join("home")).unwrap();
+    let e = db.add_employee("stuck", "dev", "p").unwrap();
+    // 假 CLI：开始后什么都不再输出，一直挂着
+    let p = d.path().join("hang");
+    std::fs::write(&p, "#!/bin/sh\nread -r line\necho '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"x\"}'\nsleep 120\n").unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    db.set_setting("turn_silence_minutes", "0.03").unwrap(); // 1.8 秒
+
+    let t0 = std::time::Instant::now();
+    let err = run_turn(&db, &e, &cfg(&work, p.to_string_lossy().into_owned()), "任务", &Deny, &NoopObserver).await.unwrap_err().to_string();
+    assert!(t0.elapsed().as_secs() < 30, "不该一直等：{:?}", t0.elapsed());
+    assert!(err.contains("没有任何输出") && err.contains("已终止"), "{err}");
+    assert!(db.recent_events(50).unwrap().iter().any(|x| x.kind == "task_failed" && x.payload["error"].as_str().unwrap_or("").contains("没有任何输出")), "失败进入事件，人工介入里能看到");
+    assert!(std::process::Command::new("pgrep").args(["-f", &p.to_string_lossy()]).output().map(|o| o.stdout.is_empty()).unwrap_or(true), "挂住的进程已被杀掉");
+}
+
+#[test]
+fn silence_limit_defaults_depend_on_where_the_employee_runs_and_zero_turns_it_off() {
+    use crewforge_core::runner::turn_silence_limit;
+    let db = Db::open_memory().unwrap();
+    assert_eq!(turn_silence_limit(&db, false).unwrap().as_secs(), 30 * 60);
+    assert_eq!(turn_silence_limit(&db, true).unwrap().as_secs(), 45 * 60, "本地模型慢，给得更宽");
+    db.set_setting("turn_silence_minutes", "10").unwrap();
+    assert_eq!(turn_silence_limit(&db, true).unwrap().as_secs(), 600);
+    db.set_setting("turn_silence_minutes", "0").unwrap();
+    assert!(turn_silence_limit(&db, false).is_none());
+}

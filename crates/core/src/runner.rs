@@ -172,9 +172,18 @@ pub async fn run_turn<A: Approver, O: Observer>(
         }
     };
 
+    let silence = turn_silence_limit(db, resolved.is_some());
     let outcome: Result<TurnResult> = async {
         loop {
-            let Some(ev) = proc.next_event().await? else {
+            // 看门狗：连续太久没有任何输出就终止，不让一轮执行永远挂着（等人审批的时间在下面单独处理，不算）
+            let next = match silence {
+                Some(d) => match tokio::time::timeout(d, proc.next_event()).await {
+                    Ok(r) => r?,
+                    Err(_) => bail!("连续 {:.0} 分钟没有任何输出，已终止这一轮（可能卡住了）。工作区里已有的改动会保留", d.as_secs_f64() / 60.0),
+                },
+                None => proc.next_event().await?,
+            };
+            let Some(ev) = next else {
                 bail!("CLI 在返回结果前退出。stderr: {}", proc.stderr_tail());
             };
             observer.on_event(&employee.name, &ev);
@@ -241,6 +250,14 @@ pub async fn run_turn<A: Approver, O: Observer>(
             Err(e)
         }
     }
+}
+
+/// 一轮执行里，CLI 连续这么久没有任何输出就当作卡住，终止这一轮（走失败流程，由负责人重试或升级）。
+/// 等人审批的时间不算。默认：订阅员工 30 分钟、自建端点（本地模型慢）45 分钟；设置项 `turn_silence_minutes` 可改（0 = 不限）。
+pub fn turn_silence_limit(db: &Db, on_endpoint: bool) -> Option<std::time::Duration> {
+    let m = db.get_setting("turn_silence_minutes").ok().flatten().and_then(|v| v.trim().parse::<f64>().ok())
+        .unwrap_or(if on_endpoint { 45.0 } else { 30.0 });
+    (m > 0.0).then(|| std::time::Duration::from_secs_f64(m * 60.0))
 }
 
 /// 这位员工的会话换新阈值：全局上限，连了自建端点时取端点窗口的七成（本地模型窗口小得多）。0 表示不限。

@@ -125,16 +125,18 @@ impl Db {
     }
 
     /// 把新出现的“卡住了”记进历史（同一员工、同一轮、同一种只记一次），待办消失后仍能回头看。
-    pub fn record_stuck(&self, items: &[crate::stuck::StuckItem]) -> Result<()> {
+    pub fn record_stuck(&self, items: &[crate::stuck::StuckItem]) -> Result<Vec<crate::stuck::StuckItem>> {
+        let mut fresh = Vec::new();
         for x in items {
             let exists: i64 = self.conn.lock().unwrap().query_row(
                 "SELECT COUNT(*) FROM events WHERE kind = 'stuck_detected' AND json_extract(payload,'$.employee') = ?1 AND json_extract(payload,'$.since') = ?2 AND json_extract(payload,'$.kind') = ?3",
                 params![x.employee, x.since, x.kind], |r| r.get(0))?;
             if exists == 0 {
                 self.append_event_for(x.project_id.as_deref(), "stuck_detected", None, None, &serde_json::json!({"employee": x.employee, "since": x.since, "kind": x.kind, "title": x.title, "detail": x.detail, "hosts": x.hosts}))?;
+                fresh.push(x.clone());
             }
         }
-        Ok(())
+        Ok(fresh)
     }
 
     /// 汇总 `since` 之后的人工介入。`category` 不为空时只要这一类（计数仍是全部类别）。

@@ -1591,3 +1591,20 @@ pub fn add_intervention_note(state: State<'_, AppState>, project_id: Option<Stri
 pub fn record_ui_error(state: State<'_, AppState>, text: String) {
     let _ = state.db.record_ui_error(&text);
 }
+
+/// 后端定时检测卡住的员工（不依赖界面开着）：发现新的就记进人工介入历史，并弹一条系统通知。
+pub async fn stuck_tick(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    let names: Vec<String> = st.running.lock().unwrap().iter().cloned().collect();
+    if names.is_empty() {
+        return;
+    }
+    let Ok(items) = st.db.stuck_items(&names, crewforge_core::db::now_ms()) else { return };
+    let Ok(fresh) = st.db.record_stuck(&items) else { return };
+    for x in fresh {
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ");
+        let body: String = x.detail.chars().take(80).collect();
+        let script = format!("display notification \"{}\" with title \"Crewforge：{}\"", esc(&body), esc(&x.title));
+        let _ = tokio::process::Command::new("osascript").args(["-e", &script]).output().await;
+    }
+}

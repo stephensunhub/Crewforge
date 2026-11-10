@@ -58,6 +58,15 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_secs(600)).await;
                 }
             });
+            // 卡住检测：每分钟一次，后端自己查，窗口开不开都一样
+            let stuck_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+                loop {
+                    commands::stuck_tick(&stuck_handle).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
