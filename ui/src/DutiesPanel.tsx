@@ -55,13 +55,24 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
           </div>
         ) : (
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <label className="hint" style={{ whiteSpace: "nowrap" }} title="只统计计入预算的调用；连不限制预算的 LLM 端点的员工，调用不计入（在“模型 → LLM 端点”里设置）">最多 <input type="number" min={1} style={{ width: 64 }} value={calls} onChange={(e) => setCfg({ ...cfg, max_calls: Math.max(1, Number(e.target.value) || 1) })} onBlur={() => saveCfg(cfg)} /> 次调用</label>
-            <label className="hint" style={{ whiteSpace: "nowrap" }} title="0 表示不限时间">最长 <input type="number" min={0} style={{ width: 64 }} value={minutes} onChange={(e) => setCfg({ ...cfg, max_minutes: Math.max(0, Number(e.target.value) || 0) })} onBlur={() => saveCfg(cfg)} /> 分钟（0 不限）</label>
             <button className="btn primary" disabled={busy} onClick={() => void act(async () => {
               if (await api.confirm(`开始自主推进？\n\n• 提议中的计划条目会一并批准（这就是你对计划的最后确认）\n• 本批次最多 ${calls} 次调用（只统计计入预算的）、${minutes > 0 ? `${minutes} 分钟` : "不限时间"}，用完自动暂停${cfg.auto_continue ? `；之后自动续批次，最多连续 ${cfg.max_batches} 个` : ""}\n• 遇到必须由你决定的事（改项目目标、危险命令）、反复失败时会停下来等你`, "开始自主推进")) await api.startAutopilot(projectId, calls, minutes);
             })}>{run ? "再开一个批次" : "开始自主推进"}</button>
           </div>
         )}
+      </div>
+      <div className="panel-box" style={{ margin: "0 0 10px", padding: "10px 12px" }}>
+        <div className="hint" style={{ marginBottom: 6 }}><b>批次设置</b>（按项目保存；{live ? "对正在跑的这个批次不生效，下一个批次起生效" : "下次开批次时生效"}）</div>
+        <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+          <label className="hint" style={{ whiteSpace: "nowrap" }} title="只统计计入预算的调用；连不限制预算的 LLM 端点的员工，调用不计入（在“模型 → LLM 端点”里设置）">每批次最多 <input type="number" min={1} style={{ width: 64 }} value={calls} onChange={(e) => setCfg({ ...cfg, max_calls: Math.max(1, Number(e.target.value) || 1) })} onBlur={() => saveCfg(cfg)} /> 次调用</label>
+          <label className="hint" style={{ whiteSpace: "nowrap" }} title="0 表示不限时间">最长 <input type="number" min={0} style={{ width: 64 }} value={minutes} onChange={(e) => setCfg({ ...cfg, max_minutes: Math.max(0, Number(e.target.value) || 0) })} onBlur={() => saveCfg(cfg)} /> 分钟（<b>0 = 不限时间</b>）</label>
+          <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center" }} title="只在预算正常用完时续；遇到升级、失败、计划做完、你手动停止都不续。到了连续批次的上限会停下来通知你。">
+            <input type="checkbox" checked={cfg.auto_continue} onChange={(e) => saveCfg({ ...cfg, auto_continue: e.target.checked })} />
+            预算用完后自动续批次，最多连续
+            <input type="number" min={1} max={50} style={{ width: 56 }} value={cfg.max_batches} disabled={!cfg.auto_continue} onChange={(e) => setCfg({ ...cfg, max_batches: Math.max(1, Math.min(50, Number(e.target.value) || 1)) })} onBlur={() => saveCfg(cfg)} />
+            个批次
+          </label>
+        </div>
       </div>
       {run && (
         <div className="hint" style={{ marginBottom: 8 }}>
@@ -73,14 +84,6 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
         <input type="checkbox" checked={resume} onChange={(e) => { const v = e.target.checked; setResume(v); void api.setAutopilotResume(projectId, v).catch((er) => { setResume(!v); onError(String(er)); }); }} />
         应用重启后自动接着推进（用上次剩下的预算）
       </label>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
-        <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center" }} title="只在预算正常用完时续；遇到升级、失败、计划做完、你手动停止都不续。到了连续批次的上限会停下来通知你。">
-          <input type="checkbox" checked={cfg.auto_continue} onChange={(e) => saveCfg({ ...cfg, auto_continue: e.target.checked })} />
-          预算用完后自动续批次，最多连续
-        </label>
-        <input type="number" min={1} max={50} style={{ width: 56 }} value={cfg.max_batches} disabled={!cfg.auto_continue} onChange={(e) => setCfg({ ...cfg, max_batches: Math.max(1, Math.min(50, Number(e.target.value) || 1)) })} onBlur={() => saveCfg(cfg)} />
-        <span className="hint">个批次</span>
-      </div>
       <div className="hint" style={{ marginBottom: 6 }}>你可以随时在<button className="link" onClick={() => onGoTab("chat")}>群聊</button>里 @ 员工或负责人纠偏；需要停就点“暂停”。</div>
       {timeline.length === 0 ? <div className="hint">还没有动态。</div> : (
         <div className="ap-timeline">
