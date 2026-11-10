@@ -65,22 +65,26 @@ pub async fn run_turn<A: Approver, O: Observer>(
     let pid0 = cfg.project_id.as_deref();
     // 员工连的 LLM 端点（没选就是本机 Claude 订阅，什么都不注入）
     let resolved = db.resolve_endpoint(employee)?;
+    // 同一个端点同时最多 max_concurrency 个员工在用（本地模型通常只能串行）；等待期间会话仍是空闲。
+    // 放在换会话之前：交接摘要也要调用这个端点
+    let _slot = match &resolved {
+        Some(r) => Some(crate::endpoint::acquire_slot(&r.endpoint).await),
+        None => None,
+    };
     // 会话上下文过大时换新会话：每一步都要重读整个上下文，越大越贵、越容易跑偏。
     let mut rotated_from: Option<u64> = None;
-    let mut limit = context_limit(db);
-    if let Some(r) = &resolved {
-        // 本地模型的窗口小得多：用到窗口的七成就换新会话，不能等到默认的 15 万
-        let cap = (r.endpoint.context_tokens as u64) * 7 / 10;
-        if cap > 0 && (limit == 0 || cap < limit) {
-            limit = cap;
-        }
-    }
+    let mut handoff: Option<String> = None;
+    let limit = rotation_limit(db, employee);
     if limit > 0 && session.started && session.status != "running" {
         if let Some(ctx) = db.session_context_tokens(&session.id)? {
             if ctx > limit {
+                // 自建端点的员工换会话前先写交接摘要；订阅员工窗口大、换得少，不额外多花一次调用
+                if let Some(r) = &resolved {
+                    handoff = handoff_summary(employee, cfg, &session.id, r).await;
+                }
                 db.reset_session(&session.id)?;
                 db.append_event_for(pid0, "session_rotated", Some(employee.id.as_str()), Some(session.id.as_str()),
-                    &json!({"context_tokens": ctx, "limit": limit}))?;
+                    &json!({"context_tokens": ctx, "limit": limit, "handoff": handoff}))?;
                 session = db.get_or_create_session(&employee.id, &project)?;
                 rotated_from = Some(ctx);
             }
@@ -103,8 +107,9 @@ pub async fn run_turn<A: Approver, O: Observer>(
     if let Some(ctx) = rotated_from {
         effective_prompt = format!(
             "[系统提示] 你的上一个会话上下文已达约 {}K，为节省用量已换成新会话，之前的对话不再可见。\
-             请以下面的任务、项目记忆和工作区当前状态为准，先用只读方式（git status、git log）核对进度，再继续。\n\n{effective_prompt}",
-            ctx / 1000
+             请以下面的任务、项目记忆和工作区当前状态为准，先用只读方式（git status、git log）核对进度，再继续。{}\n\n{effective_prompt}",
+            ctx / 1000,
+            handoff.as_deref().map(|h| format!("\n\n[上一会话写给你的交接摘要]\n{h}")).unwrap_or_default()
         );
     }
     let mut spec = ClaudeSpec::new(session.id.clone(), session.started, employee.persona.clone(), cfg.project_path.clone());
@@ -119,11 +124,6 @@ pub async fn run_turn<A: Approver, O: Observer>(
         spec.model = Some(r.model.clone());
         spec.env = r.env.clone();
     }
-    // 同一个端点同时最多 max_concurrency 个员工在用（本地模型通常只能串行）；等待期间会话仍是空闲
-    let _slot = match &resolved {
-        Some(r) => Some(crate::endpoint::acquire_slot(&r.endpoint).await),
-        None => None,
-    };
     if cfg.mcp.is_some() {
         spec.persona = format!("{}\n\n{}", spec.persona, crate::mcp::TEAM_TOOLS_HINT);
         spec.mcp = cfg.mcp.clone();
@@ -240,6 +240,54 @@ pub async fn run_turn<A: Approver, O: Observer>(
             Err(e)
         }
     }
+}
+
+/// 这位员工的会话换新阈值：全局上限，连了自建端点时取端点窗口的七成（本地模型窗口小得多）。0 表示不限。
+pub fn rotation_limit(db: &Db, employee: &Employee) -> u64 {
+    let mut limit = context_limit(db);
+    if let Ok(Some(r)) = db.resolve_endpoint(employee) {
+        let cap = (r.endpoint.context_tokens as u64) * 7 / 10;
+        if cap > 0 && (limit == 0 || cap < limit) {
+            limit = cap;
+        }
+    }
+    limit
+}
+
+/// 下一次执行会不会用一个全新的会话（还没建立，或上下文已超限要换新）。
+/// 全新会话里没有之前的对话，所以派活时要把项目目标和记忆重新带上。
+pub fn session_restarts(db: &Db, employee: &Employee, project_path: &str) -> bool {
+    let Ok(s) = db.get_or_create_session(&employee.id, project_path) else { return false };
+    if !s.started {
+        return true;
+    }
+    let limit = rotation_limit(db, employee);
+    limit > 0 && s.status != "running" && db.session_context_tokens(&s.id).ok().flatten().is_some_and(|c| c > limit)
+}
+
+/// 换会话之前，让旧会话自己写一份交接摘要（做到哪、定了什么、试过什么失败了、下一步），
+/// 新会话据此接着做，不容易跑偏。不允许调用任何工具；超时或失败就不带摘要。
+async fn handoff_summary(employee: &Employee, cfg: &TurnConfig, old_session: &str, r: &crate::endpoint::Resolved) -> Option<String> {
+    let mut spec = ClaudeSpec::new(old_session.to_string(), true, employee.persona.clone(), cfg.project_path.clone());
+    spec.program = cfg.program.clone();
+    spec.model = Some(r.model.clone());
+    spec.env = r.env.clone();
+    let prompt = "[系统提示] 你的会话上下文即将换成新会话，之后你的对话记录不再可见。请不要调用任何工具，直接写一份给“新会话里的你”的交接摘要，500 字以内，包含：\n\
+        ① 当前任务的目标和做到哪了；② 已经确定的决定和原因；③ 试过但失败或被否决的做法（避免重复）；④ 下一步具体要做什么；⑤ 需要注意的坑或未验证的假设。\n只写事实，不要客套。";
+    let mut p = ClaudeProcess::spawn(&spec, prompt).await.ok()?;
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(900), async {
+        loop {
+            match p.next_event().await {
+                Ok(Some(AgentEvent::Result(res))) => return Some(res),
+                Ok(Some(AgentEvent::Approval(req))) => { let _ = p.respond(&req, &Decision::Deny("交接摘要不需要调用工具，请直接回答".into())).await; }
+                Ok(Some(_)) => {}
+                _ => return None,
+            }
+        }
+    }).await;
+    p.kill().await;
+    let res = waited.ok().flatten()?;
+    (!res.is_error && !res.text.trim().is_empty()).then(|| res.text.trim().chars().take(1500).collect())
 }
 
 /// 会话上下文上限（token）。超过后下一次任务换新会话；设置项 `context_limit`，0 表示不限，默认 150000。

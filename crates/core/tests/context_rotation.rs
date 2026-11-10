@@ -79,3 +79,28 @@ async fn limit_zero_disables_rotation() {
     run_turn(&db, &e, &cfg(&work, fake(d.path(), 900_000)), "b", &Deny, &NoopObserver).await.unwrap();
     assert_eq!(a, db.get_or_create_session(&e.id, &work.to_string_lossy()).unwrap().id);
 }
+
+#[tokio::test]
+async fn endpoint_employees_hand_off_with_a_summary_and_get_goal_and_memory_again() {
+    use crewforge_core::endpoint::EndpointInput;
+    let d = tempfile::tempdir().unwrap();
+    let work = d.path().join("w");
+    std::fs::create_dir_all(&work).unwrap();
+    let db = Db::open(&d.path().join("home")).unwrap();
+    let e = db.add_employee("local", "dev", "p").unwrap();
+    let ep = db.add_endpoint(&EndpointInput { name: "本地".into(), base_url: "http://10.0.0.5:11434".into(), models: vec!["qwen3:27b".into()], extra_env: Default::default(), max_concurrency: 1, context_tokens: 32_000, token: None }).unwrap();
+    db.set_employee_endpoint(&e.id, Some(&ep.id), "").unwrap();
+    let e = db.employee_by_id(&e.id).unwrap().unwrap();
+
+    // 第一轮：上下文 25K，超过窗口 3.2 万的七成（22.4K）
+    run_turn(&db, &e, &cfg(&work, fake(d.path(), 25_000)), "任务一", &Deny, &NoopObserver).await.unwrap();
+    // 第二轮：换会话之前先让旧会话写交接摘要（第 2 条提示），再用新会话执行任务（第 3 条提示）
+    run_turn(&db, &e, &cfg(&work, fake(d.path(), 1_000)), "任务二", &Deny, &NoopObserver).await.unwrap();
+    let log = std::fs::read_to_string(d.path().join("prompts.log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 3, "任务一、交接摘要、任务二：{log}");
+    assert!(lines[1].contains("交接摘要") && lines[1].contains("不要调用任何工具"), "{}", lines[1]);
+    assert!(lines[2].contains("已换成新会话") && lines[2].contains("[上一会话写给你的交接摘要]") && lines[2].contains("任务二"), "{}", lines[2]);
+    let rotated = db.recent_events(50).unwrap().into_iter().find(|x| x.kind == "session_rotated").unwrap();
+    assert_eq!(rotated.payload["handoff"].as_str(), Some("ok"), "摘要写进了换会话事件，便于在日志里追溯");
+}

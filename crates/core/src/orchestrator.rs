@@ -112,13 +112,15 @@ impl Orchestrator {
             Some(TaskLink::Plan(p)) => self.db.mark_plan_started(p, &task.id)?,
             None => {}
         }
-        let block = if fresh {
+        // 新任务，或者会话是全新的（还没建立 / 上下文超限换新）：都要把项目目标和记忆带上
+        let fresh_ctx = fresh || crate::runner::session_restarts(&self.db, employee, &task.worktree_path);
+        let block = if fresh_ctx {
             self.memory_block(project_id.as_deref(), employee, Some(&task.id), prompt, "task", &task.id)
         } else {
             String::new()
         };
         // 项目的目标与硬性约束（比如“技术栈升级、业务行为不变”）：每个新任务开始时都带上
-        let goal_block = if fresh && !goal.is_empty() { format!("[项目目标与硬性约束]\n{goal}\n\n") } else { String::new() };
+        let goal_block = if fresh_ctx && !goal.is_empty() { format!("[项目目标与硬性约束]\n{goal}\n\n") } else { String::new() };
         let injected = !block.is_empty() || !goal_block.is_empty();
         let full_prompt = if injected { format!("{goal_block}{block}\n{prompt}") } else { prompt.to_string() };
 

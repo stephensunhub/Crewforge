@@ -145,3 +145,44 @@ async fn planning_meeting_gets_goal_scan_and_existing_plan() {
         assert!(prompt.contains(needle), "规划会议的提示里缺少 {needle}");
     }
 }
+
+/// 假 CLI：记录提示，并声称上下文为 `ctx` token（用来触发换会话）。
+fn ctx_cli(dir: &Path, name: &str, ctx: u64) -> (String, PathBuf) {
+    let log = dir.join(format!("{name}.prompts"));
+    let path = dir.join(name);
+    std::fs::write(&path, format!(
+        "#!/bin/sh\nread -r line\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"x\"}}'\nprintf '%s\\n' \"$line\" >> '{}'\necho work >> out.txt\n\
+         echo '{{\"type\":\"assistant\",\"message\":{{\"usage\":{{\"input_tokens\":10,\"cache_read_input_tokens\":{ctx},\"cache_creation_input_tokens\":0}},\"content\":[{{\"type\":\"text\",\"text\":\"ok\"}}]}}}}'\n\
+         echo '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"usage\":{{}}}}'\n",
+        log.display())).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (path.to_string_lossy().into_owned(), log)
+}
+
+#[tokio::test]
+async fn a_rotated_session_on_a_continuing_task_gets_the_goal_again_but_a_live_session_does_not() {
+    let mut e = setup().await;
+    let alice = e.db.add_employee("alice", "全栈", "p").unwrap();
+    e.db.add_member(&e.pid, &alice.id, "developer").unwrap();
+    e.db.set_project_goal(&e.pid, "用 Rust 重写核心逻辑，业务行为必须保持不变").unwrap();
+    e.db.set_setting("context_limit", "100000").unwrap();
+
+    // 第一轮：新任务，带项目目标；上下文 120K，超过上限
+    let (p1, log1) = ctx_cli(&e.tools, "c1", 120_000);
+    e.orch.program = p1;
+    e.orch.assign(&alice, &e.repo, "实现登录", &Deny, &NoopObserver).await.unwrap();
+    assert!(std::fs::read_to_string(&log1).unwrap().contains("[项目目标与硬性约束]"));
+
+    // 第二轮：同一个任务继续，但上一轮上下文超限 → 换新会话，新会话里没有目标，必须重新带上
+    let (p2, log2) = ctx_cli(&e.tools, "c2", 20_000);
+    e.orch.program = p2;
+    e.orch.assign(&alice, &e.repo, "继续做登录", &Deny, &NoopObserver).await.unwrap();
+    let rotated = std::fs::read_to_string(&log2).unwrap();
+    assert!(rotated.contains("已换成新会话") && rotated.contains("[项目目标与硬性约束]") && rotated.contains("业务行为必须保持不变"), "{rotated}");
+
+    // 第三轮：会话没超限、还活着，会话里本来就有目标，不重复注入
+    let (p3, log3) = ctx_cli(&e.tools, "c3", 20_000);
+    e.orch.program = p3;
+    e.orch.assign(&alice, &e.repo, "再改一点", &Deny, &NoopObserver).await.unwrap();
+    assert!(!std::fs::read_to_string(&log3).unwrap().contains("[项目目标与硬性约束]"), "没换会话不重复注入");
+}
