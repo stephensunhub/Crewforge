@@ -89,11 +89,12 @@ function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: str
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [init, setInit] = useState(true);
-  const [imp, setImp] = useState(true);
+  const [imp, setImp] = useState(false);
   const [busy, setBusy] = useState(false);
   async function pick() {
     const p = await api.pickDirectory();
-    if (p) { setPath(p); if (!name) setName(basename(p)); }
+    // 目录里已有内容才按“导入已有项目”处理；空目录就是新建，不需要走导入流程
+    if (p) { setPath(p); if (!name) setName(basename(p)); setImp(await api.dirHasContent(p).catch(() => false)); }
   }
   return (
     <Modal title="新建 / 导入项目" onClose={onClose}>
@@ -107,7 +108,7 @@ function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: str
         <Field label="项目名称"><input value={name} onChange={(e) => setName(e.target.value)} /></Field>
         <Field label="描述（可选）"><textarea rows={3} value={desc} onChange={(e) => setDesc(e.target.value)} /></Field>
         <label className="tog"><input type="checkbox" checked={imp} onChange={(e) => setImp(e.target.checked)} />
-          这是已有的项目：先做只读扫描和测试基线，确认后再让员工开发（推荐）</label>
+          这是已有的项目：先做只读扫描和测试基线，确认后再让员工开发（选了有代码的目录会自动勾上；新建项目不要勾）</label>
         <label className="tog"><input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} />
           目录还不是 Git 仓库时，自动初始化（员工需要在 Git 工作区里工作）</label>
         <div className="form-btns">

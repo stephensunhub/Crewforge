@@ -102,6 +102,7 @@ pub fn run() {
             commands::set_purpose_model,
             commands::apply_recommended_models,
             commands::discover_copilot_models,
+            commands::dir_has_content,
             commands::list_endpoints,
             commands::add_endpoint,
             commands::update_endpoint,

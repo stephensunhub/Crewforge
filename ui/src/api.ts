@@ -43,6 +43,7 @@ export const api = {
   applyRecommendedModels: () => invoke<number>("apply_recommended_models"),
   setPurposeModel: (provider: string, purpose: string, model: string) => invoke<void>("set_purpose_model", { provider, purpose, model }),
   discoverCopilotModels: () => invoke<number>("discover_copilot_models"),
+  dirHasContent: (path: string) => invoke<boolean>("dir_has_content", { path }),
   listEndpoints: () => invoke<Endpoint[]>("list_endpoints"),
   addEndpoint: (input: EndpointInput) => invoke<Endpoint>("add_endpoint", { input }),
   updateEndpoint: (id: string, input: EndpointInput) => invoke<void>("update_endpoint", { id, input }),

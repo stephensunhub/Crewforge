@@ -97,6 +97,12 @@ pub fn list_projects(state: State<'_, AppState>) -> CmdResult<Vec<ProjectSummary
     state.db.project_summaries().map_err(err)
 }
 
+/// 目录里有没有既有内容（忽略隐藏文件和 .git）：用来判断是“新建”还是“导入已有项目”。
+#[tauri::command]
+pub fn dir_has_content(path: String) -> bool {
+    std::fs::read_dir(&path).map(|rd| rd.flatten().any(|e| !e.file_name().to_string_lossy().starts_with('.'))).unwrap_or(false)
+}
+
 /// 新建或导入项目。`init_git` 为 true 时，目录不是仓库就初始化（员工的工作区需要 Git）。
 #[tauri::command]
 pub async fn create_project(
