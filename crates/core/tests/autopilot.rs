@@ -493,3 +493,18 @@ async fn interrupted_batches_resume_with_the_remaining_budget_without_approving_
     assert_eq!(v.counts.proposed, 1, "恢复不等于人批准了新提议");
     assert!(e.db.recent_events(50).unwrap().iter().any(|x| x.kind == "autopilot_started" && x.payload["text"].as_str().unwrap_or("").contains("接着")));
 }
+
+#[tokio::test]
+async fn items_left_in_progress_by_a_restart_are_requeued_and_finished() {
+    let e = setup().await;
+    // 模拟应用重启：条目 A 停在“进行中”，但干活的进程已经没了
+    let a = e.ids[0].clone();
+    let alice = e.db.employee_by_name("alice").unwrap().unwrap();
+    let t = crewforge_core::db::Task { id: "t-dead".into(), repo_path: e.repo.to_string_lossy().into(), employee_id: alice.id.clone(), title: "A".into(), branch: "crewforge/alice/t-dead".into(), base_branch: "main".into(), base_commit: "0".into(), worktree_path: "/nonexistent".into(), status: "abandoned".into(), merged_commit: None, created_at: 0, updated_at: 0 };
+    e.db.create_task(&t).unwrap();
+    e.db.mark_plan_started(&a, "t-dead").unwrap();
+    assert_eq!(e.db.get_plan_item(&a).unwrap().unwrap().status, "in_progress");
+    let r = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!((r.status.as_str(), r.reason.as_str()), ("finished", "计划全部完成"), "{r:?}");
+    assert!(e.db.recent_events(500).unwrap().iter().any(|x| x.kind == "autopilot_step" && x.payload["text"].as_str().unwrap_or("").contains("放回待开始")));
+}

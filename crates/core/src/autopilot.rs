@@ -697,7 +697,26 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     }
 
     /// 主循环：按依赖并行推进计划条目，直到做完、预算用尽、需要人，或被暂停/停止。
+    /// 批次开始时，“进行中”但没有人在做的条目（应用重启或崩溃时干活的进程没了）放回“待开始”，
+    /// 员工会接着自己那个任务继续做；不然这些条目永远卡在“进行中”，后面等它的条目也开不了工。
+    /// 员工此刻正被别处占着（比如你手动派的活）的不动。返回放回了几条。
+    fn requeue_orphaned_items(&self) -> usize {
+        let Ok(view) = self.db().plan_view(&self.project_id) else { return 0 };
+        let busy_names = self.busy.lock().unwrap().clone();
+        let mut n = 0;
+        for it in view.items.iter().filter(|i| i.status == "in_progress") {
+            let owner = it.task_id.as_deref().and_then(|t| self.db().get_task(t).ok().flatten()).and_then(|t| self.db().employee_by_id(&t.employee_id).ok().flatten());
+            if owner.as_ref().is_some_and(|e| busy_names.contains(&e.name)) { continue; }
+            if self.db().requeue_plan_item(&it.id).unwrap_or(false) {
+                self.say("autopilot_step", format!("《{}》上次做到一半被中断（没有人在做），放回待开始，由 {} 接着做", it.title, owner.map(|e| e.name).or(it.assignee_name.clone()).unwrap_or_else(|| "员工".into())));
+                n += 1;
+            }
+        }
+        n
+    }
+
     pub async fn run(self: Arc<Self>) -> AutopilotRun {
+        self.requeue_orphaned_items();
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();
         let mut ruled: HashSet<String> = HashSet::new();

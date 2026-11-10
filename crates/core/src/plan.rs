@@ -235,6 +235,12 @@ impl Db {
         Ok(PlanView { percent_done: if total == 0 { 0 } else { (counts.done * 100 / total) as u32 }, items, counts })
     }
 
+    /// 把“进行中”的条目放回“待开始”（保留关联的任务，员工接着做）。
+    pub fn requeue_plan_item(&self, id: &str) -> Result<bool> {
+        let n = self.conn.lock().unwrap().execute("UPDATE plan_items SET status = 'planned', note = '上次做到一半被中断，已回到待开始', updated_at = ?2 WHERE id = ?1 AND status = 'in_progress'", params![id, now_ms()])?;
+        Ok(n > 0)
+    }
+
     /// 每个还没做的条目此刻在等什么（给计划页显示）。键是条目 id，值是原因，空表示没有被拦着。
     /// `busy` 是此刻正在工作的员工名；`autopilot_live` 表示这个项目的自主推进是否在运行。
     pub fn plan_waiting(&self, project_id: &str, busy: &std::collections::HashSet<String>, autopilot_live: bool) -> Result<std::collections::HashMap<String, Vec<String>>> {
