@@ -52,6 +52,10 @@ impl Db {
                     else if no_ai_lead { "这个项目没有 AI 负责人，所有议题由你来拍板".into() }
                     else { "讨论已结束，等有权限者拍板；你始终可以拍板".into() }, goto: "issues".into(), count: 1, meeting_id: None, action_id: None });
         }
+        if let Some(g) = self.pending_goal_proposal(project_id)? {
+            items.push(DutyItem { kind: "goal".into(), title: format!("{}提议修改项目目标：{}", g.proposer_name.clone().unwrap_or_else(|| "负责人".into()), g.reason.chars().take(100).collect::<String>()),
+                reason: "项目目标只有你点头才会改；批准前目标不变，员工仍按现有目标工作".into(), goto: "plan".into(), count: 1, meeting_id: None, action_id: None });
+        }
         for d in self.ai_proposals()?.into_iter().filter(|d| d.issue.project_id == project_id) {
             items.push(DutyItem { kind: "proposal".into(), title: format!("员工提议了议题：{}", d.issue.title), reason: "AI 只能提议；是否值得讨论由你确认，确认前不会占用大家的额度".into(), goto: "issues".into(), count: 1, meeting_id: None, action_id: None });
         }

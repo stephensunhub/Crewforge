@@ -336,3 +336,8 @@ export interface SessionsView { limit: number; sessions: SessionCtx[] }
 
 export interface EndedProject { project: Project; end_kind: "completed" | "archived"; end_reason: string; ended_at: number | null }
 export interface DiscardReport { tasks_removed: number; folder_trashed: string | null }
+
+export interface GoalProposal {
+  id: string; project_id: string; proposed_by: string | null; proposer_name: string | null;
+  old_goal: string; new_goal: string; reason: string; status: string; note: string; created_at: number;
+}

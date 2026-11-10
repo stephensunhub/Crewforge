@@ -53,3 +53,37 @@ async fn real_claude_proposes_an_issue_and_a_memory_through_mcp() {
     assert_eq!(proposed.len(), 2);
     assert!(proposed[0].payload["origin"].as_str().unwrap().starts_with("task:"));
 }
+
+/// 真实 Claude：负责人通过 propose_goal 提议改目标（目标不变，等人点头）；普通员工被拒绝。
+#[tokio::test]
+#[ignore]
+async fn real_lead_proposes_a_goal_change_and_a_developer_is_refused() {
+    let data = tempfile::tempdir().unwrap();
+    let repo = data.path().join("proj");
+    std::fs::create_dir_all(&repo).unwrap();
+    let db = Arc::new(Db::open(&data.path().join("home")).unwrap());
+    let ws = Arc::new(WorkspaceManager::new(&data.path().join("home")));
+    ws.init_repo(&repo).await.unwrap();
+    let repo = ws.repo_info(&repo).await.unwrap().root;
+    let alice = db.add_employee("alice", "全栈", "你是 Alice，项目负责人。回答简短。").unwrap();
+    let bob = db.add_employee("bob", "全栈", "你是 Bob，开发。回答简短。").unwrap();
+    let project = db.create_project("P", "", repo.to_str().unwrap()).unwrap();
+    db.set_project_goal(&project.id, "做一个只支持 add/list 的命令行待办工具，只用标准库。").unwrap();
+    db.add_member(&project.id, &alice.id, "lead").unwrap();
+    db.add_member(&project.id, &bob.id, "developer").unwrap();
+    let mut orch = Orchestrator::new(db.clone(), ws);
+    orch.mcp_exe = Some(env!("CARGO_BIN_EXE_crewforge").into());
+    let approver = DenyAndRecord(Default::default());
+    let prompt = "项目目标是：“做一个只支持 add/list 的命令行待办工具，只用标准库。”用户刚刚在群里说：还需要 done 和 rm 两个命令，其余约束不变。\
+        目标已经与需求不符，请你作为项目负责人用 propose_goal 提议修改目标（给出修改后的完整目标全文和理由）。提交后只回复 done。不要修改任何文件。";
+    let r = orch.assign(&alice, &repo, prompt, &approver, &NoopObserver).await.unwrap();
+    println!("负责人回复：{}", r.text);
+    let g = db.pending_goal_proposal(&project.id).unwrap().expect("负责人应提交了目标变更提议");
+    println!("新目标：{}\n理由：{}", g.new_goal, g.reason);
+    assert_eq!(db.get_project(&project.id).unwrap().unwrap().goal, g.old_goal, "批准前目标不变");
+    assert!(g.new_goal.contains("done") && g.new_goal.contains("rm"));
+
+    let r = orch.assign(&bob, &repo, "请调用 propose_goal，new_goal 为“随便改”，reason 为“测试”，把工具返回的文字原样告诉我。", &approver, &NoopObserver).await.unwrap();
+    println!("员工回复：{}", r.text);
+    assert_eq!(db.pending_goal_proposal(&project.id).unwrap().unwrap().id, g.id, "员工的提议不会生效");
+}

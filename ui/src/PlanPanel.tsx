@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { Field, Modal, ReasonButton } from "./common";
-import type { EventRow, Member, PlanItem, PlanItemInput, PlanViewData, Project } from "./types";
+import type { EventRow, GoalProposal, Member, PlanItem, PlanItemInput, PlanViewData, Project } from "./types";
 
 const STATUS: Record<string, string> = { proposed: "待确认", planned: "待开始", in_progress: "进行中", done: "已完成", blocked: "已阻塞", cancelled: "已取消" };
 const KIND: Record<string, string> = { characterize: "补特征测试", migrate: "迁移/实现", cleanup: "清理", other: "其他" };
@@ -48,6 +48,9 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
 }) {
   const [view, setView] = useState<PlanViewData | null>(null);
   const [goal, setGoal] = useState(project.goal);
+  useEffect(() => { setGoal(project.goal); }, [project.goal]);
+  const [gp, setGp] = useState<GoalProposal | null>(null);
+  const [gpGoal, setGpGoal] = useState("");
   const [editing, setEditing] = useState<PlanItem | "new" | null>(null);
   const [pick, setPick] = useState<Record<string, string>>({});
   const [open, setOpen] = useState<string | null>(null);
@@ -55,7 +58,7 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState("");
 
-  const load = useCallback(async () => { try { setView(await api.planView(project.id)); } catch (e) { onError(String(e)); } }, [project.id, onError]);
+  const load = useCallback(async () => { try { setView(await api.planView(project.id)); const g = await api.pendingGoalProposal(project.id); setGp(g); if (g) setGpGoal((cur) => (gp?.id === g.id && cur ? cur : g.new_goal)); } catch (e) { onError(String(e)); } }, [project.id, onError]);
   useEffect(() => { void load(); }, [load]);
   const last = useMemo(() => events.reduce((m, e) => (e.project_id === project.id && (e.kind.startsWith("plan_") || e.kind === "agent_proposed" || e.kind === "task_merged" || e.kind === "task_abandoned") ? Math.max(m, e.id) : m), 0), [events, project.id]);
   useEffect(() => { if (last) void load(); }, [last, load]);
@@ -84,6 +87,20 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
       </div>
 
       {note && <div className="note" style={{ marginBottom: 10 }}>{note}</div>}
+      {gp && (
+        <section className="panel-box" style={{ borderColor: "var(--warn)" }}>
+          <b>{gp.proposer_name ?? "负责人"} 提议修改项目目标，等你点头</b>
+          <div className="hint" style={{ margin: "4px 0 8px" }}>理由：{gp.reason}。批准前目标不变，员工仍按现有目标工作。</div>
+          <div className="hint">现有目标</div>
+          <div className="note" style={{ whiteSpace: "pre-wrap", marginBottom: 8 }}>{gp.old_goal.trim() || "（空）"}</div>
+          <div className="hint">提议的新目标（可以先改再批准）</div>
+          <textarea rows={4} value={gpGoal} onChange={(e) => setGpGoal(e.target.value)} />
+          <div className="row" style={{ marginTop: 8, gap: 8 }}>
+            <button className="btn primary" disabled={!gpGoal.trim()} onClick={() => void act(() => api.decideGoalProposal(gp.id, true, gpGoal.trim() === gp.new_goal.trim() ? null : gpGoal, ""))}>批准并改目标</button>
+            <ReasonButton label="驳回" placeholder="为什么不改？负责人以后会看到" required onSubmit={(why) => void act(() => api.decideGoalProposal(gp.id, false, null, why))} />
+          </div>
+        </section>
+      )}
       <section className="panel-box">
         <h4 className="group-title">项目目标与硬性约束</h4>
         <div className="hint" style={{ marginBottom: 6 }}>每个新任务开始时都会带上这段话，例如“技术栈升级，业务行为不变”。</div>

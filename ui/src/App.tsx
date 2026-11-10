@@ -54,6 +54,7 @@ export default function App() {
   const [proposals, setProposals] = useState<PendingDecision[]>([]);
   const [actionCounts, setActionCounts] = useState<[string, string, number][]>([]);
   const [planCounts, setPlanCounts] = useState<[string, string, number][]>([]);
+  const [goalCounts, setGoalCounts] = useState<[string, string, number][]>([]);
   const [meetingFocus, setMeetingFocus] = useState<string | null>(null);
 
   const employees = useMemo(() => cards.map((c) => c.employee), [cards]);
@@ -76,6 +77,7 @@ export default function App() {
         setProposals(await api.pendingProposals());
         setActionCounts(await api.actionCounts());
         setPlanCounts(await api.planProposedCounts());
+        setGoalCounts(await api.goalProposalCounts());
         setUnverified(await api.unverifiedCounts());
         setSched(await api.schedulerStatus());
       } catch (e) { setError(String(e)); }
@@ -93,7 +95,7 @@ export default function App() {
           void api.pendingDecisions().then(setPending).catch(() => undefined);
           void api.pendingProposals().then(setProposals).catch(() => undefined);
         }
-        if (e.kind.startsWith("plan_") || e.kind === "agent_proposed") void api.planProposedCounts().then(setPlanCounts).catch(() => undefined);
+        if (e.kind.startsWith("plan_") || e.kind === "agent_proposed") { void api.planProposedCounts().then(setPlanCounts).catch(() => undefined); void api.goalProposalCounts().then(setGoalCounts).catch(() => undefined); }
         if (e.kind.startsWith("action_") || ["meeting_minutes", "task_merged", "task_abandoned", "turn_result"].includes(e.kind)) void api.actionCounts().then(setActionCounts).catch(() => undefined);
         if (e.kind.startsWith("memory_") && e.kind !== "memory_injected") void api.unverifiedCounts().then(setUnverified).catch(() => undefined);
         if (["task_created", "task_merged", "task_abandoned", "task_started", "turn_result", "task_failed"].includes(e.kind)) void api.projects().then(setProjects).catch(() => undefined);
@@ -156,6 +158,7 @@ export default function App() {
     void api.pendingProposals().then(setProposals).catch(() => undefined);
     void api.actionCounts().then(setActionCounts).catch(() => undefined);
     void api.planProposedCounts().then(setPlanCounts).catch(() => undefined);
+    void api.goalProposalCounts().then(setGoalCounts).catch(() => undefined);
     void api.unverifiedCounts().then(setUnverified).catch(() => undefined);
     void api.projects().then(setProjects).catch(() => undefined);
   }, []);
@@ -192,7 +195,7 @@ export default function App() {
   const activeTab = scope.kind === "company" ? companyTab : projectTab;
   // 角标是待处理事项的总数（不是“有待办的项目数”）：行动项、待验证经验、待确认的计划条目都按条数算
   const sum = (a: [string, string, number][]) => a.reduce((n, x) => n + x[2], 0);
-  const inboxTotal = approvals.length + pending.length + proposals.length + sum(unverified) + sum(actionCounts) + sum(planCounts);
+  const inboxTotal = approvals.length + pending.length + proposals.length + sum(unverified) + sum(actionCounts) + sum(planCounts) + sum(goalCounts);
   const setTab = (t: string) => (scope.kind === "company" ? setCompanyTab(t as CompanyTab) : setProjectTab(t as ProjectTab));
 
   return (
@@ -237,6 +240,13 @@ export default function App() {
                 <div><span className="badge">确认计划</span> AI 起草了 <b>{n}</b> 个计划条目<span className="hint"> · {pname}</span></div>
                 <div className="hint">为什么是你：计划要你批准后才会派活，批准前员工不会开始做。</div>
                 <div className="btns"><button className="btn primary" onClick={() => { openProject(pid, "plan"); setInbox(false); }}>去确认</button></div>
+              </div>
+            ))}
+            {goalCounts.map(([pid, pname, n]) => (
+              <div className="inbox-item" key={`goal-${pid}`}>
+                <div><span className="badge">改目标</span> 负责人提议修改项目目标<span className="hint"> · {pname}{n > 1 ? `（${n}）` : ""}</span></div>
+                <div className="hint">为什么是你：项目目标只有你点头才会改，批准前员工仍按现有目标工作。</div>
+                <div className="btns"><button className="btn primary" onClick={() => { openProject(pid, "plan"); setInbox(false); }}>去看看</button></div>
               </div>
             ))}
             {actionCounts.map(([pid, pname, n]) => (

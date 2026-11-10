@@ -19,6 +19,26 @@ use std::path::PathBuf;
 /// 条目预计会改的文件（换行分隔），自主推进据此避免让改同一个文件的条目并行。
 pub const MIGRATION_15: &str = "ALTER TABLE plan_items ADD COLUMN files TEXT NOT NULL DEFAULT '';";
 
+/// AI 负责人提议修改项目目标：只是提议，人点头才生效。
+pub const MIGRATION_17: &str = "CREATE TABLE goal_proposals (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id),
+    proposed_by TEXT REFERENCES employees(id),
+    new_goal    TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | rejected | superseded
+    note        TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    decided_at  INTEGER
+);
+CREATE INDEX idx_goal_proposals_project ON goal_proposals(project_id, status);";
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GoalProposal {
+    pub id: String, pub project_id: String, pub proposed_by: Option<String>, pub proposer_name: Option<String>,
+    pub old_goal: String, pub new_goal: String, pub reason: String, pub status: String, pub note: String, pub created_at: i64,
+}
+
 pub const MIGRATION_9: &str = r#"
 ALTER TABLE projects ADD COLUMN goal TEXT NOT NULL DEFAULT '';   -- 重构目标与硬性约束，每个新任务开始时都会带上
 CREATE TABLE plan_items (
@@ -361,6 +381,65 @@ impl Db {
         }
         self.conn.lock().unwrap().execute("UPDATE projects SET goal = ?2, updated_at = ?3 WHERE id = ?1", params![id, goal.trim(), now_ms()])?;
         Ok(())
+    }
+
+    /// 负责人提议修改项目目标。同一项目只保留一条待确认的提议（新的取代旧的）。
+    pub fn propose_goal_change(&self, project_id: &str, employee_id: &str, new_goal: &str, reason: &str) -> Result<String> {
+        let (new_goal, reason) = (new_goal.trim(), reason.trim());
+        if new_goal.is_empty() { bail!("新的目标不能为空"); }
+        if new_goal.chars().count() > 2000 { bail!("目标与约束太长（上限 2000 字）"); }
+        if reason.is_empty() { bail!("请写明为什么要改目标"); }
+        let cur: String = self.conn.lock().unwrap().query_row("SELECT goal FROM projects WHERE id = ?1", params![project_id], |r| r.get(0))?;
+        if cur.trim() == new_goal { bail!("新目标和现有目标相同"); }
+        let rejected: Option<String> = self.conn.lock().unwrap().query_row(
+            "SELECT note FROM goal_proposals WHERE project_id = ?1 AND status = 'rejected' AND new_goal = ?2 LIMIT 1", params![project_id, new_goal], |r| r.get(0)).ok();
+        if let Some(n) = rejected { bail!("这份目标已经被人驳回过（原因：{n}），不要重复提议"); }
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = now_ms();
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute("UPDATE goal_proposals SET status = 'superseded', decided_at = ?2 WHERE project_id = ?1 AND status = 'pending'", params![project_id, now])?;
+            conn.execute("INSERT INTO goal_proposals (id, project_id, proposed_by, new_goal, reason, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                params![id, project_id, employee_id, new_goal, reason, now])?;
+        }
+        self.append_event_for(Some(project_id), "plan_goal_proposed", Some(employee_id), None, &json!({"proposal_id": id, "reason": reason}))?;
+        Ok(id)
+    }
+
+    pub fn pending_goal_proposal(&self, project_id: &str) -> Result<Option<GoalProposal>> {
+        let conn = self.conn.lock().unwrap();
+        let r = conn.query_row(
+            "SELECT g.id, g.project_id, g.proposed_by, e.name, p.goal, g.new_goal, g.reason, g.status, g.note, g.created_at
+             FROM goal_proposals g JOIN projects p ON p.id = g.project_id LEFT JOIN employees e ON e.id = g.proposed_by
+             WHERE g.project_id = ?1 AND g.status = 'pending' ORDER BY g.created_at DESC LIMIT 1", params![project_id],
+            |r| Ok(GoalProposal { id: r.get(0)?, project_id: r.get(1)?, proposed_by: r.get(2)?, proposer_name: r.get(3)?, old_goal: r.get(4)?, new_goal: r.get(5)?, reason: r.get(6)?, status: r.get(7)?, note: r.get(8)?, created_at: r.get(9)? }));
+        match r { Ok(g) => Ok(Some(g)), Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None), Err(e) => Err(e.into()) }
+    }
+
+    /// 人决定：approve 才改目标（可以先改写 new_goal 再批准）；reject 必须写原因（负责人以后能看到）。
+    pub fn decide_goal_proposal(&self, id: &str, approve: bool, edited_goal: Option<&str>, note: &str) -> Result<()> {
+        let (pid, new_goal, status): (String, String, String) = self.conn.lock().unwrap().query_row(
+            "SELECT project_id, new_goal, status FROM goal_proposals WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|_| anyhow::anyhow!("提议不存在"))?;
+        if status != "pending" { bail!("这条提议已经处理过了"); }
+        if !approve && note.trim().is_empty() { bail!("驳回请写明原因，负责人会参考"); }
+        if approve {
+            self.set_project_goal(&pid, edited_goal.unwrap_or(&new_goal))?;
+        }
+        self.conn.lock().unwrap().execute("UPDATE goal_proposals SET status = ?2, note = ?3, decided_at = ?4 WHERE id = ?1",
+            params![id, if approve { "approved" } else { "rejected" }, note.trim(), now_ms()])?;
+        self.append_event_for(Some(&pid), "plan_goal_decided", None, None, &json!({"proposal_id": id, "approved": approve, "note": note.trim()}))?;
+        Ok(())
+    }
+
+    /// 各项目等人确认的目标变更提议数（待办收件箱使用）。
+    pub fn goal_proposal_counts(&self) -> Result<Vec<(String, String, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name, COUNT(*) FROM goal_proposals g JOIN projects p ON p.id = g.project_id
+             WHERE g.status = 'pending' AND p.status = 'active' GROUP BY p.id, p.name ORDER BY p.name")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// 各项目等待人类确认的 AI 计划条目数（待办收件箱使用）。

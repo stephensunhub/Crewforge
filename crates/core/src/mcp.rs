@@ -23,6 +23,7 @@ pub const TEAM_TOOLS_HINT: &str = "[团队协作工具] 你可以使用名字以
 没有再用 propose_issue 提议；已有议题就用 add_option 补充你的方案；讨论充分后用 request_decision 请求拍板。\
 你亲自验证过、值得长期保留的经验，用 propose_memory 提议（需要人类验证后才会生效）。\
 当被要求制定计划（比如把一次大的重构或新项目拆成步骤）时，先用 list_plan 看现有计划，再用 propose_plan 一次提交整份计划：每个条目写清说明和验收标准，用 depends_on 标明先后依赖；人类批准后才会生效。\
+如果你是项目负责人，发现项目目标与现实不符、需要修改，用 propose_goal 提议新的目标全文和理由；它只是提议，人类点头后才生效，被驳回后不要重复提。\
 不要为琐碎的事提议题，每次任务或会议最多提 3 个。你只能提议，不能拍板。";
 
 const MAX_TITLE: usize = 80;
@@ -114,6 +115,10 @@ fn tools() -> Value {
               "module": str_prop("所属模块或目录，可选"),
               "assignee": str_prop("建议的负责人（项目成员的名字），可选"),
               "depends_on": {"type": "array", "description": "依赖：本次提交里排在前面的条目的序号（从 0 开始），或已有条目的 ID", "items": {}}}}}}}},
+        {"name": "propose_goal",
+         "description": "（仅项目负责人）提议修改项目目标与硬性约束。给出修改后的完整目标和理由；人类确认后才生效，你不能直接改。只有目标确实与现实不符、或需求变化时才提议。",
+         "inputSchema": {"type": "object", "required": ["new_goal", "reason"], "properties": {
+            "new_goal": str_prop("修改后的完整目标与约束（替换现有全文），不超过 2000 字"), "reason": str_prop("为什么要改、改了什么，不超过 400 字")}}},
         {"name": "propose_memory",
          "description": "提议一条值得长期保留的经验。它会先成为“待验证”的候选，人类验证后才会被注入给员工；不要提议未经你验证的猜测。",
          "inputSchema": {"type": "object", "required": ["content"], "properties": {
@@ -182,6 +187,7 @@ impl McpServer {
             "propose_memory" => self.propose_memory(a),
             "list_plan" => self.list_plan(),
             "propose_plan" => self.propose_plan(a),
+            "propose_goal" => self.propose_goal(a),
             other => bail!("未知工具: {other}"),
         }
     }
@@ -396,6 +402,18 @@ impl McpServer {
         Ok(format!("已提交 {created} 个计划条目，它们现在是“待确认”，人类批准后才会进入计划。{}", if skipped.is_empty() { String::new() } else { format!("跳过了 {} 个重复条目：{}", skipped.len(), skipped.join("；")) }))
     }
 
+    fn propose_goal(&self, a: &Value) -> Result<String> {
+        let is_lead = self.db.list_members(&self.ctx.project_id)?.iter().any(|m| m.employee_id == self.ctx.employee_id && m.role == "lead");
+        if !is_lead { bail!("只有项目负责人可以提议修改项目目标；其他人请提议题，或在会议里提出"); }
+        let new_goal = arg_str(a, "new_goal").context("缺少 new_goal")?;
+        let reason = arg_str(a, "reason").context("缺少 reason")?;
+        if chars(reason) > 400 { bail!("理由太长（上限 400 字），请精简"); }
+        if self.proposals_from_origin("goal")? >= 1 { bail!("这次任务/会议里你已经提议过修改目标了"); }
+        self.db.propose_goal_change(&self.ctx.project_id, &self.ctx.employee_id, new_goal, reason)?;
+        self.record("goal", json!({"reason": reason}));
+        Ok("已提交目标变更提议，等人类确认；确认前目标不变，请继续按现有目标工作。".into())
+    }
+
     fn propose_memory(&self, a: &Value) -> Result<String> {
         let content = arg_str(a, "content").context("缺少 content")?;
         if chars(content) > MAX_MEMORY {
@@ -504,6 +522,44 @@ mod tests {
     }
 
     #[test]
+    fn only_the_lead_can_propose_a_goal_change_and_the_human_decides() {
+        let (db, a, b, p) = setup();
+        db.set_project_goal(&p, "旧目标").unwrap();
+        // 普通员工不行
+        let (e, t) = call(&server(&db, &b, &p, "t1"), "propose_goal", json!({"new_goal": "新目标", "reason": "x"}));
+        assert!(e && t.contains("只有项目负责人"), "{t}");
+        assert_eq!(db.pending_goal_proposal(&p).unwrap().map(|g| g.id), None);
+        // 负责人提议：目标不变，进入待确认，待办和收件箱可见
+        let (e, t) = call(&server(&db, &a, &p, "t2"), "propose_goal", json!({"new_goal": "新目标：支持导出", "reason": "需求变了"}));
+        assert!(!e, "{t}");
+        assert_eq!(db.get_project(&p).unwrap().unwrap().goal, "旧目标", "批准前目标不变");
+        let g = db.pending_goal_proposal(&p).unwrap().unwrap();
+        assert_eq!((g.old_goal.as_str(), g.new_goal.as_str(), g.proposer_name.as_deref()), ("旧目标", "新目标：支持导出", Some("alice")));
+        assert!(db.my_duties(&p).unwrap().items.iter().any(|i| i.kind == "goal"));
+        assert_eq!(db.goal_proposal_counts().unwrap().iter().map(|x| x.2).sum::<i64>(), 1);
+        // 同一次任务里不能反复提
+        let (e, _) = call(&server(&db, &a, &p, "t2"), "propose_goal", json!({"new_goal": "又一个", "reason": "y"}));
+        assert!(e);
+        // 驳回要写原因；驳回后目标不变，同样的内容不能再提
+        assert!(db.decide_goal_proposal(&g.id, false, None, " ").is_err());
+        db.decide_goal_proposal(&g.id, false, None, "目标里明确不做导出").unwrap();
+        assert_eq!(db.get_project(&p).unwrap().unwrap().goal, "旧目标");
+        assert!(db.decide_goal_proposal(&g.id, true, None, "").is_err(), "已处理的不能再决定");
+        let (e, t) = call(&server(&db, &a, &p, "t3"), "propose_goal", json!({"new_goal": "新目标：支持导出", "reason": "再试"}));
+        assert!(e && t.contains("目标里明确不做导出"), "{t}");
+        // 换个内容再提，新的取代旧的；人可以先改写再批准
+        let (e, _) = call(&server(&db, &a, &p, "t4"), "propose_goal", json!({"new_goal": "版本一", "reason": "r"}));
+        assert!(!e);
+        let (e, _) = call(&server(&db, &a, &p, "t5"), "propose_goal", json!({"new_goal": "版本二", "reason": "r"}));
+        assert!(!e);
+        let g = db.pending_goal_proposal(&p).unwrap().unwrap();
+        assert_eq!(g.new_goal, "版本二", "同一项目只保留最新的一条待确认提议");
+        db.decide_goal_proposal(&g.id, true, Some("版本二（人改过）"), "").unwrap();
+        assert_eq!(db.get_project(&p).unwrap().unwrap().goal, "版本二（人改过）");
+        assert!(db.pending_goal_proposal(&p).unwrap().is_none());
+    }
+
+    #[test]
     fn protocol_basics() {
         let (db, a, _b, p) = setup();
         let s = server(&db, &a, &p, "t");
@@ -515,7 +571,7 @@ mod tests {
         assert!(s.handle(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"})).unwrap()["result"].is_object());
         let list = s.handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["list_issues", "propose_issue", "add_option", "request_decision", "list_plan", "propose_plan", "propose_memory"]);
+        assert_eq!(names, vec!["list_issues", "propose_issue", "add_option", "request_decision", "list_plan", "propose_plan", "propose_goal", "propose_memory"]);
         assert!(!names.contains(&"decide_issue"), "AI 没有拍板工具");
         for t in list["result"]["tools"].as_array().unwrap() {
             assert_eq!(t["inputSchema"]["type"], "object", "每个工具都有合法的 schema");

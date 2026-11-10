@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
-  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport,
+  ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal,
 } from "./types";
 
 export const api = {
@@ -114,6 +114,9 @@ export const api = {
   setPlanStatus: (id: string, status: string, note = "") => invoke<void>("set_plan_status", { id, status, note }),
   approvePlan: (projectId: string) => invoke<number>("approve_plan", { projectId }),
   planProposedCounts: () => invoke<[string, string, number][]>("plan_proposed_counts"),
+  goalProposalCounts: () => invoke<[string, string, number][]>("goal_proposal_counts"),
+  pendingGoalProposal: (projectId: string) => invoke<GoalProposal | null>("pending_goal_proposal", { projectId }),
+  decideGoalProposal: (id: string, approve: boolean, editedGoal: string | null, note: string) => invoke<void>("decide_goal_proposal", { id, approve, editedGoal, note }),
   setProjectGoal: (id: string, goal: string) => invoke<void>("set_project_goal", { id, goal }),
   dispatchPlanItem: (id: string, employeeId: string | null) => invoke<void>("dispatch_plan_item", { id, employeeId }),
   startPlanning: (projectId: string, employeeId: string, brief: string) => invoke<string>("start_planning", { projectId, employeeId, brief }),

@@ -1160,6 +1160,22 @@ pub fn plan_proposed_counts(state: State<'_, AppState>) -> CmdResult<Vec<(String
 }
 
 #[tauri::command]
+pub fn goal_proposal_counts(state: State<'_, AppState>) -> CmdResult<Vec<(String, String, i64)>> {
+    state.db.goal_proposal_counts().map_err(err)
+}
+
+#[tauri::command]
+pub fn pending_goal_proposal(state: State<'_, AppState>, project_id: String) -> CmdResult<Option<crewforge_core::plan::GoalProposal>> {
+    state.db.pending_goal_proposal(&project_id).map_err(err)
+}
+
+/// 人决定负责人的目标变更提议：批准（可先改写新目标）或驳回（必须写原因）。
+#[tauri::command]
+pub fn decide_goal_proposal(state: State<'_, AppState>, id: String, approve: bool, edited_goal: Option<String>, note: String) -> CmdResult<()> {
+    state.db.decide_goal_proposal(&id, approve, edited_goal.as_deref(), &note).map_err(err)
+}
+
+#[tauri::command]
 pub fn set_project_goal(state: State<'_, AppState>, id: String, goal: String) -> CmdResult<()> {
     state.db.set_project_goal(&id, &goal).map_err(err)
 }

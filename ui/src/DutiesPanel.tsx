@@ -4,7 +4,7 @@ import { focusAction } from "./common";
 import type { AutopilotStatus, Duties, EventRow } from "./types";
 import type { ProjectTab } from "./ProjectView";
 
-const KIND_LABEL: Record<string, string> = { plan: "确认计划", decision: "拍板", proposal: "确认议题", merge: "确认合并", review: "确认评审意见", action: "你的事项", memory: "验证经验" };
+const KIND_LABEL: Record<string, string> = { plan: "确认计划", decision: "拍板", proposal: "确认议题", merge: "确认合并", review: "确认评审意见", action: "你的事项", memory: "验证经验", goal: "确认改目标" };
 
 const DECIDE: [string, string][] = [
   ["需求和业务方向", "做什么、不做什么。AI 没有拍板权限，系统在代码里强制拦着。"],
