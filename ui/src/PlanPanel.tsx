@@ -50,6 +50,7 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
   const [goal, setGoal] = useState(project.goal);
   useEffect(() => { setGoal(project.goal); }, [project.goal]);
   const [gp, setGp] = useState<GoalProposal | null>(null);
+  const [waiting, setWaiting] = useState<Record<string, string[]>>({});
   const [gpGoal, setGpGoal] = useState("");
   const [editing, setEditing] = useState<PlanItem | "new" | null>(null);
   const [pick, setPick] = useState<Record<string, string>>({});
@@ -58,9 +59,9 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState("");
 
-  const load = useCallback(async () => { try { setView(await api.planView(project.id)); const g = await api.pendingGoalProposal(project.id); setGp(g); if (g) setGpGoal((cur) => (gp?.id === g.id && cur ? cur : g.new_goal)); } catch (e) { onError(String(e)); } }, [project.id, onError]);
+  const load = useCallback(async () => { try { setView(await api.planView(project.id)); setWaiting(await api.planWaiting(project.id)); const g = await api.pendingGoalProposal(project.id); setGp(g); if (g) setGpGoal((cur) => (gp?.id === g.id && cur ? cur : g.new_goal)); } catch (e) { onError(String(e)); } }, [project.id, onError]);
   useEffect(() => { void load(); }, [load]);
-  const last = useMemo(() => events.reduce((m, e) => (e.project_id === project.id && (e.kind.startsWith("plan_") || e.kind === "agent_proposed" || e.kind === "task_merged" || e.kind === "task_abandoned") ? Math.max(m, e.id) : m), 0), [events, project.id]);
+  const last = useMemo(() => events.reduce((m, e) => (e.project_id === project.id && (e.kind.startsWith("plan_") || e.kind.startsWith("autopilot_") || e.kind === "task_started" || e.kind === "agent_proposed" || e.kind === "task_merged" || e.kind === "task_abandoned") ? Math.max(m, e.id) : m), 0), [events, project.id]);
   useEffect(() => { if (last) void load(); }, [last, load]);
   useEffect(() => { if (!planner && members[0]) setPlanner(members.find((m) => m.role === "lead")?.employee_id ?? members[0].employee_id); }, [members, planner]);
 
@@ -160,7 +161,11 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
                 <span className="chip static">{KIND[i.kind]}{i.module ? ` · ${i.module}` : ""}</span>
                 <span className={`badge ps-${i.status}`}>{STATUS[i.status]}</span>
               </div>
-              {i.waiting_for.length > 0 && i.status === "planned" && <div className="note warn">等待：{i.waiting_for.join("、")}</div>}
+              {(waiting[i.id] ?? []).length > 0 && (
+                <div className={`note ${(waiting[i.id] ?? []).some((w) => w.startsWith("可以开始")) ? "ok" : "warn"}`}>
+                  {(waiting[i.id] ?? []).map((w, k) => <div key={k}>{w.startsWith("可以开始") ? "✓ " : "⏸ "}{w}</div>)}
+                </div>
+              )}
               {i.note && <div className="hint">{i.note}</div>}
               {open === i.id && (
                 <div className="plan-detail">

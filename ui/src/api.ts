@@ -48,6 +48,7 @@ export const api = {
   setAutopilotResume: (projectId: string, enabled: boolean) => invoke<void>("set_autopilot_resume", { projectId, enabled }),
   employeeActivities: () => invoke<Activity[]>("employee_activities"),
   employeeLog: (id: string, limit: number) => invoke<LogRun[]>("employee_log", { id, limit }),
+  planWaiting: (projectId: string) => invoke<Record<string, string[]>>("plan_waiting", { projectId }),
   listEndpoints: () => invoke<Endpoint[]>("list_endpoints"),
   addEndpoint: (input: EndpointInput) => invoke<Endpoint>("add_endpoint", { input }),
   updateEndpoint: (id: string, input: EndpointInput) => invoke<void>("update_endpoint", { id, input }),

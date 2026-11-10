@@ -220,6 +220,14 @@ pub fn employee_log(state: State<'_, AppState>, id: String, limit: usize) -> Cmd
     state.db.employee_log(&id, limit.clamp(1, 200), busy).map_err(err)
 }
 
+/// 计划里每个条目此刻在等什么（条目 id → 原因）。
+#[tauri::command]
+pub fn plan_waiting(state: State<'_, AppState>, project_id: String) -> CmdResult<std::collections::HashMap<String, Vec<String>>> {
+    let busy: std::collections::HashSet<String> = state.running.lock().unwrap().iter().cloned().collect();
+    let live = state.autopilots.lock().unwrap().contains_key(&project_id);
+    state.db.plan_waiting(&project_id, &busy, live).map_err(err)
+}
+
 #[tauri::command]
 pub fn get_concurrency(state: State<'_, AppState>) -> usize {
     state.sched.status().user_limit

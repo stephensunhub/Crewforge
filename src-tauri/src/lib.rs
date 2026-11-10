@@ -90,6 +90,7 @@ pub fn run() {
             commands::lead_draft_plan,
             commands::employee_activities,
             commands::employee_log,
+            commands::plan_waiting,
             commands::start_autopilot,
             commands::get_autopilot_resume,
             commands::set_autopilot_resume,

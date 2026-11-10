@@ -235,6 +235,50 @@ impl Db {
         Ok(PlanView { percent_done: if total == 0 { 0 } else { (counts.done * 100 / total) as u32 }, items, counts })
     }
 
+    /// 每个还没做的条目此刻在等什么（给计划页显示）。键是条目 id，值是原因，空表示没有被拦着。
+    /// `busy` 是此刻正在工作的员工名；`autopilot_live` 表示这个项目的自主推进是否在运行。
+    pub fn plan_waiting(&self, project_id: &str, busy: &std::collections::HashSet<String>, autopilot_live: bool) -> Result<std::collections::HashMap<String, Vec<String>>> {
+        let view = self.plan_view(project_id)?;
+        let files = self.plan_files(project_id)?;
+        let members: std::collections::HashSet<String> = self.list_members(project_id)?.into_iter().map(|m| m.employee_id).collect();
+        // 员工正在做哪个条目：用于说明“等 TA 做完手上的”
+        let doing: std::collections::HashMap<&str, &PlanItem> = view.items.iter().filter(|i| i.status == "in_progress").filter_map(|i| i.assignee_id.as_deref().map(|a| (a, i))).collect();
+        let running_files: Vec<(&PlanItem, &Vec<String>)> = view.items.iter().filter(|i| i.status == "in_progress").filter_map(|i| files.get(&i.id).map(|f| (i, f))).collect();
+        let mut out = std::collections::HashMap::new();
+        for it in &view.items {
+            let mut why: Vec<String> = Vec::new();
+            match it.status.as_str() {
+                "proposed" => why.push("待确认：你批准计划（或开始自主推进）之后才会开始".into()),
+                "blocked" => why.push(if it.note.is_empty() { "已阻塞".into() } else { format!("已阻塞：{}", it.note) }),
+                "planned" => {
+                    if !it.waiting_for.is_empty() {
+                        why.push(format!("等前置完成：{}", it.waiting_for.join("、")));
+                    }
+                    if let (Some(a), Some(name)) = (&it.assignee_id, &it.assignee_name) {
+                        if !members.contains(a) {
+                            why.push(format!("指派给 {name}，但 TA 不是本项目成员，派不出去：请改派"));
+                        } else if let Some(d) = doing.get(a.as_str()) {
+                            why.push(format!("{name} 正在做《{}》，做完才轮到", d.title));
+                        } else if busy.contains(name) {
+                            why.push(format!("{name} 正在忙别的"));
+                        }
+                    }
+                    if let Some(mine) = files.get(&it.id) {
+                        if let Some((other, _)) = running_files.iter().find(|(o, f)| o.id != it.id && f.iter().any(|x| mine.contains(x))) {
+                            why.push(format!("预计和进行中的《{}》改同一批文件，错开做以免合并冲突", other.title));
+                        }
+                    }
+                    if why.is_empty() {
+                        why.push(if autopilot_live { "可以开始：马上会被自主推进派出（受并发上限和员工空闲情况影响）".into() } else { "可以开始：自主推进没在运行，需要你手动“派发”，或开始自主推进".into() });
+                    }
+                }
+                _ => {}
+            }
+            out.insert(it.id.clone(), why);
+        }
+        Ok(out)
+    }
+
     pub fn update_plan_item(&self, id: &str, n: &NewPlanItem) -> Result<()> {
         let kind = validate(n)?;
         let it = self.get_plan_item(id)?.context("条目不存在")?;
@@ -626,5 +670,38 @@ mod tests {
         db.set_project_goal(&pid, "  技术栈升级，业务行为不变  ").unwrap();
         assert_eq!(db.get_project(&pid).unwrap().unwrap().goal, "技术栈升级，业务行为不变");
         assert!(db.set_project_goal(&pid, &"字".repeat(2001)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod waiting_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn each_waiting_item_says_what_it_is_waiting_for() {
+        let db = Db::open_memory().unwrap();
+        let p = db.create_project("p", "", "/tmp/p-waiting").unwrap().id;
+        let dev = db.add_employee("dev", "工程师", "x").unwrap();
+        let outsider = db.add_employee("outsider", "工程师", "x").unwrap();
+        db.add_member(&p, &dev.id, "developer").unwrap();
+        let mk = |t: &str, assignee: Option<&str>, deps: Vec<String>| db.create_plan_item(&p, &NewPlanItem { title: t.into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: assignee.map(String::from), deps }, None).unwrap();
+        let a = mk("A 脚手架", Some(&dev.id), vec![]);
+        let b = mk("B 存储", Some(&dev.id), vec![a.clone()]);
+        db.add_member(&p, &outsider.id, "developer").unwrap();
+        let c = mk("C 外人的活", Some(&outsider.id), vec![]);
+        db.remove_member(&p, &outsider.id).unwrap(); // 指派之后 TA 被移出了项目
+        let d = mk("D 无人认领", None, vec![]);
+        db.conn.lock().unwrap().execute("UPDATE plan_items SET status = 'in_progress' WHERE id = ?1", [&a]).unwrap();
+
+        let w = db.plan_waiting(&p, &HashSet::new(), false).unwrap();
+        assert!(w[&b].iter().any(|x| x.contains("等前置完成") && x.contains("A 脚手架")), "{:?}", w[&b]);
+        assert!(w[&b].iter().any(|x| x.contains("dev 正在做《A 脚手架》")), "{:?}", w[&b]);
+        assert!(w[&c].iter().any(|x| x.contains("不是本项目成员")), "{:?}", w[&c]);
+        assert!(w[&d].iter().any(|x| x.contains("需要你手动")), "没人拦着、自主推进没开：提示手动派发 {:?}", w[&d]);
+        let live = db.plan_waiting(&p, &HashSet::new(), true).unwrap();
+        assert!(live[&d].iter().any(|x| x.contains("马上会被自主推进派出")));
+        let busy: HashSet<String> = ["dev".to_string()].into();
+        assert!(db.plan_waiting(&p, &busy, true).unwrap()[&a].is_empty(), "进行中的不显示等待");
     }
 }
