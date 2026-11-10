@@ -57,14 +57,14 @@ export function ActionsView({ projectId, members, tasks, events, running, onOpen
   return (
     <div className="page wide">
       <div className="page-head"><div><h2>行动项</h2>
-        <div className="hint">评审和会议纪要里产生的待办，集中在这里看。<b>给你的</b>是需要人决定的；<b>拦合并</b>的不解决就不能合并；<b>之后再说</b>不拦合并，负责人会在收尾时整理。</div></div></div>
+        <div className="hint">评审和会议纪要里产生的待办，集中在这里看。<b>待决定</b>是等负责人拍板的事（负责人是 AI 时由它处理，只有它留给你的才会出现在你的待办里）；<b>拦合并</b>的不解决就不能合并；<b>之后再说</b>不拦合并，负责人会在收尾时整理。</div></div></div>
       <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
         <span className="hint">状态</span>
         {chip(status, pickStatus, "live", "未处理", cnt.live)}{chip(status, pickStatus, "done", "已处理", cnt.done)}{chip(status, pickStatus, "dismissed", "已驳回", cnt.dismissed)}{chip(status, pickStatus, "all", "全部", cnt.all)}
       </div>
       <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
         <span className="hint">类型（只统计未处理的）</span>
-        {chip(kind, setKind, "all", "全部", cnt.live)}{chip(kind, setKind, "human", "给你的", cnt.human)}{chip(kind, setKind, "blocking", "拦合并", cnt.blocking)}{chip(kind, setKind, "later", "之后再说", cnt.later)}
+        {chip(kind, setKind, "all", "全部", cnt.live)}{chip(kind, setKind, "human", "待决定", cnt.human)}{chip(kind, setKind, "blocking", "拦合并", cnt.blocking)}{chip(kind, setKind, "later", "之后再说", cnt.later)}
       </div>
       {shown.length === 0 && <div className="hint" style={{ padding: "12px 0" }}>{items.length === 0 ? "还没有行动项。会议或评审的纪要里写了行动项就会出现在这里。" : "没有符合筛选条件的行动项。"}</div>}
       <div style={{ display: "grid", gap: 8 }}>
@@ -75,7 +75,7 @@ export function ActionsView({ projectId, members, tasks, events, running, onOpen
           return (
             <div className={`action ${a.status}`} key={a.id}>
               <div className="action-top">
-                {a.for_human ? <span className="badge ab-block">给你的</span> : isBlocking(a) ? <span className="badge ab-block">拦合并</span> : <span className="badge">之后再说</span>}
+                {a.for_human ? <span className="badge ab-block">待决定</span> : isBlocking(a) ? <span className="badge ab-block">拦合并</span> : <span className="badge">之后再说</span>}
                 <span className={`badge as-${a.status}`}>{STATUS[a.status] ?? a.status}</span>
                 <span className="hint">{a.assignee_name ? `负责人 ${a.assignee_name}` : a.for_human ? "需要你处理" : "未指定负责人"} · 来自《{a.meeting_title}》</span>
                 <span style={{ flex: 1 }} />

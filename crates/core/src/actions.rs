@@ -154,7 +154,9 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT p.id, p.name, COUNT(*) FROM action_items a JOIN projects p ON p.id = a.project_id
              WHERE a.status IN ('open','working') AND p.status = 'active'
-               AND (a.for_human = 1 OR (a.blocking = 1 AND a.task_id IN (SELECT id FROM tasks WHERE status = 'active')))
+               AND ((a.for_human = 1 AND (NOT EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = a.project_id AND pm.role = 'lead')
+                                          OR EXISTS (SELECT 1 FROM events ev WHERE ev.kind = 'lead_escalated_action' AND json_extract(ev.payload,'$.action_id') = a.id)))
+                    OR (a.blocking = 1 AND a.task_id IN (SELECT id FROM tasks WHERE status = 'active')))
              GROUP BY p.id, p.name ORDER BY p.name",
         )?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;

@@ -240,13 +240,14 @@ impl Orchestrator {
              请用 Markdown，严格包含这四节标题：\n## 决议\n## 被否决的方案及原因\n## 行动项\n## 待验证的经验\n\
              “行动项”一节每条单独一行，格式固定为「- [合并前] 负责人：事项」或「- [之后] 负责人：事项」。\
              [合并前]=不解决就不该合并的缺陷，或必须补上的测试；[之后]=可以另开任务跟进的事。\
-             {action_format}“运行测试确认通过”这类例行验证不要列为行动项；需要人类拍板但不影响这个改动正确性的事写成 [之后]。\
-             负责人用项目成员的名字（{}）。只有三类事才写“人类”：需求变更、高风险操作（删除数据、生产环境、资金、安全）、架构取舍；\
-             界面细节、实现取舍、实现与需求原文是否一致这类，由负责人或员工决定，写成员的名字（拿不准归谁就写项目负责人）；没有就不写。\n\
+             {action_format}“运行测试确认通过”这类例行验证不要列为行动项；需要拍板但不影响这个改动正确性的事写成 [之后]。\
+             负责人用项目成员的名字（{}）。所有决定（需求取舍、实现取舍、架构取舍、界面细节）都由项目负责人（{}）做出，\
+             需要拍板的事就写负责人的名字，不要写“人类”或“我”；拿不准归谁也写负责人；没有就不写。\n\
              “待验证的经验”只写以后能复用的做法或教训（一条一句，说明适用条件）；当前的状态、未解决的问题、待办事项不是经验，不要写在这里（待办写进行动项）。\n\
              只写会上实际出现过的内容，没有的小节只写一个“无”字（不要再加解释），不要编造；不要修改任何文件。",
             kind_label(&meeting.kind), meeting.title, self.issues_block(&meeting, false)?, transcript,
-            members.iter().map(|m| self.name_of(Some(&m.employee_id))).collect::<Vec<_>>().join("、")
+            members.iter().map(|m| self.name_of(Some(&m.employee_id))).collect::<Vec<_>>().join("、"),
+            members.iter().find(|m| m.role == "lead").map(|m| self.name_of(Some(&m.employee_id))).unwrap_or_else(|| "第一位成员".into())
         );
         let cfg = TurnConfig {
             project_path: Path::new(&project.path).to_path_buf(),

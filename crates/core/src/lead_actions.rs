@@ -1,10 +1,10 @@
 //! 负责人处理“标给人”的行动项。
 //!
-//! 评审和会议的纪要里，AI 常把一些事标成“人类”。但按分工，只有需求变更、高风险操作、架构取舍才需要人拍板；
-//! 其余的（界面细节、与需求原文一致与否、实现取舍）应该由负责人定。所以自主推进时，负责人先看一遍：
+//! 评审和会议纪要里“待拍板”的事（旧纪要里可能写成“人类”）归项目负责人。负责人是 AI 时，由它来定，人只在事后观察和纠正：
 //! - 能判断的，自己定：记下决定和原因（沉淀为项目决策记忆），需要改代码、测试或文档的，追加计划条目；
 //! - 不需要做的，驳回并写明原因；
-//! - 属于需求变更、业务方向、资金、生产、不可逆、安全、架构取舍或缺少关键信息的，才留给人，并写明为什么必须是人。
+//! - 只有缺少无法核实、也无法合理假设的关键事实时，才留给人，并写明缺什么。
+//! 负责人是人（项目里没有 AI 负责人）时，这些事直接进人的待办。
 
 use crate::db::Employee;
 use crate::memory::NewMemory;
@@ -83,7 +83,7 @@ impl Orchestrator {
         let meeting = self.db.get_meeting(&item.meeting_id)?;
         let members = self.db.list_members(&project.id)?;
         let plan = self.db.plan_view(&project.id)?;
-        let mut p = format!("[处理行动项] 你是项目「{}」的负责人。下面这条行动项在会议纪要里被标成“需要人类处理”，但按分工，只有需求变更、高风险操作、架构取舍才需要人拍板，其余的由你来定。\n", project.name);
+        let mut p = format!("[处理行动项] 你是项目「{}」的负责人。你是这个项目的最终决策人：会议里待拍板的事都由你来定，人只在事后观察并可以纠正你。\n", project.name);
         if !project.goal.trim().is_empty() {
             p.push_str(&format!("\n项目目标与需求原文（以它为准）：\n{}\n", project.goal.trim()));
         }
@@ -106,7 +106,7 @@ impl Orchestrator {
 - 能根据需求原文、现有代码和项目记忆判断的，就自己定（decide），写明依据；需求原文已经写明的，照需求办。\n\
 - 决定之后如果需要改代码、补测试或改文档，在 follow_up 里列出条目（最多 2 个，每个写清 description 和能用命令验证的 acceptance，assignee 填项目成员名，files 列出预计会改的文件）；不需要改就让 follow_up 为空。\n\
 - 这件事其实不必做（已经符合需求、重复、过度设计），就驳回（dismiss），写明原因。\n\
-- 只有涉及需求变更、业务方向、资金、生产、不可逆操作、安全、架构取舍，或缺少你无法自己核实的关键信息时，才升级给人（escalate），并写明为什么必须是人。\n");
+- 需求原文没写明的，按你的专业判断定并写明依据，不要把决定推给人；高风险的操作本身仍会在执行时经过审批，不需要你在这里回避。只有缺少你无法核实、也无法合理假设的关键事实时，才升级（escalate），并写明缺什么。\n");
         p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"action\":\"decide\",\"decision\":\"最终决定，一句话，具体到做法\",\"reason\":\"依据\",\"follow_up\":[{\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"files\":[\"路径\"]}]}\n或 {\"action\":\"dismiss\",\"reason\":\"...\"}\n或 {\"action\":\"escalate\",\"reason\":\"为什么必须是人\"}");
 
         let text = self.lead_turn_as("ruling", lead, &project.id, &p, "处理行动项", approver).await?;

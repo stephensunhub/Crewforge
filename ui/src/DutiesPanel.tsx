@@ -98,7 +98,7 @@ export function DutiesPanel({ projectId, projectName, events, onGoTab, onOpenMee
       <section className="panel-box">
         <h4 className="group-title">现在在等你 {d && <span className="u-count">{d.items.length}</span>}
           {d && d.items.some((i) => i.kind === "action") && (
-            <button className="btn" style={{ marginLeft: 12 }} disabled={handling} title="这些事项被标成“人类处理”，但多数不需要你拍板。让负责人先看一遍：能定的定、不必做的驳回，只有需求变更、高风险、架构取舍才留给你。"
+            <button className="btn" style={{ marginLeft: 12 }} disabled={handling} title="这些是等负责人拍板的事。让 AI 负责人先看一遍：能定的定、不必做的驳回，只有缺少关键事实时才留给你。"
               onClick={async () => { setHandling(true); setHandled([]); try { setHandled(await api.leadHandleActions(projectId)); await load(); } catch (e) { onError(String(e)); } finally { setHandling(false); } }}>
               {handling ? "负责人处理中…" : "让负责人先处理"}</button>
           )}</h4>

@@ -72,13 +72,16 @@ impl Db {
         // 明确需要你决定的行动项：每一条单独列出，并指向它所在的会议（不然只知道“有 2 件事”，却不知道去哪里找）
         let mine: Vec<(String, String, String, String)> = {
             let mut s = conn.prepare("SELECT a.text, a.meeting_id, m.title, a.id FROM action_items a JOIN meetings m ON m.id = a.meeting_id
-                WHERE a.project_id = ?1 AND a.for_human = 1 AND a.status IN ('open','working') ORDER BY a.created_at")?;
+                WHERE a.project_id = ?1 AND a.for_human = 1 AND a.status IN ('open','working')
+                  AND (NOT EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = a.project_id AND pm.role = 'lead')
+                       OR EXISTS (SELECT 1 FROM events ev WHERE ev.kind = 'lead_escalated_action' AND json_extract(ev.payload,'$.action_id') = a.id))
+                ORDER BY a.created_at")?;
             s.query_map(params![project_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<std::result::Result<_, _>>()?
         };
         for (text, meeting_id, meeting_title, action_id) in mine {
             let shown: String = text.chars().take(120).collect();
             items.push(DutyItem { kind: "action".into(), title: format!("{}{}", shown, if text.chars().count() > 120 { "…" } else { "" }),
-                reason: format!("会议《{meeting_title}》的纪要里指明要由人来决定；只有人能关闭行动项。点“去处理”会打开那场会议，在纪要下方的行动项里点“已处理”（或写明原因后“驳回”）"),
+                reason: format!("会议《{meeting_title}》的纪要里有一件待决定的事，而这个项目的负责人是你（或负责人已经看过并留给你）；只有人能关闭行动项。点“去处理”会打开那场会议，在纪要下方的行动项里点“已处理”（或写明原因后“驳回”）"),
                 goto: "meetings".into(), count: 1, meeting_id: Some(meeting_id), action_id: Some(action_id) });
         }
         let unverified: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE project_id = ?1 AND status = 'unverified'", params![project_id], |r| r.get(0))?;
@@ -133,7 +136,7 @@ mod tests {
         let d = db.my_duties(&p.id).unwrap();
         assert!(d.items.iter().any(|i| i.kind == "decision" && i.reason.contains("负责人没有裁决") && i.reason.contains("涉及线上数据")), "{:?}", d.items);
         let kinds: Vec<&str> = d.items.iter().map(|i| i.kind.as_str()).collect();
-        for k in ["plan", "decision", "proposal", "merge", "review", "action"] {
+        for k in ["plan", "decision", "proposal", "merge", "review"] {
             assert!(kinds.contains(&k), "缺少 {k}：{kinds:?}");
         }
         // 每一项都说明为什么轮到你，并指向页签
@@ -141,9 +144,15 @@ mod tests {
         assert!(d.items.iter().find(|i| i.kind == "decision").unwrap().reason.contains("只有你能拍板"));
         assert!(d.items.iter().find(|i| i.kind == "merge").unwrap().title.contains("转账"));
         assert!(d.items.iter().find(|i| i.kind == "review").unwrap().title.contains("提现"));
-        // “之后”类、不是你的行动项不进你的待办，只计数
+        // 负责人是 AI：会议里“人类”的决定归负责人处理，不进你的待办；“之后”类只计数
+        assert!(!kinds.contains(&"action"), "AI 负责人在任时，行动项里的决定不进人的待办：{kinds:?}");
         assert_eq!(d.later_actions, 1, "alice 自己的“之后”事项");
-        assert_eq!(db.open_action_counts().unwrap().iter().map(|x| x.2).sum::<i64>(), 2, "收件箱只算拦合并的 1 条和指明给人的 1 条");
+        assert_eq!(db.open_action_counts().unwrap().iter().map(|x| x.2).sum::<i64>(), 1, "收件箱只算拦合并的 1 条");
+        // 负责人看过之后留给人的，才进你的待办
+        let a = db.actions_for_meeting(&m2.id).unwrap().into_iter().find(|a| a.for_human).unwrap();
+        db.append_event_for(Some(&p.id), "lead_escalated_action", None, None, &serde_json::json!({"action_id": a.id, "reason": "缺少关键事实"})).unwrap();
+        assert!(db.my_duties(&p.id).unwrap().items.iter().any(|i| i.kind == "action"));
+        assert_eq!(db.open_action_counts().unwrap().iter().map(|x| x.2).sum::<i64>(), 2);
     }
 
     #[test]
