@@ -120,7 +120,7 @@ export function ActivityLine({ a, showProject, onOpen }: { a: Activity | undefin
   return (
     <div className={`activity${onOpen ? " clickable" : ""}`} title={onOpen ? `点击跳到：${a.subject}` : a.subject} role={onOpen ? "button" : undefined} onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(a); } : undefined}>
       <b>{a.what}</b>{a.origin === "autopilot" ? "（自主推进派的）" : ""}{showProject && a.project ? ` · ${a.project}` : ""} · {short(a.subject, 40)}
-      <div className="hint">已 {ago(a.started_at)}{a.last_tool ? ` · 最近动作 ${a.last_tool}（${quiet === 0 ? "刚刚" : `${quiet} 分钟前`}）` : " · 还没有动作（可能在等模型首轮响应）"}{quiet !== null && quiet >= 10 ? " · ⚠ 已经 10 分钟没有新动作" : ""}{onOpen ? " · 点击查看 ›" : ""}</div>
+      <div className="hint">{a.queue?.self_waiting ? `已等 ${ago(a.started_at)} · 前面的请求还没做完（${a.queue.endpoint} 同时最多 ${a.queue.max} 个，${a.queue.running} 个在用、${a.queue.waiting} 个在等）` : <>已 {ago(a.started_at)}{a.last_tool ? ` · 最近动作 ${a.last_tool}（${quiet === 0 ? "刚刚" : `${quiet} 分钟前`}）` : " · 还没有动作（可能在等模型首轮响应）"}{quiet !== null && quiet >= 10 ? " · ⚠ 已经 10 分钟没有新动作" : ""}{a.queue && a.queue.running > 1 ? ` · ${a.queue.endpoint} 上有 ${a.queue.running} 个请求同时在跑，本地模型会排队处理，慢不一定是卡住` : ""}</>}{onOpen ? " · 点击查看 ›" : ""}</div>
     </div>
   );
 }

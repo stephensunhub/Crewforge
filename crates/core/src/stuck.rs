@@ -83,11 +83,19 @@ impl Db {
                 ("bypass", format!("{} 在尝试绕过网络或证书限制", a.employee),
                  format!("这一轮已运行 {elapsed} 分钟，命令里出现了「{p}」这类绕过限制的做法。看一下工作日志，确认它卡在什么上；缺依赖的话可以自己在终端里下好。"))
             } else if quiet >= silent_min {
-                ("silent", format!("{} 已经 {quiet} 分钟没有新动作", a.employee),
-                 format!("这一轮已运行 {elapsed} 分钟，最近一次动作是{}。可能在等模型响应，也可能卡住了；看一下工作日志。", a.last_tool.as_deref().map(|t| format!(" {t}")).unwrap_or_else(|| "（还没有任何动作）".into())))
+                if a.queue.as_ref().is_some_and(|q| q.self_waiting) {
+                    ("silent", format!("{} 已经 {quiet} 分钟在等模型名额", a.employee),
+                     format!("{}。不是卡住，是前面的请求还没做完；要更快只能换更快的模型或减少同时派的活（本地模型串行时调大并发没有用）。", a.queue.as_ref().map(|q| q.describe()).unwrap_or_default()))
+                } else {
+                    ("silent", format!("{} 已经 {quiet} 分钟没有新动作", a.employee),
+                     format!("这一轮已运行 {elapsed} 分钟，最近一次动作是{}。可能在等模型响应，也可能卡住了；看一下工作日志。{}",
+                         a.last_tool.as_deref().map(|t| format!(" {t}")).unwrap_or_else(|| "（还没有任何动作）".into()),
+                         a.queue.as_ref().map(|q| format!("{}。", q.describe())).unwrap_or_default()))
+                }
             } else if elapsed >= long_min {
                 ("long", format!("{} 这一轮已运行 {elapsed} 分钟", a.employee),
-                 format!("最近一次动作在 {quiet} 分钟前。本地模型本身慢也会这样；如果一直在重复同一类操作，看一下工作日志。"))
+                 format!("最近一次动作在 {quiet} 分钟前。本地模型本身慢也会这样；如果一直在重复同一类操作，看一下工作日志。{}",
+                     a.queue.as_ref().map(|q| format!("{}。", q.describe())).unwrap_or_default()))
             } else {
                 continue;
             };
@@ -113,6 +121,30 @@ mod tests {
     }
 
     const MIN: i64 = 60_000;
+
+    #[tokio::test]
+    async fn waiting_for_an_endpoint_slot_is_reported_as_queueing_not_as_silence() {
+        let (db, e) = setup();
+        let ep = db.add_endpoint(&crate::endpoint::EndpointInput {
+            name: "局域网".into(), base_url: "http://10.0.0.2:11434".into(), models: vec!["m".into()], extra_env: Default::default(),
+            max_concurrency: 1, context_tokens: 0, limit_budget: true, token: None,
+        }).unwrap();
+        db.set_employee_endpoint(&e.id, Some(&ep.id), "").unwrap();
+        let _holder = crate::endpoint::acquire_slot(&ep, "other").await;
+        let ep2 = ep.clone(); let eid = e.id.clone();
+        let h = tokio::spawn(async move { crate::endpoint::acquire_slot(&ep2, &eid).await });
+        for _ in 0..100 { if crate::endpoint::queue_info(&ep, &e.id).self_waiting { break; } tokio::time::sleep(std::time::Duration::from_millis(20)).await; }
+        let now = crate::db::now_ms();
+        at(&db, &e.id, now - 90 * MIN, "task_started", json!({"prompt": "上一轮"}));
+        let acts = db.activities(&["dev".into()]).unwrap();
+        assert_eq!(acts[0].what, "等模型名额", "等名额时不把上一轮当成现在在做的事");
+        assert!(acts[0].queue.as_ref().unwrap().self_waiting);
+        // 等了 20 分钟：提示是排队，不是“没有新动作”
+        let items = db.stuck_items(&["dev".into()], now + 20 * MIN).unwrap();
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert!(items[0].title.contains("等模型名额"), "{}", items[0].title);
+        h.abort();
+    }
 
     #[test]
     fn a_healthy_run_is_not_reported() {

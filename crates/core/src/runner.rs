@@ -68,7 +68,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
     // 同一个端点同时最多 max_concurrency 个员工在用（本地模型通常只能串行）；等待期间会话仍是空闲。
     // 放在换会话之前：交接摘要也要调用这个端点
     let _slot = match &resolved {
-        Some(r) => Some(crate::endpoint::acquire_slot(&r.endpoint).await),
+        Some(r) => Some(crate::endpoint::acquire_slot(&r.endpoint, &employee.id).await),
         None => None,
     };
     // 会话上下文过大时换新会话：每一步都要重读整个上下文，越大越贵、越容易跑偏。

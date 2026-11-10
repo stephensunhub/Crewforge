@@ -467,6 +467,8 @@ pub struct Activity {
     pub project_id: Option<String>,
     pub tab: String,
     pub meeting_id: Option<String>,
+    /// 员工连的是自建端点时，此刻端点上的排队情况（在等名额、还是几个请求同时在跑）
+    pub queue: Option<crate::endpoint::QueueInfo>,
 }
 
 /// 工作类型对应的页面：会议发言去会议页，导入评估去导入页，起草计划去计划页，有任务的去任务页，其余去群聊。
@@ -503,6 +505,12 @@ impl Db {
     /// 给定正在工作的员工名，查出各自此刻在做什么：取每人最近一次“任务开始”，
     /// 以及之后的最近一次工具调用。
     pub fn activities(&self, names: &[String]) -> Result<Vec<Activity>> {
+        // 排队情况要用到数据库连接，先查好再往下持有连接（否则自己等自己）
+        let mut queues: std::collections::HashMap<String, crate::endpoint::QueueInfo> = Default::default();
+        for name in names {
+            let eid: Option<String> = self.conn.lock().unwrap().query_row("SELECT id FROM employees WHERE name = ?1", [name], |r| r.get(0)).optional()?;
+            if let Some(q) = eid.and_then(|e| self.queue_for(&e)) { queues.insert(name.clone(), q); }
+        }
         let conn = self.conn.lock().unwrap();
         let mut out = Vec::new();
         for name in names {
@@ -532,8 +540,15 @@ impl Db {
                 Some(p) => conn.query_row("SELECT name FROM projects WHERE id = ?1", [p], |r| r.get(0)).optional()?,
                 None => None,
             };
+            // 还在等端点名额时，“最近一次任务开始”是上一轮的：不要把上一轮的内容和时间当成现在在做的事
+            let queue = queues.remove(name);
+            let waiting = queue.as_ref().filter(|q| q.self_waiting);
+            let (what, subject, ts, tool) = match waiting {
+                Some(q) => ("等模型名额".to_string(), q.describe(), q.waiting_since.unwrap_or(ts), None),
+                None => (what, subject, ts, tool),
+            };
             out.push(Activity {
-                employee: name.clone(), what, subject, project, started_at: ts,
+                employee: name.clone(), what, subject, project, started_at: ts, queue,
                 last_tool: tool.as_ref().map(|t| t.0.clone()), last_tool_at: tool.map(|t| t.1),
                 origin: v["origin"].as_str().unwrap_or("").to_string(),
                 tab: work_tab(&what_for_tab, v["meeting_id"].is_string(), v["task_id"].is_string()).to_string(),

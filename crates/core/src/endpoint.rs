@@ -136,8 +136,45 @@ fn semaphores() -> &'static Mutex<HashMap<String, (i64, Arc<Semaphore>)>> {
     S.get_or_init(Default::default)
 }
 
-/// 等一个名额：同一个端点同时最多 `max_concurrency` 个员工在用。返回的许可放手即归还。
-pub async fn acquire_slot(ep: &Endpoint) -> OwnedSemaphorePermit {
+/// 谁在占用、谁在等某个端点的名额（只在内存里，供界面和卡住检测说明“在等什么”）。
+#[derive(Default, Clone)]
+struct Queue { running: Vec<String>, waiting: Vec<(String, i64)> }
+
+fn queues() -> &'static Mutex<HashMap<String, Queue>> {
+    static Q: OnceLock<Mutex<HashMap<String, Queue>>> = OnceLock::new();
+    Q.get_or_init(Default::default)
+}
+
+/// 某个端点此刻的排队情况。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct QueueInfo {
+    pub endpoint: String,
+    pub max: i64,
+    /// 已拿到名额、正在向端点发请求的员工数（含自己）
+    pub running: usize,
+    /// 还在等名额的员工数
+    pub waiting: usize,
+    /// 这位员工自己是不是在等名额；是的话 `waiting_since` 是开始等的时间
+    pub self_waiting: bool,
+    pub waiting_since: Option<i64>,
+    /// 这位员工自己是不是已拿到名额
+    pub self_running: bool,
+}
+
+/// 名额的持有凭证：放手即归还名额，并从“正在用”里去掉。
+pub struct Slot { _permit: OwnedSemaphorePermit, endpoint_id: String, employee_id: String }
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if let Some(q) = queues().lock().unwrap().get_mut(&self.endpoint_id) {
+            if let Some(i) = q.running.iter().position(|e| *e == self.employee_id) { q.running.remove(i); }
+        }
+    }
+}
+
+/// 等一个名额：同一个端点同时最多 `max_concurrency` 个员工在用。返回的凭证放手即归还。
+/// 等待期间会记在排队表里，界面据此显示“在等模型名额”。
+pub async fn acquire_slot(ep: &Endpoint, employee_id: &str) -> Slot {
     let sem = {
         let mut m = semaphores().lock().unwrap();
         let entry = m.entry(ep.id.clone()).or_insert_with(|| (ep.max_concurrency, Arc::new(Semaphore::new(ep.max_concurrency.max(1) as usize))));
@@ -146,7 +183,60 @@ pub async fn acquire_slot(ep: &Endpoint) -> OwnedSemaphorePermit {
         }
         entry.1.clone()
     };
-    sem.acquire_owned().await.expect("semaphore never closed")
+    queues().lock().unwrap().entry(ep.id.clone()).or_default().waiting.push((employee_id.to_string(), now_ms()));
+    // 取消（任务被丢弃）时也要从等待表里去掉
+    struct Waiting<'a> { ep: &'a str, emp: &'a str }
+    impl Drop for Waiting<'_> {
+        fn drop(&mut self) {
+            if let Some(q) = queues().lock().unwrap().get_mut(self.ep) {
+                if let Some(i) = q.waiting.iter().position(|(e, _)| e == self.emp) { q.waiting.remove(i); }
+            }
+        }
+    }
+    let waiting = Waiting { ep: &ep.id, emp: employee_id };
+    let permit = sem.acquire_owned().await.expect("semaphore never closed");
+    {
+        let mut m = queues().lock().unwrap();
+        let q = m.entry(ep.id.clone()).or_default();
+        if let Some(i) = q.waiting.iter().position(|(e, _)| e == employee_id) { q.waiting.remove(i); }
+        q.running.push(employee_id.to_string());
+    }
+    drop(waiting);
+    Slot { _permit: permit, endpoint_id: ep.id.clone(), employee_id: employee_id.to_string() }
+}
+
+/// 这位员工此刻在某个端点上的排队情况；他没连端点（订阅员工）就是 None。
+pub fn queue_info(ep: &Endpoint, employee_id: &str) -> QueueInfo {
+    let q = queues().lock().unwrap().get(&ep.id).cloned().unwrap_or_default();
+    let mine = q.waiting.iter().find(|(e, _)| e == employee_id).map(|(_, t)| *t);
+    QueueInfo {
+        endpoint: ep.name.clone(), max: ep.max_concurrency, running: q.running.len(), waiting: q.waiting.len(),
+        self_waiting: mine.is_some(), waiting_since: mine, self_running: q.running.iter().any(|e| e == employee_id),
+    }
+}
+
+impl Db {
+    /// 员工此刻的端点排队情况；没连端点或端点没有任何员工在用/在等时返回 None。
+    pub fn queue_for(&self, employee_id: &str) -> Option<QueueInfo> {
+        let eid: Option<String> = self.conn.lock().unwrap()
+            .query_row("SELECT endpoint_id FROM employees WHERE id = ?1", [employee_id], |r| r.get(0)).ok().flatten();
+        let ep = self.endpoint(&eid?).ok().flatten()?;
+        let info = queue_info(&ep, employee_id);
+        (info.running + info.waiting > 0).then_some(info)
+    }
+}
+
+impl QueueInfo {
+    /// 一句话说明：在等名额，还是模型正同时处理几个请求。
+    pub fn describe(&self) -> String {
+        if self.self_waiting {
+            format!("在等模型名额：{} 同时最多 {} 个员工在用，现在 {} 个在用、{} 个在等（含自己）", self.endpoint, self.max, self.running, self.waiting)
+        } else if self.running > 1 {
+            format!("{} 上同时有 {} 个员工的请求在跑；本地模型通常一次只处理一个，其余会排队，所以慢不一定是卡住", self.endpoint, self.running)
+        } else {
+            format!("{} 上只有他一个在用", self.endpoint)
+        }
+    }
 }
 
 fn row_endpoint(r: &rusqlite::Row<'_>) -> rusqlite::Result<Endpoint> {
@@ -390,11 +480,33 @@ mod tests {
     async fn concurrency_limit_is_enforced_per_endpoint() {
         let db = Db::open_memory().unwrap();
         let ep = db.add_endpoint(&input("串行")).unwrap();
-        let first = acquire_slot(&ep).await;
-        let second = tokio::time::timeout(std::time::Duration::from_millis(50), acquire_slot(&ep)).await;
+        let first = acquire_slot(&ep, "a").await;
+        assert_eq!((queue_info(&ep, "a").running, queue_info(&ep, "a").self_running), (1, true));
+        let second = tokio::time::timeout(std::time::Duration::from_millis(50), acquire_slot(&ep, "b")).await;
         assert!(second.is_err(), "名额被占，第二个要等");
+        let b = queue_info(&ep, "b");
+        assert_eq!((b.running, b.waiting, b.self_waiting), (1, 0, false), "等待被取消后不再算在排队里");
         drop(first);
-        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), acquire_slot(&ep)).await.is_ok(), "名额放回后应当很快拿到（给足时间，避免机器忙时误报）");
+        assert_eq!(queue_info(&ep, "a").running, 0, "放手后不再算在用");
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), acquire_slot(&ep, "b")).await.is_ok(), "名额放回后应当很快拿到（给足时间，避免机器忙时误报）");
+    }
+
+    #[tokio::test]
+    async fn a_waiting_employee_is_reported_as_waiting_for_a_slot() {
+        let db = Db::open_memory().unwrap();
+        let ep = db.add_endpoint(&input("串行")).unwrap();
+        let first = acquire_slot(&ep, "a").await;
+        let ep2 = ep.clone();
+        let h = tokio::spawn(async move { acquire_slot(&ep2, "b").await });
+        for _ in 0..100 { if queue_info(&ep, "b").self_waiting { break; } tokio::time::sleep(std::time::Duration::from_millis(20)).await; }
+        let q = queue_info(&ep, "b");
+        assert!(q.self_waiting && q.waiting_since.is_some() && q.running == 1 && q.waiting == 1, "{q:?}");
+        assert!(q.describe().contains("在等模型名额"));
+        assert!(queue_info(&ep, "a").describe().contains("个员工的请求在跑") || queue_info(&ep, "a").describe().contains("只有他一个"));
+        drop(first);
+        let _b = h.await.unwrap();
+        let q = queue_info(&ep, "b");
+        assert!(!q.self_waiting && q.self_running);
     }
 
     #[test]
