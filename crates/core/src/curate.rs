@@ -106,7 +106,7 @@ impl Orchestrator {
         let cfg = TurnConfig {
             project_path: Path::new(&project.path).to_path_buf(), task_id: None, project_id: None, read_only: true, mcp: None,
             purpose: "curation".into(), attr_project: Some(project_id.into()), meeting_id: None, log_prompt: Some(format!("[整理记忆] {}", project.name)),
-            program: self.program.clone(), copilot_program: self.copilot_program.clone(),
+            program: self.program.clone(), copilot_program: self.copilot_program.clone(), origin: "system".into(),
         };
         let r = run_turn(&self.db, lead, &cfg, &p, approver, &NoopObserver).await?;
         if r.is_error || r.text.trim().is_empty() {

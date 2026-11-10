@@ -22,6 +22,7 @@ pub enum TaskLink<'a> {
     Plan(&'a str),
 }
 
+#[derive(Clone)]
 pub struct Orchestrator {
     pub db: Arc<Db>,
     pub ws: Arc<WorkspaceManager>,
@@ -31,6 +32,8 @@ pub struct Orchestrator {
     pub copilot_program: String,
     /// 提供团队协作工具（MCP）所用的可执行文件：就是应用或命令行自身的 `mcp-serve` 子命令；None 表示不提供
     pub mcp_exe: Option<std::path::PathBuf>,
+    /// 这个编排器派出的任务算谁发起的（见 `TurnConfig::origin`）；空 = 人
+    pub origin: String,
 }
 
 /// 任务关联的评审会议：合并前要让人看到评审里提出了什么、有没有结束。
@@ -65,7 +68,7 @@ fn title_of(prompt: &str) -> String {
 
 impl Orchestrator {
     pub fn new(db: Arc<Db>, ws: Arc<WorkspaceManager>) -> Self {
-        Self { db, ws, program: "claude".into(), copilot_program: "copilot".into(), mcp_exe: std::env::current_exe().ok() }
+        Self { db, ws, program: "claude".into(), copilot_program: "copilot".into(), mcp_exe: std::env::current_exe().ok(), origin: String::new() }
     }
 
     /// 给员工分配工作：继续其进行中的任务，没有则新建任务和分支。
@@ -132,6 +135,7 @@ impl Orchestrator {
             log_prompt: injected.then(|| prompt.to_string()),
             program: self.program.clone(),
             copilot_program: self.copilot_program.clone(),
+            origin: self.origin.clone(),
         };
         let result = run_turn(&self.db, employee, &cfg, &full_prompt, approver, observer).await;
         if let Ok(r) = &result {

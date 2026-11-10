@@ -203,6 +203,8 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     pub fn new_with_busy(orch: Arc<Orchestrator>, sched: Arc<Scheduler>, approver: Arc<A>, ctl: Arc<AutopilotCtl>, run: &AutopilotRun,
         busy: Arc<std::sync::Mutex<HashSet<String>>>, on_busy_change: Arc<dyn Fn(Vec<String>) + Send + Sync>) -> Result<Arc<Self>> {
         let project = orch.db.get_project(&run.project_id)?.context("项目不存在")?;
+        // 自主推进里派出的活是 AI 负责人发起的，群里不能显示成人说的话
+        let orch = { let mut o = (*orch).clone(); o.origin = "autopilot".into(); Arc::new(o) };
         Ok(Arc::new(Self {
             orch, sched, approver, ctl, project_id: run.project_id.clone(), run_id: run.id.clone(), repo: std::path::PathBuf::from(project.path),
             calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()),

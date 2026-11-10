@@ -153,6 +153,7 @@ impl Orchestrator {
             log_prompt: Some(format!("[负责人裁决] {}", issue.title)),
             program: self.program.clone(),
             copilot_program: self.copilot_program.clone(),
+            origin: "system".into(),
         };
         let result = run_turn(&self.db, lead, &cfg, &prompt, approver, &NoopObserver).await?;
         if result.is_error || result.text.trim().is_empty() {

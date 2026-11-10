@@ -48,6 +48,8 @@ pub struct TurnConfig {
     pub program: String,
     /// Copilot 员工使用的 CLI，默认 `copilot`
     pub copilot_program: String,
+    /// 谁发起的这次执行：空 = 人（群里显示“你 → @员工”）；"autopilot" = 自主推进里 AI 负责人派的活；"system" = 系统或负责人的后台工作（会议、裁决、整理等）
+    pub origin: String,
 }
 
 pub async fn run_turn<A: Approver, O: Observer>(
@@ -142,7 +144,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
 
     db.set_session_status(&session.id, "running")?;
     db.append_event_for(pid, "task_started", eid, sid, &json!({
-        "prompt": cfg.log_prompt.as_deref().unwrap_or(prompt), "resume": session.started,
+        "prompt": cfg.log_prompt.as_deref().unwrap_or(prompt), "resume": session.started, "origin": cfg.origin,
         "task_id": cfg.task_id, "meeting_id": cfg.meeting_id,
     }))?;
 

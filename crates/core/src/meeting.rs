@@ -203,6 +203,7 @@ impl Orchestrator {
             log_prompt: Some(format!("[会议:{}] {}", kind_label(&meeting.kind), meeting.title)),
             program: self.program.clone(),
             copilot_program: self.copilot_program.clone(),
+            origin: "system".into(),
         };
         let result = run_turn(&self.db, employee, &cfg, &prompt, approver, &NoopObserver).await?;
         if result.is_error || result.text.trim().is_empty() {
@@ -261,6 +262,7 @@ impl Orchestrator {
             log_prompt: Some(format!("[纪要起草] {}", meeting.title)),
             program: self.program.clone(),
             copilot_program: self.copilot_program.clone(),
+            origin: "system".into(),
         };
         let r = run_turn(&self.db, &scribe, &cfg, &prompt, approver, &NoopObserver).await?;
         if r.is_error || r.text.trim().is_empty() {

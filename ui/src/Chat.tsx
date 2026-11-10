@@ -85,7 +85,20 @@ export function Chat({
     const p = e.payload ?? {};
     const t = <span className="time">{hhmm(e.ts)}</span>;
     switch (e.kind) {
-      case "task_started":
+      case "task_started": {
+        // 谁发起的：空 = 你；autopilot = 自主推进里 AI 负责人派的活；system = 系统或负责人的后台工作
+        const origin = String(p.origin ?? "");
+        if (origin) {
+          const label = origin === "autopilot" ? "自主推进" : "系统";
+          return (
+            <div className="msg" key={e.id}>
+              <div>
+                <div className="who">{label} → @{name}{p.resume ? " · 续接会话" : ""}</div>
+                <div className="bubble">{p.prompt}</div>
+              </div>
+            </div>
+          );
+        }
         return (
           <div className="msg me" key={e.id}>
             <div>
@@ -94,6 +107,7 @@ export function Chat({
             </div>
           </div>
         );
+      }
       case "task_queued":
         return <div className="line warn" key={e.id}><span>⏸ {name} 排队中：{p.reason ?? `并发已满（上限 ${concurrency}）`}，条件允许后自动开始</span>{t}</div>;
       case "task_created":

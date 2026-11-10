@@ -172,7 +172,7 @@ impl Orchestrator {
             task_id: None, project_id: None, read_only: true, mcp: None,
             purpose: purpose.into(), attr_project: Some(project_id.into()), meeting_id: None,
             log_prompt: Some(format!("[{label}] {}", project.name)),
-            program: self.program.clone(), copilot_program: self.copilot_program.clone(),
+            program: self.program.clone(), copilot_program: self.copilot_program.clone(), origin: "system".into(),
         };
         let r = run_turn(&self.db, lead, &cfg, prompt, approver, &NoopObserver).await?;
         if r.is_error || r.text.trim().is_empty() {

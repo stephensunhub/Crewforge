@@ -125,6 +125,10 @@ async fn lead_loop_runs_the_whole_plan_by_dependency_and_merges_everything() {
     // 时间线事件：开始、步骤、合并、结束；评审意见里给人的和不属于任务负责人的事项被写明原因留到之后
     let kinds: Vec<String> = e.db.recent_events(500).unwrap().into_iter().map(|x| x.kind).collect();
     for k in ["autopilot_started", "autopilot_step", "autopilot_merged", "autopilot_finished"] { assert!(kinds.contains(&k.to_string()), "缺少 {k}"); }
+    // 自主推进里 AI 负责人派的活，群里不能显示成人说的话：任务开始事件都带来源，没有一条来源为空
+    let started: Vec<String> = e.db.recent_events(500).unwrap().into_iter().filter(|x| x.kind == "task_started").map(|x| x.payload["origin"].as_str().unwrap_or("").to_string()).collect();
+    assert!(!started.is_empty() && started.iter().all(|o| o == "autopilot" || o == "system"), "不应有来源为“人”的任务开始事件：{started:?}");
+    assert!(started.iter().any(|o| o == "autopilot"));
     let dismissed: Vec<_> = e.db.actions_for_meeting(&e.db.list_meetings(&e.pid).unwrap()[0].id).unwrap().into_iter().filter(|a| a.status == "dismissed").collect();
     assert!(!dismissed.is_empty() && dismissed.iter().all(|a| !a.note.is_empty()));
     assert!(r.calls > 0);

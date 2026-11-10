@@ -28,7 +28,7 @@ fn fake(dir: &std::path::Path, ctx: u64) -> String {
 fn cfg(dir: &std::path::Path, program: String) -> TurnConfig {
     TurnConfig {
         project_path: dir.to_path_buf(), task_id: None, project_id: None, read_only: false, meeting_id: None,
-        log_prompt: None, purpose: "task".into(), attr_project: None, mcp: None, program, copilot_program: "copilot".into(),
+        log_prompt: None, purpose: "task".into(), attr_project: None, mcp: None, program, copilot_program: "copilot".into(), origin: String::new(),
     }
 }
 
