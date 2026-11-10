@@ -535,9 +535,12 @@ impl Orchestrator {
         if emp.archived || !self.db.is_member(&project.id, &emp.id)? {
             bail!("{} 不是本项目的在职成员", emp.name);
         }
-        if let Some(t) = self.db.active_task(&emp.id, &project.path)? {
-            bail!("{} 还有进行中的任务《{}》，请先合并或放弃它，再开始新条目", emp.name, t.title);
-        }
+        // 员工手上进行中的任务如果正是这个条目自己的（被中断后放回待开始），就接着做；是别的任务才拒绝
+        let resuming = match self.db.active_task(&emp.id, &project.path)? {
+            Some(t) if item.task_id.as_deref() == Some(t.id.as_str()) => true,
+            Some(t) => bail!("{} 还有进行中的任务《{}》，请先合并或放弃它，再开始新条目", emp.name, t.title),
+            None => false,
+        };
         // 第一行就是条目标题：它会成为任务标题和合并提交的标题
         let mut p = format!("{}\n[计划条目]\n", item.title);
         if !item.description.is_empty() {
@@ -550,6 +553,9 @@ impl Orchestrator {
             p.push_str(&format!("验收标准：{}\n", item.acceptance));
         }
         p.push_str("要求：先阅读相关代码和测试；只做这一个条目，不要顺手处理计划外的事；小步修改，改完运行测试和项目约定的检查确认通过，并简要说明做了什么、有什么没做。");
+        if resuming {
+            p.push_str("\n[系统提示] 这个条目上次做到一半被中断（例如应用重启）。你的分支和工作区还在：先用只读方式（git status、git log、读文件）核对已经完成的部分，再接着做，不要重做已完成的内容。");
+        }
         Ok((emp, PathBuf::from(project.path), p))
     }
 

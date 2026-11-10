@@ -499,12 +499,19 @@ async fn items_left_in_progress_by_a_restart_are_requeued_and_finished() {
     let e = setup().await;
     // 模拟应用重启：条目 A 停在“进行中”，但干活的进程已经没了
     let a = e.ids[0].clone();
+    // alice 手上有一个真实的进行中任务（做到一半），条目 A 关联着它
     let alice = e.db.employee_by_name("alice").unwrap().unwrap();
-    let t = crewforge_core::db::Task { id: "t-dead".into(), repo_path: e.repo.to_string_lossy().into(), employee_id: alice.id.clone(), title: "A".into(), branch: "crewforge/alice/t-dead".into(), base_branch: "main".into(), base_commit: "0".into(), worktree_path: "/nonexistent".into(), status: "abandoned".into(), merged_commit: None, created_at: 0, updated_at: 0 };
-    e.db.create_task(&t).unwrap();
-    e.db.mark_plan_started(&a, "t-dead").unwrap();
+    e.orch.assign(&alice, &e.repo, "A\n做到一半", &Deny, &crewforge_core::runner::NoopObserver).await.unwrap();
+    let t = e.db.active_task(&alice.id, e.repo.to_str().unwrap()).unwrap().expect("alice 有进行中的任务");
+    e.db.mark_plan_started(&a, &t.id).unwrap();
+    // 条目指派给 alice：放回待开始后必须由 alice 接着做，不能因为“alice 还有进行中的任务”被拒绝
+    let it = e.db.get_plan_item(&a).unwrap().unwrap();
+    e.db.update_plan_item(&a, &NewPlanItem { title: it.title.clone(), description: it.description.clone(), acceptance: it.acceptance.clone(), kind: it.kind.clone(), module: it.module.clone(), assignee_id: Some(alice.id.clone()), deps: vec![] }).ok();
     assert_eq!(e.db.get_plan_item(&a).unwrap().unwrap().status, "in_progress");
     let r = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
     assert_eq!((r.status.as_str(), r.reason.as_str()), ("finished", "计划全部完成"), "{r:?}");
     assert!(e.db.recent_events(500).unwrap().iter().any(|x| x.kind == "autopilot_step" && x.payload["text"].as_str().unwrap_or("").contains("放回待开始")));
+    // 接着做员工手上那个任务，没有被“请先合并或放弃它”拒绝，条目最终完成
+    assert!(!e.db.recent_events(500).unwrap().iter().any(|x| x.payload["text"].as_str().unwrap_or("").contains("请先合并或放弃")));
+    assert_eq!(e.db.get_plan_item(&a).unwrap().unwrap().status, "done");
 }
