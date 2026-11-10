@@ -132,7 +132,7 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .note.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
 .task-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 .task-btns .btn { padding: 4px 10px; font-size: 12px; }
-.badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); }
+.badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; flex: none; }
 .badge.run { color: var(--accent); border-color: var(--accent); }
 .badge.merged { color: var(--ok); border-color: var(--ok); }
 .badge.abandoned { color: var(--muted); }
