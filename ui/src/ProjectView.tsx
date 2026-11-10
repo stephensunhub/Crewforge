@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { Avatar, Field, Modal, ROLE_LABEL, ROLE_ORDER } from "./common";
+import { ActivityLine, Avatar, Field, Modal, ROLE_LABEL, ROLE_ORDER } from "./common";
 import { Chat } from "./Chat";
 import { TasksPanel } from "./TasksPanel";
 import { IssuesView } from "./IssuesView";
@@ -12,7 +12,7 @@ import { DutiesPanel } from "./DutiesPanel";
 import { PlanPanel } from "./PlanPanel";
 import { ActionsView } from "./ActionsView";
 import { EndProjectModal } from "./EndProject";
-import type { ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
+import type { Activity, ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
 
 export type ProjectTab = "duties" | "onboarding" | "chat" | "plan" | "tasks" | "issues" | "meetings" | "actions" | "members" | "memory" | "docs";
 export const PROJECT_TABS: [ProjectTab, string][] = [
@@ -21,7 +21,7 @@ export const PROJECT_TABS: [ProjectTab, string][] = [
 const TASK_EVENTS = ["task_created", "checkpoint_committed", "checkpoint_failed", "task_merged", "task_merge_blocked", "task_abandoned", "turn_result", "task_failed", "task_error"];
 
 export function ProjectView({
-  tab, summary, employees, events, nameById, running, approvals, concurrency, meetingFocus, onFocusHandled, onOpenMeeting, onGoOnboarding, onGoTab, onDecide, onChanged, onError, onLeave,
+  tab, summary, employees, events, nameById, running, activities, approvals, concurrency, meetingFocus, onFocusHandled, onOpenMeeting, onGoOnboarding, onGoTab, onDecide, onChanged, onError, onLeave,
 }: {
   tab: ProjectTab;
   summary: ProjectSummary;
@@ -29,6 +29,7 @@ export function ProjectView({
   events: EventRow[];
   nameById: Map<string, string>;
   running: string[];
+  activities: Activity[];
   approvals: ApprovalReq[];
   concurrency: number;
   meetingFocus: string | null;
@@ -110,7 +111,7 @@ export function ProjectView({
     );
   if (tab === "members")
     return (
-      <MembersTab project={summary} members={members} employees={employees} running={running}
+      <MembersTab project={summary} members={members} employees={employees} running={running} activities={activities}
         onChanged={() => { void refreshMembers(); onChanged(); }} onError={onError} onArchived={onLeave} />
     );
   if (tab === "issues")
@@ -135,11 +136,12 @@ export function ProjectView({
   return <DocsView projectId={project.id} hasLead={members.some((m) => m.role === "lead")} onError={onError} />;
 }
 
-function MembersTab({ project, members, employees, running, onChanged, onError, onArchived }: {
+function MembersTab({ project, members, employees, running, activities, onChanged, onError, onArchived }: {
   project: ProjectSummary;
   members: Member[];
   employees: Employee[];
   running: string[];
+  activities: Activity[];
   onChanged: () => void;
   onError: (m: string) => void;
   onArchived: () => void;
@@ -171,6 +173,7 @@ function MembersTab({ project, members, employees, running, onChanged, onError, 
               <div style={{ minWidth: 0 }}><b>{m.name}</b><div className="hint">{m.title}</div></div>
               <span className={`status ${running.includes(m.name) ? "run" : ""}`}>{running.includes(m.name) ? "● 工作中" : "○ 空闲"}</span>
             </div>
+            {running.includes(m.name) && <ActivityLine a={activities.find((x) => x.employee === m.name)} />}
             <div className="card-foot">
               <select value={m.role} onChange={(e) => void guard(() => api.setMemberRole(p.id, m.employee_id, e.target.value as ProjectRole))}>
                 {ROLE_ORDER.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}

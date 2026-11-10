@@ -205,6 +205,13 @@ pub fn running_employees(state: State<'_, AppState>) -> Vec<String> {
     state.running.lock().unwrap().iter().cloned().collect()
 }
 
+/// 正在工作的员工此刻各自在做什么。
+#[tauri::command]
+pub fn employee_activities(state: State<'_, AppState>) -> CmdResult<Vec<crewforge_core::usage::Activity>> {
+    let names: Vec<String> = state.running.lock().unwrap().iter().cloned().collect();
+    state.db.activities(&names).map_err(err)
+}
+
 #[tauri::command]
 pub fn get_concurrency(state: State<'_, AppState>) -> usize {
     state.sched.status().user_limit

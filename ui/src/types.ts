@@ -352,3 +352,5 @@ export interface AlignOverviewRow { project_id: string; name: string; config: Al
 export interface Endpoint { id: string; name: string; base_url: string; models: string[]; extra_env: Record<string, string>; max_concurrency: number; context_tokens: number; has_token: boolean; enabled: boolean; employees: number }
 export interface EndpointInput { name: string; base_url: string; models: string[]; extra_env: Record<string, string>; max_concurrency: number; context_tokens: number; token: string | null }
 export interface EndpointTest { ok: boolean; millis: number; detail: string }
+
+export interface Activity { employee: string; what: string; subject: string; project: string | null; started_at: number; last_tool: string | null; last_tool_at: number | null; origin: string }

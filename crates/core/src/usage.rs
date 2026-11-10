@@ -5,6 +5,7 @@ use crate::cost::{Group, Latency, Totals, days_to_ymd, purpose_label};
 use crate::db::{Db, now_ms};
 use crate::provider::claude::ModelUse;
 use anyhow::Result;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
@@ -445,5 +446,83 @@ impl Db {
             })
         })?;
         Ok(SessionsView { limit, sessions: rows.collect::<std::result::Result<_, _>>()? })
+    }
+}
+
+/// 一位正在工作的员工此刻在做什么（界面上“工作中”旁边显示）。
+#[derive(Debug, Clone, Serialize)]
+pub struct Activity {
+    pub employee: String,
+    /// 工作类型：任务 / 计划任务 / 会议发言 / 导入评估 / 起草计划 …
+    pub what: String,
+    /// 内容摘要（提示的第一行，去掉方括号标签）
+    pub subject: String,
+    pub project: Option<String>,
+    pub started_at: i64,
+    /// 最近一次动作（工具名）及时间；刚开始还没有动作则为空
+    pub last_tool: Option<String>,
+    pub last_tool_at: Option<i64>,
+    pub origin: String,
+}
+
+/// 把任务开始事件里的提示归类成人能看懂的工作类型和摘要。
+pub fn classify_prompt(prompt: &str, in_meeting: bool) -> (String, String) {
+    let p = prompt.trim();
+    let first = p.lines().next().unwrap_or("").trim();
+    let (tag, rest) = match first.strip_prefix('[').and_then(|r| r.split_once(']')) {
+        Some((t, r)) => (t.trim().to_string(), r.trim().to_string()),
+        None => (String::new(), first.to_string()),
+    };
+    let what = if in_meeting { "会议发言".to_string() }
+    else if let Some(kind) = tag.strip_prefix("导入评估:") { format!("导入评估（{kind}）") }
+    else if p.contains("[计划条目]") { "计划任务".to_string() }
+    else if tag.is_empty() { "任务".to_string() }
+    else { tag.clone() };
+    let subject = if tag.is_empty() || rest.is_empty() { first.to_string() } else { rest };
+    (what, subject.chars().take(80).collect())
+}
+
+impl Db {
+    /// 给定正在工作的员工名，查出各自此刻在做什么：取每人最近一次“任务开始”，
+    /// 以及之后的最近一次工具调用。
+    pub fn activities(&self, names: &[String]) -> Result<Vec<Activity>> {
+        let conn = self.conn.lock().unwrap();
+        let mut out = Vec::new();
+        for name in names {
+            let Some(eid): Option<String> = conn.query_row("SELECT id FROM employees WHERE name = ?1", [name], |r| r.get(0)).optional()? else { continue };
+            let start: Option<(i64, i64, Option<String>, String)> = conn.query_row(
+                "SELECT id, ts, project_id, payload FROM events WHERE employee_id = ?1 AND kind = 'task_started' ORDER BY id DESC LIMIT 1",
+                [&eid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
+            let Some((sid, ts, pid, payload)) = start else { continue };
+            let v: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
+            let (what, subject) = classify_prompt(v["prompt"].as_str().unwrap_or(""), v["meeting_id"].is_string());
+            let tool: Option<(String, i64)> = conn.query_row(
+                "SELECT json_extract(payload, '$.tool'), ts FROM events WHERE employee_id = ?1 AND kind = 'tool_use' AND id > ?2 ORDER BY id DESC LIMIT 1",
+                params![eid, sid], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+            let project = match pid {
+                Some(p) => conn.query_row("SELECT name FROM projects WHERE id = ?1", [p], |r| r.get(0)).optional()?,
+                None => None,
+            };
+            out.push(Activity {
+                employee: name.clone(), what, subject, project, started_at: ts,
+                last_tool: tool.as_ref().map(|t| t.0.clone()), last_tool_at: tool.map(|t| t.1),
+                origin: v["origin"].as_str().unwrap_or("").to_string(),
+            });
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::classify_prompt;
+
+    #[test]
+    fn prompts_are_classified_into_readable_work() {
+        assert_eq!(classify_prompt("[导入评估:qa] Todo", false), ("导入评估（qa）".into(), "Todo".into()));
+        assert_eq!(classify_prompt("[起草计划] Todo", false), ("起草计划".into(), "Todo".into()));
+        assert_eq!(classify_prompt("脚手架与契约\n[计划条目] go mod init", false), ("计划任务".into(), "脚手架与契约".into()));
+        assert_eq!(classify_prompt("请回复", true).0, "会议发言");
+        assert_eq!(classify_prompt("实现登录\n细节…", false), ("任务".into(), "实现登录".into()));
     }
 }

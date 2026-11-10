@@ -88,6 +88,7 @@ pub fn run() {
             commands::lead_handle_actions,
             commands::lead_triage_actions,
             commands::lead_draft_plan,
+            commands::employee_activities,
             commands::start_autopilot,
             commands::get_autopilot_resume,
             commands::set_autopilot_resume,

@@ -7,7 +7,7 @@ import { ModelsView } from "./ModelsView";
 import { UsageView } from "./UsageView";
 import { useNavHistory } from "./useNav";
 import { formatApprovalInput, hhmm, short } from "./common";
-import type { ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
+import type { Activity, ApprovalReq, Company, EmployeeCard, EventRow, PendingDecision, ProjectSummary, SchedStatus } from "./types";
 
 const MAX_EVENTS = 2000;
 const SCOPE_KEY = "crewforge.scope";
@@ -40,6 +40,7 @@ export default function App() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [running, setRunning] = useState<string[]>([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
   const [approvals, setApprovals] = useState<ApprovalReq[]>([]);
   const [sched, setSched] = useState<SchedStatus | null>(null);
   const concurrency = sched?.user_limit ?? 3;
@@ -66,6 +67,17 @@ export default function App() {
       setCompany(c); setCards(cs); setProjects(ps);
     } catch (e) { setError(String(e)); }
   }, []);
+
+  // 正在工作的员工此刻在做什么：有人在工作时每 5 秒刷新一次
+  const runningKey = running.join("|");
+  useEffect(() => {
+    if (!runningKey) { setActivities([]); return; }
+    let alive = true;
+    const load = () => { void api.employeeActivities().then((a) => { if (alive) setActivities(a); }).catch(() => { /* 忽略 */ }); };
+    load();
+    const t = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, [runningKey]);
 
   useEffect(() => {
     void (async () => {
@@ -308,12 +320,12 @@ export default function App() {
 
       <main className="content">
         {scope.kind === "company" && (
-          <CompanyView tab={companyTab} cards={cards} projects={projects} company={company} running={running} events={events}
+          <CompanyView tab={companyTab} cards={cards} projects={projects} company={company} running={running} activities={activities} events={events}
             onOpenProject={openProject} onChanged={() => void reloadStatic()} onError={setError} />
         )}
         {scope.kind === "project" && currentProject && (
           <ProjectView key={currentProject.project.id} tab={projectTab} summary={currentProject} employees={employees} events={events}
-            nameById={nameById} running={running} approvals={approvals} concurrency={concurrency}
+            nameById={nameById} running={running} activities={activities} approvals={approvals} concurrency={concurrency}
             meetingFocus={meetingFocus} onFocusHandled={() => setMeetingFocus(null)} onOpenMeeting={(id) => { setProjectTab("meetings"); setMeetingFocus(id); }} onGoOnboarding={() => setProjectTab("onboarding")} onGoTab={(t) => setProjectTab(t)}
             onDecide={(a, allow) => void decide(a, allow)} onChanged={() => void reloadStatic()} onError={setError}
             onLeave={() => setScope({ kind: "company" })} />

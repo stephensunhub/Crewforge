@@ -2,9 +2,9 @@ import { EndedProjects } from "./EndProject";
 import { AlignOverview } from "./AlignBox";
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import { Avatar, Field, Modal, Placeholder, basename } from "./common";
+import { ActivityLine, Avatar, Field, Modal, Placeholder, basename } from "./common";
 import { MemoryView } from "./MemoryView";
-import type { Company, Endpoint, EmployeeCard, EventRow, ModelsOverview, ProjectSummary } from "./types";
+import type { Activity, Company, Endpoint, EmployeeCard, EventRow, ModelsOverview, ProjectSummary } from "./types";
 
 export type CompanyTab = "employees" | "projects" | "memory" | "docs" | "manage";
 export const COMPANY_TABS: [CompanyTab, string][] = [
@@ -123,13 +123,14 @@ function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: str
 }
 
 export function CompanyView({
-  tab, cards, projects, company, running, events, onOpenProject, onChanged, onError,
+  tab, cards, projects, company, running, activities, events, onOpenProject, onChanged, onError,
 }: {
   tab: CompanyTab;
   cards: EmployeeCard[];
   projects: ProjectSummary[];
   company: Company | null;
   running: string[];
+  activities: Activity[];
   events: EventRow[];
   onOpenProject: (id: string) => void;
   onChanged: () => void;
@@ -172,6 +173,7 @@ export function CompanyView({
                   </div>
                   <span className={`status ${busy ? "run" : ""}`}>{busy ? "● 工作中" : "○ 空闲"}</span>
                 </div>
+                {busy && <ActivityLine a={activities.find((x) => x.employee === c.employee.name)} showProject />}
                 <div className="card-persona">{c.employee.persona}</div>
                 <div className="card-meta">
                   {c.projects.length === 0 ? <span className="hint">未参与任何项目</span> : c.projects.map(([id, n]) => (
