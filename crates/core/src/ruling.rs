@@ -155,25 +155,35 @@ impl Orchestrator {
             copilot_program: self.copilot_program.clone(),
             origin: "system".into(),
         };
-        let result = run_turn(&self.db, lead, &cfg, &prompt, approver, &NoopObserver).await?;
-        if result.is_error || result.text.trim().is_empty() {
-            bail!("{} 没有给出有效裁决（{}）", lead.name, result.subtype);
-        }
-
-        // 议题要先走到“待决策”才能拍板或交给人
-        if issue.status == "open" {
-            self.db.set_issue_status(issue_id, "discussing")?;
-        }
-        if self.db.get_issue(issue_id)?.map(|i| i.status).as_deref() == Some("discussing") {
-            self.db.set_issue_status(issue_id, "pending_decision")?;
-        }
-        let ruling = match parse_ruling(&result.text, options.len()) {
-            Ok(r) => r,
-            Err(e) => {
-                let reason = format!("负责人的裁决格式不对（{e}），交给人来定");
-                self.db.append_event_for(Some(&project.id), "issue_ruling_failed", Some(&lead.id), None, &json!({"issue_id": issue_id, "title": issue.title, "error": e.to_string()}))?;
-                return Ok(RulingOutcome::Escalated { reason });
+        // 议题要先走到“待决策”才能拍板或交给人；格式不对时让负责人带着错误原因重答，最多 MAX_FORMAT_ATTEMPTS 次
+        let mut attempt_prompt = prompt.clone();
+        let mut parsed: Option<Ruling> = None;
+        let mut last_err = String::new();
+        for attempt in 1..=crate::planning::MAX_FORMAT_ATTEMPTS {
+            let result = run_turn(&self.db, lead, &cfg, &attempt_prompt, approver, &NoopObserver).await?;
+            if result.is_error || result.text.trim().is_empty() {
+                bail!("{} 没有给出有效裁决（{}）", lead.name, result.subtype);
             }
+            if attempt == 1 {
+                if issue.status == "open" {
+                    self.db.set_issue_status(issue_id, "discussing")?;
+                }
+                if self.db.get_issue(issue_id)?.map(|i| i.status).as_deref() == Some("discussing") {
+                    self.db.set_issue_status(issue_id, "pending_decision")?;
+                }
+            }
+            match parse_ruling(&result.text, options.len()) {
+                Ok(r) => { parsed = Some(r); break; }
+                Err(e) => {
+                    last_err = e.to_string();
+                    self.db.append_event_for(Some(&project.id), "issue_ruling_failed", Some(&lead.id), None, &json!({"issue_id": issue_id, "title": issue.title, "error": last_err, "attempt": attempt, "max": crate::planning::MAX_FORMAT_ATTEMPTS}))?;
+                    attempt_prompt = format!("{prompt}\n\n[系统提示] 你上一次的回复无法使用：{last_err}。请重新回答：只输出一个 JSON 对象本身，不要任何其他文字，字段和格式严格按上面的要求。（第 {} / {} 次）", attempt + 1, crate::planning::MAX_FORMAT_ATTEMPTS);
+                }
+            }
+        }
+        let Some(ruling) = parsed else {
+            let reason = format!("负责人连续 {} 次裁决格式都不对（{last_err}），交给人来定", crate::planning::MAX_FORMAT_ATTEMPTS);
+            return Ok(RulingOutcome::Escalated { reason });
         };
         match ruling {
             Ruling::Escalate { reason } => Ok(RulingOutcome::Escalated { reason }),

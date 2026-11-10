@@ -49,7 +49,14 @@ async fn lead_dismisses_plans_and_keeps_later_actions_within_limits() {
     // 6 条（再加一条给人的和一条拦合并的，它们不在整理范围里）
     db.set_minutes(&m.id, "## 行动项\n- [之后] alice：补 A 的测试\n- [之后] bob：补 B 的测试\n- [之后] alice：补 A 的边界测试\n- [之后] bob：重命名变量\n- [之后] alice：补文档\n- [之后] bob：补日志\n- [后续] 人类：这条是给人的").unwrap();
     assert_eq!(orch.later_actions(&project.id).unwrap().len(), 6, "给人的不算");
+    // 已经裁决的议题要告诉负责人：和它重复的行动项直接驳回
+    let issue = db.create_issue(&project.id, "创建时 status 缺省语义", "", "technical", false, Some(&bob.id), None, None).unwrap();
+    db.set_issue_status(&issue.id, "discussing").unwrap();
+    db.set_issue_status(&issue.id, "pending_decision").unwrap();
+    db.decide_issue(&issue.id, &crewforge_core::board::Actor::Employee(alice.id.clone()), None, "缺省为 todo", "更简单", &Default::default()).unwrap();
     let out = orch.lead_triage_later(&project.id, &alice, &Deny).await.unwrap().unwrap();
+    let prompt = std::fs::read_to_string(&log).unwrap();
+    assert!(prompt.contains("已经裁决的议题") && prompt.contains("创建时 status 缺省语义") && prompt.contains("缺省为 todo") && prompt.contains("事实已经变化而过期"), "{prompt}");
     assert_eq!((out.dismissed, out.planned.len(), out.kept), (2, 1, 1), "{out:?}");
     assert!(out.rejected.iter().any(|r| r.contains("99")) && out.rejected.iter().any(|r| r.contains("重复出现")), "{:?}", out.rejected);
     let all = db.actions_for_meeting(&m.id).unwrap();
@@ -65,4 +72,10 @@ async fn lead_dismisses_plans_and_keeps_later_actions_within_limits() {
     assert_eq!((it.status.as_str(), it.assignee_name.as_deref()), ("planned", Some("bob")));
     assert_eq!(db.plan_files(&project.id).unwrap().get(&it.id), Some(&vec!["tests/test_edge.py".to_string()]));
     assert!(db.recent_events(100).unwrap().iter().any(|e| e.kind == "lead_triaged_actions"));
+}
+
+#[test]
+fn the_plan_cap_grows_with_the_backlog_but_stays_between_3_and_8() {
+    use crewforge_core::lead_triage::max_plan_items;
+    assert_eq!((max_plan_items(5), max_plan_items(9), max_plan_items(15), max_plan_items(60)), (3, 3, 5, 8));
 }

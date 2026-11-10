@@ -386,6 +386,6 @@ mod tests {
         let second = tokio::time::timeout(std::time::Duration::from_millis(50), acquire_slot(&ep)).await;
         assert!(second.is_err(), "名额被占，第二个要等");
         drop(first);
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(200), acquire_slot(&ep)).await.is_ok());
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), acquire_slot(&ep)).await.is_ok(), "名额放回后应当很快拿到（给足时间，避免机器忙时误报）");
     }
 }

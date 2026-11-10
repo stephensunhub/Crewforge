@@ -159,6 +159,9 @@ pub(crate) fn plan_table(items: &[PlanItem]) -> String {
         if i.note.is_empty() { String::new() } else { format!("（备注：{}）", i.note.chars().take(120).collect::<String>()) })).collect()
 }
 
+/// 负责人的回复格式不对时，最多重试几次（含第一次）。仍然不对才升级给人。
+pub const MAX_FORMAT_ATTEMPTS: usize = 3;
+
 impl Orchestrator {
     async fn lead_turn<A: Approver>(&self, lead: &Employee, project_id: &str, prompt: &str, label: &str, approver: &A) -> Result<String> {
         self.lead_turn_as("planning", lead, project_id, prompt, label, approver).await
@@ -179,6 +182,30 @@ impl Orchestrator {
             bail!("{} 没有给出有效回复（{}）", lead.name, r.subtype);
         }
         Ok(r.text)
+    }
+
+    /// 让负责人答一次并解析；格式不对就把错误原因告诉它、让它重答，最多 `MAX_FORMAT_ATTEMPTS` 次。
+    /// 返回 Ok(Ok(结果))；连续都不对返回 Ok(Err(原因))，由调用方决定怎么处理（比如升级给人）。
+    /// 调用本身失败（模型没有回复、出错）仍是 Err。
+    pub(crate) async fn lead_turn_parsed<T, A: Approver>(
+        &self, purpose: &str, lead: &Employee, project_id: &str, prompt: &str, label: &str, approver: &A,
+        parse: impl Fn(&str) -> Result<T>,
+    ) -> Result<std::result::Result<T, String>> {
+        let mut p = prompt.to_string();
+        let mut last = String::new();
+        for attempt in 1..=MAX_FORMAT_ATTEMPTS {
+            let text = self.lead_turn_as(purpose, lead, project_id, &p, label, approver).await?;
+            match parse(&text) {
+                Ok(v) => return Ok(Ok(v)),
+                Err(e) => {
+                    last = e.to_string();
+                    let _ = self.db.append_event_for(Some(project_id), "lead_format_retry", Some(&lead.id), None,
+                        &serde_json::json!({"label": label, "attempt": attempt, "max": MAX_FORMAT_ATTEMPTS, "error": last}));
+                    p = format!("{prompt}\n\n[系统提示] 你上一次的回复无法使用：{last}。请重新回答：只输出一个 JSON 对象本身，不要任何其他文字，字段和格式严格按上面的要求。（第 {} / {MAX_FORMAT_ATTEMPTS} 次）", attempt + 1);
+                }
+            }
+        }
+        Ok(Err(format!("连续 {MAX_FORMAT_ATTEMPTS} 次回复格式都不对（{last}）")))
     }
 
     /// 让负责人起草计划。条目进入“提议中”，等人在开始自主推进时确认。返回新增的条目数。

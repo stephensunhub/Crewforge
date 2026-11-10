@@ -17,6 +17,8 @@ use serde_json::{Value, json};
 pub const MIN_ITEMS_TO_TRIAGE: usize = 5;
 pub const MAX_ITEMS_PER_TRIAGE: usize = 60;
 pub const MAX_PLAN_ITEMS: usize = 3;
+/// 一次整理最多转成几个计划条目：积压多时放宽（每 3 条积压多转 1 个），3 到 8 个。
+pub fn max_plan_items(backlog: usize) -> usize { (backlog / 3).clamp(MAX_PLAN_ITEMS, 8) }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
@@ -81,6 +83,7 @@ impl Orchestrator {
             return Ok(None);
         }
         items.truncate(MAX_ITEMS_PER_TRIAGE);
+        let plan_cap = max_plan_items(items.len());
         let project = self.db.get_project(project_id)?.context("项目不存在")?;
         let members = self.db.list_members(project_id)?;
         let plan = self.db.plan_view(project_id)?;
@@ -99,14 +102,22 @@ impl Orchestrator {
         if !plan.items.is_empty() {
             p.push_str(&format!("\n现有计划（已经在做或做完的事不要重复）：\n{}", crate::planning::plan_table(&plan.items)));
         }
+        // 已经裁决的议题：行动项只是在重复这些决定的，不必再留着
+        let decided: Vec<_> = self.db.list_issues(project_id)?.into_iter().filter(|i| i.status == "decided" || i.status == "implementing").take(20).collect();
+        if !decided.is_empty() {
+            p.push_str("\n已经裁决的议题（行动项如果只是在重复这些决定，dismiss 并写明“已由议题《…》裁决”）：\n");
+            for i in &decided {
+                p.push_str(&format!("- 《{}》→ {}\n", i.title.chars().take(60).collect::<String>(), i.decision.as_deref().unwrap_or("").chars().take(100).collect::<String>()));
+            }
+        }
         p.push_str(&format!("\n你可以只读地查看代码来核实现状。逐条处理，原则：\n\
-- 重复的（和另一条意思相同）、已经被代码或现有计划解决的、过度设计的、对目标没有价值的：dismiss，必须写原因（重复的写明和第几条重复）。\n\
-- 确实值得做、会提高质量的：最多 {MAX_PLAN_ITEMS} 条转成计划条目（plan），写清 title、description、能用命令验证的 acceptance、assignee（项目成员名）、files（预计改的文件）；相近的几条合成一个条目。\n\
+- 重复的（和另一条意思相同，或已被上面的议题裁决覆盖）、已经被代码或现有计划解决的、事实已经变化而过期的、过度设计的、对目标没有价值的：dismiss，必须写原因（重复的写明和第几条重复）。\n\
+- 确实值得做、会提高质量的：最多 {plan_cap} 条转成计划条目（plan），写清 title、description、能用命令验证的 acceptance、assignee（项目成员名）、files（预计改的文件）；相近的几条合成一个条目。\n\
 - 拿不准的：keep（保留）。没提到的也会保留。不要为了清空而清空，也不要把每条都转成计划。\n"));
         p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"items\":[{\"n\":1,\"op\":\"dismiss\",\"reason\":\"...\"},{\"n\":2,\"op\":\"plan\",\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"files\":[\"路径\"]},{\"n\":3,\"op\":\"keep\"}]}");
 
-        let text = self.lead_turn_as("curation", lead, project_id, &p, "整理行动项", approver).await?;
-        let ops = parse_triage(&text).map_err(|e| anyhow::anyhow!("负责人的整理结果格式不对：{e}"))?;
+        let ops = self.lead_turn_parsed("curation", lead, project_id, &p, "整理行动项", approver, parse_triage).await?
+            .map_err(|why| anyhow::anyhow!("负责人的整理结果{why}"))?;
         let mut out = Triaged::default();
         let mut seen = std::collections::HashSet::new();
         for op in ops {
@@ -120,7 +131,7 @@ impl Orchestrator {
                     out.dismissed += 1;
                 }
                 Op::Plan { title, description, acceptance, assignee, files, .. } => {
-                    if out.planned.len() >= MAX_PLAN_ITEMS { out.rejected.push(format!("第 {n} 条转计划：超过 {MAX_PLAN_ITEMS} 个的上限，保留"));  continue; }
+                    if out.planned.len() >= plan_cap { out.rejected.push(format!("第 {n} 条转计划：超过 {plan_cap} 个的上限，保留"));  continue; }
                     let aid = assignee.as_deref().and_then(|nm| members.iter().find(|m| m.name == nm)).map(|m| m.employee_id.clone());
                     match self.db.create_plan_item(project_id, &NewPlanItem { title: title.clone(), description, acceptance, kind: "migrate".into(), module: String::new(), assignee_id: aid, deps: vec![] }, None) {
                         Ok(id) => {

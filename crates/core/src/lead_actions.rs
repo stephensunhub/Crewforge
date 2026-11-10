@@ -109,12 +109,11 @@ impl Orchestrator {
 - 需求原文没写明的，按你的专业判断定并写明依据，不要把决定推给人；高风险的操作本身仍会在执行时经过审批，不需要你在这里回避。只有缺少你无法核实、也无法合理假设的关键事实时，才升级（escalate），并写明缺什么。\n");
         p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"action\":\"decide\",\"decision\":\"最终决定，一句话，具体到做法\",\"reason\":\"依据\",\"follow_up\":[{\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"files\":[\"路径\"]}]}\n或 {\"action\":\"dismiss\",\"reason\":\"...\"}\n或 {\"action\":\"escalate\",\"reason\":\"为什么必须是人\"}");
 
-        let text = self.lead_turn_as("ruling", lead, &project.id, &p, "处理行动项", approver).await?;
-        let ruling = match parse_action_ruling(&text) {
+        let ruling = match self.lead_turn_parsed("ruling", lead, &project.id, &p, "处理行动项", approver, parse_action_ruling).await? {
             Ok(r) => r,
-            Err(e) => {
-                self.db.append_event_for(Some(&project.id), "action_ruling_failed", Some(&lead.id), None, &json!({"action_id": action_id, "error": e.to_string()}))?;
-                return Ok(Some(self.escalate_action(&item.id, &project.id, lead, &format!("负责人的回复格式不对（{e}），交给你来定"))?));
+            Err(why) => {
+                self.db.append_event_for(Some(&project.id), "action_ruling_failed", Some(&lead.id), None, &json!({"action_id": action_id, "error": why}))?;
+                return Ok(Some(self.escalate_action(&item.id, &project.id, lead, &format!("负责人{why}，交给你来定"))?));
             }
         };
         match ruling {

@@ -168,6 +168,7 @@ pub struct Autopilot<A: Approver + Send + Sync + 'static> {
     merged: AtomicUsize,
     last_standup_at_merged: AtomicUsize,
     last_curated_at_merged: AtomicUsize,
+    last_triaged_at_merged: AtomicUsize,
     standups: AtomicUsize,
     /// 正在被占用的员工名（与应用里“工作中”的集合共用，避免人和负责人同时驱动同一员工的会话）
     /// 本批次里已经派出去处理的评审意见文本（并行的任务里相同的意见只处理一次）
@@ -276,7 +277,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         Ok(Arc::new(Self {
             orch, sched, approver, ctl, project_id: run.project_id.clone(), run_id: run.id.clone(), repo: std::path::PathBuf::from(project.path),
             calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()),
-            merged: AtomicUsize::new(0), last_standup_at_merged: AtomicUsize::new(0), last_curated_at_merged: AtomicUsize::new(0), standups: AtomicUsize::new(0),
+            merged: AtomicUsize::new(0), last_standup_at_merged: AtomicUsize::new(0), last_curated_at_merged: AtomicUsize::new(0), last_triaged_at_merged: AtomicUsize::new(0), standups: AtomicUsize::new(0),
             handled_actions: std::sync::Mutex::new(Vec::new()), busy, on_busy_change,
         }))
     }
@@ -628,6 +629,14 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     }
 
     /// 收尾：整理“之后再说”的行动项（积累到一定数量才调用）。
+    /// 持续整理“之后再说”的行动项：批次开始时一次，之后每合并 2 个条目、积压够多时一次；收尾时再整理一次。
+    async fn maybe_triage(&self, force: bool) {
+        let merged = self.merged.load(Ordering::SeqCst);
+        if !force && (self.soft_budget() || merged < self.last_triaged_at_merged.load(Ordering::SeqCst) + 2) { return; }
+        self.last_triaged_at_merged.store(merged, Ordering::SeqCst);
+        self.triage_later().await;
+    }
+
     async fn triage_later(&self) {
         let Some(lead) = self.lead() else { return };
         if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) { return; }
@@ -757,6 +766,8 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
 
     pub async fn run(self: Arc<Self>) -> AutopilotRun {
         self.requeue_orphaned_items();
+        // 已经积压的行动项，批次一开始先清一遍
+        self.maybe_triage(true).await;
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();
         let mut ruled: HashSet<String> = HashSet::new();
@@ -831,7 +842,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             if let Some(Ok((id, res))) = set.join_next().await {
                 running.remove(&id);
                 match res {
-                    Ok(()) => { self.ensure_baseline().await; self.maybe_curate(false).await; }
+                    Ok(()) => { self.ensure_baseline().await; self.maybe_curate(false).await; self.maybe_triage(false).await; }
                     Err(e) => {
                         let title = self.db().get_plan_item(&id).ok().flatten().map(|i| i.title).unwrap_or_default();
                         self.say("autopilot_step", format!("《{title}》没做成：{e}"));

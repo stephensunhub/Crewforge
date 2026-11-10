@@ -90,12 +90,67 @@ async fn lead_decides_dismisses_or_escalates_human_flagged_actions() {
     let rest = orch.human_actions_for_lead(&project.id).unwrap();
     assert_eq!(rest.len(), 1);
 
-    // 4. 回复格式不对：不丢，交给人，并写明
+    // 4. 回复格式连续 3 次都不对：不丢，交给人，并写明
     let out = orch.lead_handle_action(&rest[0], &alice, &Deny).await.unwrap().unwrap();
-    assert!(matches!(&out, ActionOutcome::Escalated { reason } if reason.contains("格式不对")), "{out:?}");
+    assert!(matches!(&out, ActionOutcome::Escalated { reason } if reason.contains("连续 3 次") && reason.contains("格式都不对")), "{out:?}");
     assert!(orch.human_actions_for_lead(&project.id).unwrap().is_empty());
     // 已经处理过的再处理：什么都不做
     assert!(orch.lead_handle_action(&find("多人联机"), &alice, &Deny).await.unwrap().is_some(), "仍是待处理的会再问一次（由调用方用 human_actions_for_lead 去重）");
     let done = db.open_actions_for_project(&project.id).unwrap().iter().filter(|a| a.for_human).count();
     assert_eq!(done, 2, "留给人的两条");
+}
+
+/// 假 CLI：前 `bad` 次回不是 JSON 的话，之后回驳回；每次调用把次数记在 count 文件里。
+fn flaky_cli(dir: &Path, bad: u32) -> (String, std::path::PathBuf) {
+    let reply = |s: &str| format!("echo '{}'", serde_json::json!({"type":"result","subtype":"success","is_error":false,"result":s,"total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}));
+    let (junk, ok) = (reply("我觉得都行"), reply(r#"{"action":"dismiss","reason":"现状已经满足，不必再改"}"#));
+    let count = dir.join("count");
+    let p = dir.join("flaky");
+    std::fs::write(&p, format!(
+        "#!/bin/sh\nread -r line\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"x\"}}'\n\
+         n=$(cat '{c}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{c}'\nif [ $n -le {bad} ]; then {junk}; else {ok}; fi\n", c = count.display())).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (p.to_string_lossy().into_owned(), count)
+}
+
+async fn flaky_env(bad: u32) -> (tempfile::TempDir, Arc<Db>, Orchestrator, String, std::path::PathBuf, crewforge_core::db::Employee) {
+    let d = tempfile::tempdir().unwrap();
+    let data = d.path().join("home");
+    let proj = d.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let db = Arc::new(Db::open(&data).unwrap());
+    let ws = Arc::new(WorkspaceManager::new(&data));
+    ws.init_repo(&proj).await.unwrap();
+    let repo = ws.repo_info(&proj).await.unwrap().root;
+    let project = db.create_project("P", "", repo.to_str().unwrap()).unwrap();
+    let alice = db.add_employee("alice", "全栈", "p").unwrap();
+    db.add_member(&project.id, &alice.id, "lead").unwrap();
+    let mut orch = Orchestrator::new(db.clone(), ws);
+    let (cli, count) = flaky_cli(d.path(), bad);
+    orch.program = cli;
+    let m = db.create_meeting(&project.id, "retro", "复盘", None, None, &[], 5).unwrap();
+    db.set_minutes(&m.id, "## 行动项\n- [后续] 人类：决定界面配色").unwrap();
+    let id = orch.human_actions_for_lead(&project.id).unwrap().remove(0);
+    (d, db, orch, id, count, alice)
+}
+
+#[tokio::test]
+async fn a_badly_formatted_reply_is_retried_and_succeeds_on_a_later_attempt() {
+    let (_d, db, orch, id, count, alice) = flaky_env(2).await;
+    let out = orch.lead_handle_action(&id, &alice, &Deny).await.unwrap().unwrap();
+    assert!(matches!(out, ActionOutcome::Dismissed { .. }), "{out:?}");
+    assert_eq!(std::fs::read_to_string(count).unwrap().trim(), "3", "前两次格式不对，第三次成功");
+    assert_eq!(db.get_action(&id).unwrap().unwrap().status, "dismissed");
+    assert_eq!(db.recent_events(100).unwrap().iter().filter(|e| e.kind == "lead_format_retry").count(), 2);
+}
+
+#[tokio::test]
+async fn after_three_bad_replies_the_item_is_escalated_to_the_human_and_no_more_attempts_are_made() {
+    let (_d, db, orch, id, count, alice) = flaky_env(99).await;
+    let out = orch.lead_handle_action(&id, &alice, &Deny).await.unwrap().unwrap();
+    assert!(matches!(out, ActionOutcome::Escalated { .. }), "{out:?}");
+    assert_eq!(std::fs::read_to_string(count).unwrap().trim(), "3", "最多 3 次，不再继续");
+    let a = db.get_action(&id).unwrap().unwrap();
+    assert!(a.for_human && a.status == "open", "升级给人：仍等人处理");
+    assert!(db.recent_events(100).unwrap().iter().any(|e| e.kind == "action_ruling_failed"));
 }
