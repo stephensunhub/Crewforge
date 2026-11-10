@@ -186,9 +186,9 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .status.run { color: var(--accent); }
 .card-persona { font-size: 13px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .card-meta { display: flex; gap: 6px; flex-wrap: wrap; }
-.card-foot { display: flex; gap: 8px; align-items: center; }
+.card-foot { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .card-foot select { width: auto; padding: 4px 8px; }
-.card .btn { padding: 4px 12px; font-size: 12px; }
+.card .btn { padding: 4px 12px; font-size: 12px; white-space: nowrap; flex: none; }
 .chip.static:hover { color: var(--muted); border-color: var(--line); }
 .path-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
