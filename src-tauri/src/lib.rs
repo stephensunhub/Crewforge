@@ -24,6 +24,7 @@ pub fn run() {
             let interrupted = db.take_orphaned_autopilot_runs().unwrap_or_default();
             let _ = db.close_orphaned_standups();
             let _ = db.close_orphaned_reviews();
+            crewforge_core::keep_awake::set_enabled(db.keep_awake_setting());
             let st = state::AppState::new(db.clone(), &data_dir);
             let sched = st.sched.clone();
             let handle = app.handle().clone();
@@ -115,6 +116,8 @@ pub fn run() {
             commands::record_ui_error,
             commands::add_intervention_note,
             commands::start_autopilot,
+            commands::get_keep_awake,
+            commands::set_keep_awake,
             commands::get_autopilot_config,
             commands::set_autopilot_config,
             commands::get_autopilot_resume,

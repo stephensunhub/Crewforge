@@ -1753,3 +1753,15 @@ QA 的测试经验可以被全栈工程师检索。
 
 **验证了什么**：`cargo test -p crewforge-core` 247 个全过（新增：设置默认开、记住关；关掉后对齐会照开、批次结束前都已关会、任务照常完成）；`npx tsc --noEmit`、`cargo check -p crewforge-app` 通过。中间有一次 `align::tests::due_needs_the_interval_to_pass_and_something_to_have_changed` 偶发失败，我没改过那一块，单独跑 3 次都通过、整套重跑也通过，判断是靠时间的测试在机器忙时不稳，没有深查。
 **没验证什么**：界面没在真实窗口里看过，也没装到本机；没有在真实的慢模型上验证“关掉后《Dashboard》这类任务不再被挡”，只在假 CLI 上验证了流程；对齐会在后台和任务的模型调用会争并发名额，Ollama 串行时总耗时不会变短，只是不再让任务排在会后面。
+
+### 20.72 批次运行期间防止 Mac 空闲睡眠
+
+**起因**：用户问“进入屏保会不会停任务”。屏保本身不影响进程，但系统睡眠会暂停应用、员工的 CLI 子进程和到 Ollama 的连接。查本机 `pmset`：接电源和用电池的**系统睡眠都是 1 分钟**；当时没睡是因为 RustRover/IDEA 和 Claude Code 的 `caffeinate` 在撑着，**Crewforge 自己没有持有任何防睡眠断言**（代码里搜不到 `caffeinate`/`IOPMAssertion`）。
+
+**做了什么**
+- 新模块 `keep_awake.rs`：自主推进的批次（`Autopilot::run`）在跑期间，起一个 `/usr/bin/caffeinate -i -s -w <应用进程号>`；`-w` 保证应用退出（包括崩溃）时它也跟着退出；批次不论怎么结束（完成、停止、出错）都放开；多个批次同时跑共用一个进程。只防“空闲睡眠”，不防显示器熄屏，也不防合上盖子或手动睡眠。
+- 全局设置 `keep_awake`，**默认开**；“设置”页新增勾选项，**改了立即生效，包括正在跑的批次**。开着且真的撑上时，批次日志里记一条“批次运行期间已阻止 Mac 因空闲而睡眠”。
+- 应用启动时按设置初始化；命令行和测试里默认关，不会起任何进程。非 macOS 是空操作。
+
+**验证了什么**：`cargo test -p crewforge-core` 249 个通过（新增 2 个：开关关着不防、打开立刻生效、多批次共用、结束放开、运行中关掉立刻放开；设置默认开并能记住，用 `sleep` 代替 `caffeinate` 测，连跑 3 次稳定）；手动起了一次真实的 `caffeinate -i -s -w`，`pmset -g assertions` 里出现 `PreventUserIdleSystemSleep` 和 `PreventSystemSleep`；`npx tsc --noEmit`、`cargo check -p crewforge-app` 通过。
+**没验证什么**：界面没在真实窗口里看过；没有在装好的应用里确认批次一开始就出现应用自己的 `caffeinate`，也没有实际让 Mac 空闲 1 分钟验证它不睡；`-s` 只在接电源时有效，用电池时只有 `-i`，没有测过用电池的情况；睡眠后恢复的行为没验证。

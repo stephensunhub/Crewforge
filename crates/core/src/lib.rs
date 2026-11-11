@@ -2,6 +2,7 @@
 
 pub mod actions;
 pub mod autopilot;
+pub mod keep_awake;
 pub mod board;
 pub mod closeout;
 pub mod cost;

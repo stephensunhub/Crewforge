@@ -252,6 +252,17 @@ pub fn set_context_limit(state: State<'_, AppState>, tokens: u64) -> CmdResult<(
     state.db.set_setting("context_limit", &tokens.to_string()).map_err(err)
 }
 
+// ================= 批次运行期间防止 Mac 睡眠 =================
+#[tauri::command]
+pub fn get_keep_awake(state: State<'_, AppState>) -> bool {
+    state.db.keep_awake_setting()
+}
+
+#[tauri::command]
+pub fn set_keep_awake(state: State<'_, AppState>, on: bool) -> CmdResult<()> {
+    state.db.set_keep_awake_setting(on).map_err(err)
+}
+
 // ================= 额度调度 =================
 #[tauri::command]
 pub fn scheduler_status(state: State<'_, AppState>) -> SchedStatus {

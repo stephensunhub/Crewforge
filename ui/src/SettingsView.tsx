@@ -15,6 +15,8 @@ export function SettingsView({ sched, onConcurrency, onAction }: {
   const [ctxSaved, setCtxSaved] = useState<number | null>(null);
   const [ctxK, setCtxK] = useState("");
   useEffect(() => { api.getContextLimit().then((n) => { setCtxSaved(n); setCtxK(String(Math.round(n / 1000))); }).catch(() => undefined); }, []);
+  const [awake, setAwake] = useState<boolean | null>(null);
+  useEffect(() => { api.getKeepAwake().then(setAwake).catch(() => undefined); }, []);
   const ctxNew = Math.max(0, Math.round(Number(ctxK) || 0)) * 1000;
   const ctxDirty = ctxSaved != null && ctxNew !== ctxSaved;
   useEffect(() => {
@@ -69,6 +71,12 @@ export function SettingsView({ sched, onConcurrency, onAction }: {
         </div>
 
         <SandboxDomainsSetting onAction={onAction} />
+
+        <div className="setting">
+          <b>批次运行期间防止 Mac 睡眠</b>
+          <div className="hint">系统睡眠时应用、员工进程和到模型的连接都会暂停，屏保本身不影响。开着时，自主推进的批次在跑的整个期间不让 Mac 因“空闲”而睡眠，批次结束（或停止）自动放开。只防空闲睡眠：不防显示器熄屏，也不防合上盖子或手动睡眠。改了立即生效，包括正在跑的批次。</div>
+          <label className="tog"><input type="checkbox" disabled={awake === null} checked={awake ?? true} onChange={(e) => { const on = e.target.checked; void onAction(async () => { await api.setKeepAwake(on); setAwake(on); }); }} /> 批次运行期间防止 Mac 空闲睡眠</label>
+        </div>
 
         <div className="setting">
           <b>员工会话上下文上限</b>

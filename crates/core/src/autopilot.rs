@@ -928,6 +928,11 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     }
 
     pub async fn run(self: Arc<Self>) -> AutopilotRun {
+        // 批次运行期间不让 Mac 因空闲睡眠（全局设置里可关；不论批次怎么结束都会放开）
+        let _awake = crate::keep_awake::hold();
+        if crate::keep_awake::holding() {
+            self.say("autopilot_step", "批次运行期间已阻止 Mac 因空闲而睡眠（批次结束自动放开；到“设置”里可以关掉）");
+        }
         self.requeue_orphaned_items();
         // 积压很多（≥ START_TRIAGE_BACKLOG 条）时，批次一开始先清一遍；不多就先开工，不让负责人整理的这十几分钟
         // （本地模型很慢）挡住所有人，之后每合并 2 个条目、积压够多时会再整理
