@@ -292,6 +292,8 @@ pub struct Autopilot<A: Approver + Send + Sync + 'static> {
     standup_lock: tokio::sync::Mutex<()>,
     /// 后台开的对齐会（设置里关掉“阻塞任务”时）；批次结束前等它们收尾
     bg_standups: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// 后台整理（记忆、行动项）是否在跑，同一时间只开一个
+    housekeeping: AtomicBool,
     merged: AtomicUsize,
     last_standup_at_merged: AtomicUsize,
     last_curated_at_merged: AtomicUsize,
@@ -412,7 +414,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let orch = { let mut o = (*orch).clone(); o.origin = "autopilot".into(); Arc::new(o) };
         Ok(Arc::new(Self {
             orch, sched, approver, ctl, project_id: run.project_id.clone(), run_id: run.id.clone(), repo: std::path::PathBuf::from(project.path),
-            calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()), bg_standups: Default::default(),
+            calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()), bg_standups: Default::default(), housekeeping: AtomicBool::new(false),
             merged: AtomicUsize::new(0), last_standup_at_merged: AtomicUsize::new(0), last_curated_at_merged: AtomicUsize::new(0), last_triaged_at_merged: AtomicUsize::new(0), uncounted: AtomicUsize::new(0), standups: AtomicUsize::new(0),
             handled_actions: std::sync::Mutex::new(Vec::new()), busy, on_busy_change,
         }))
@@ -1019,7 +1021,17 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             if let Some(Ok((id, res))) = set.join_next().await {
                 running.remove(&id);
                 match res {
-                    Ok(()) => { self.ensure_baseline().await; self.maybe_curate(false).await; self.maybe_triage(false).await; }
+                    Ok(()) => {
+                        self.ensure_baseline().await;
+                        // 整理记忆和行动项都是负责人在慢模型上做的（十几分钟），放到后台，不挡着派下一个条目；同一时间只留一个在跑
+                        if !self.housekeeping.swap(true, Ordering::SeqCst) {
+                            let me = self.clone();
+                            let h = tokio::spawn(async move { me.maybe_curate(false).await; me.maybe_triage(false).await; me.housekeeping.store(false, Ordering::SeqCst); });
+                            let mut v = self.bg_standups.lock().unwrap();
+                            v.retain(|h| !h.is_finished());
+                            v.push(h);
+                        }
+                    }
                     Err(e) => {
                         let title = self.db().get_plan_item(&id).ok().flatten().map(|i| i.title).unwrap_or_default();
                         self.say("autopilot_step", format!("《{title}》没做成：{e}"));

@@ -79,3 +79,37 @@ fn the_plan_cap_grows_with_the_backlog_but_stays_between_3_and_8() {
     use crewforge_core::lead_triage::max_plan_items;
     assert_eq!((max_plan_items(5), max_plan_items(9), max_plan_items(15), max_plan_items(60)), (3, 3, 5, 8));
 }
+
+#[tokio::test]
+async fn a_plan_conversion_with_the_same_title_as_an_open_plan_item_is_not_created_twice() {
+    let d = tempfile::tempdir().unwrap();
+    let data = d.path().join("home");
+    let proj = d.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let db = Arc::new(Db::open(&data).unwrap());
+    let ws = Arc::new(WorkspaceManager::new(&data));
+    ws.init_repo(&proj).await.unwrap();
+    let repo = ws.repo_info(&proj).await.unwrap().root;
+    let project = db.create_project("Todo", "", repo.to_str().unwrap()).unwrap();
+    let alice = db.add_employee("alice", "全栈", "p").unwrap();
+    let bob = db.add_employee("bob", "全栈", "p").unwrap();
+    db.add_member(&project.id, &alice.id, "lead").unwrap();
+    db.add_member(&project.id, &bob.id, "developer").unwrap();
+    let mut orch = Orchestrator::new(db.clone(), ws);
+    let reply = serde_json::json!({"type":"result","subtype":"success","is_error":false,"result":
+        r#"{"items":[{"n":1,"op":"plan","title":"补充边界测试","description":"d","acceptance":"a","assignee":"bob","files":["t.py"]},{"n":2,"op":"plan","title":"补充边界测试","description":"d","acceptance":"a","assignee":"bob","files":["t.py"]},{"n":3,"op":"keep"},{"n":4,"op":"keep"},{"n":5,"op":"keep"}]}"#,
+        "total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}});
+    let p = d.path().join("fake");
+    std::fs::write(&p, format!("#!/bin/sh\nread -r line\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"x\"}}'\necho '{}'\n", reply)).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    orch.program = p.to_string_lossy().into_owned();
+    let m = db.create_meeting(&project.id, "retro", "复盘", None, None, &[], 5).unwrap();
+    db.set_minutes(&m.id, "## 行动项\n- [之后] alice：甲\n- [之后] bob：乙\n- [之后] alice：丙\n- [之后] bob：丁\n- [之后] alice：戊").unwrap();
+    let out = orch.lead_triage_later(&project.id, &alice, &Deny).await.unwrap().unwrap();
+    // 同一次整理里两条同名：只建一个
+    assert_eq!(out.planned.len(), 1, "{out:?}");
+    let n = db.plan_view(&project.id).unwrap().items.iter().filter(|i| i.title == "补充边界测试").count();
+    assert_eq!(n, 1);
+    let all = db.actions_for_meeting(&m.id).unwrap();
+    assert!(all.iter().any(|a| a.note.contains("已有同名条目")), "重复的那条要注明");
+}

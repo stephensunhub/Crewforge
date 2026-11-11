@@ -84,6 +84,8 @@ impl Orchestrator {
         }
         items.truncate(MAX_ITEMS_PER_TRIAGE);
         let plan_cap = max_plan_items(items.len());
+        // 还没做完的计划条目标题：同名的不再重复建（整理会反复把同一件事转成新条目）
+        let mut open_titles: std::collections::HashSet<String> = self.db.plan_view(project_id).map(|v| v.items.iter().filter(|i| i.status == "planned" || i.status == "in_progress").map(|i| i.title.trim().to_string()).collect()).unwrap_or_default();
         let project = self.db.get_project(project_id)?.context("项目不存在")?;
         let members = self.db.list_members(project_id)?;
         let plan = self.db.plan_view(project_id)?;
@@ -132,12 +134,18 @@ impl Orchestrator {
                 }
                 Op::Plan { title, description, acceptance, assignee, files, .. } => {
                     if out.planned.len() >= plan_cap { out.rejected.push(format!("第 {n} 条转计划：超过 {plan_cap} 个的上限，保留"));  continue; }
+                    if open_titles.contains(title.trim()) {
+                        self.db.set_action_status(&item.id, "done", &format!("负责人（{}）整理：计划里已有同名条目《{title}》，不重复建", lead.name))?;
+                        out.dismissed += 1;
+                        continue;
+                    }
                     let aid = assignee.as_deref().and_then(|nm| members.iter().find(|m| m.name == nm)).map(|m| m.employee_id.clone());
                     match self.db.create_plan_item(project_id, &NewPlanItem { title: title.clone(), description, acceptance, kind: "migrate".into(), module: String::new(), assignee_id: aid, deps: vec![] }, None) {
                         Ok(id) => {
                             let _ = self.db.set_plan_item_files(&id, &files);
                             let _ = self.db.set_plan_note(&id, &format!("负责人整理行动项追加：{}", item.text.chars().take(80).collect::<String>()));
                             self.db.set_action_status(&item.id, "done", &format!("负责人（{}）整理：已转为计划条目《{title}》", lead.name))?;
+                            open_titles.insert(title.trim().to_string());
                             out.planned.push(title);
                         }
                         Err(e) => out.rejected.push(format!("第 {n} 条转计划《{title}》：{e}")),
