@@ -1650,6 +1650,6 @@ pub fn get_autopilot_config(state: State<'_, AppState>, project_id: String) -> C
 }
 
 #[tauri::command]
-pub fn set_autopilot_config(state: State<'_, AppState>, project_id: String, max_calls: i64, max_minutes: i64, auto_continue: bool, max_batches: i64) -> CmdResult<()> {
-    state.db.set_autopilot_config(&project_id, &crewforge_core::autopilot::AutopilotConfig { max_calls, max_minutes, auto_continue, max_batches }).map_err(err)
+pub fn set_autopilot_config(state: State<'_, AppState>, project_id: String, max_calls: i64, max_minutes: i64, auto_continue: bool, max_batches: i64, standup_blocks: bool) -> CmdResult<()> {
+    state.db.set_autopilot_config(&project_id, &crewforge_core::autopilot::AutopilotConfig { max_calls, max_minutes, auto_continue, max_batches, standup_blocks }).map_err(err)
 }

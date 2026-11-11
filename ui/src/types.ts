@@ -323,7 +323,7 @@ export interface DutyItem { kind: string; title: string; reason: string; goto: s
 export interface Duties { items: DutyItem[]; later_actions: number; plan_done: number; plan_total: number; plan_percent: number }
 
 export interface AutopilotRun { id: string; project_id: string; status: string; max_calls: number; max_minutes: number; calls: number; started_at: number; ended_at: number | null; reason: string; uncounted_calls: number; chain: number }
-export interface AutopilotConfig { max_calls: number; max_minutes: number; auto_continue: boolean; max_batches: number }
+export interface AutopilotConfig { max_calls: number; max_minutes: number; auto_continue: boolean; max_batches: number; standup_blocks: boolean }
 export interface AutopilotStatus { run: AutopilotRun | null; live: boolean }
 
 export interface DocFile { path: string; size: number; managed: boolean }

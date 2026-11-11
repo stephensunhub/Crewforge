@@ -57,6 +57,11 @@ CREATE TABLE autopilot_config (
 );
 "#;
 
+/// 迁移 21：自主推进里“并行任务对齐会”是否阻塞触发它的任务（默认阻塞，保持原来的行为）。
+pub const MIGRATION_21: &str = r#"
+ALTER TABLE autopilot_config ADD COLUMN standup_blocks INTEGER NOT NULL DEFAULT 1;
+"#;
+
 /// 应用重启后被打断的批次的处理。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResumeDecision {
@@ -79,10 +84,16 @@ pub struct AutopilotConfig {
     pub max_minutes: i64,
     pub auto_continue: bool,
     pub max_batches: i64,
+    /// 并行任务的对齐会是否阻塞触发它的任务：开（默认）时任务做完第一轮后要等会开完才继续验证、评审、合并；
+    /// 关时会在后台开，任务不等。每次要开会时读取，改了之后下一次对齐会起生效。
+    #[serde(default = "default_true")]
+    pub standup_blocks: bool,
 }
 
+fn default_true() -> bool { true }
+
 impl Default for AutopilotConfig {
-    fn default() -> Self { Self { max_calls: 30, max_minutes: 60, auto_continue: false, max_batches: 6 } }
+    fn default() -> Self { Self { max_calls: 30, max_minutes: 60, auto_continue: false, max_batches: 6, standup_blocks: true } }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -122,8 +133,8 @@ impl Db {
     /// 项目的自主推进设置（每批次预算、自动续批次）；没设置过用默认值。
     pub fn autopilot_config(&self, project_id: &str) -> Result<AutopilotConfig> {
         Ok(self.conn.lock().unwrap().query_row(
-            "SELECT max_calls, max_minutes, auto_continue, max_batches FROM autopilot_config WHERE project_id = ?1", [project_id],
-            |r| Ok(AutopilotConfig { max_calls: r.get(0)?, max_minutes: r.get(1)?, auto_continue: r.get::<_, i64>(2)? != 0, max_batches: r.get(3)? })).optional()?.unwrap_or_default())
+            "SELECT max_calls, max_minutes, auto_continue, max_batches, standup_blocks FROM autopilot_config WHERE project_id = ?1", [project_id],
+            |r| Ok(AutopilotConfig { max_calls: r.get(0)?, max_minutes: r.get(1)?, auto_continue: r.get::<_, i64>(2)? != 0, max_batches: r.get(3)?, standup_blocks: r.get::<_, i64>(4)? != 0 })).optional()?.unwrap_or_default())
     }
 
     pub fn set_autopilot_config(&self, project_id: &str, c: &AutopilotConfig) -> Result<()> {
@@ -138,9 +149,9 @@ impl Db {
         }
         self.get_project(project_id)?.context("项目不存在")?;
         self.conn.lock().unwrap().execute(
-            "INSERT INTO autopilot_config (project_id, max_calls, max_minutes, auto_continue, max_batches) VALUES (?1,?2,?3,?4,?5)
-             ON CONFLICT(project_id) DO UPDATE SET max_calls=?2, max_minutes=?3, auto_continue=?4, max_batches=?5",
-            params![project_id, c.max_calls, c.max_minutes, c.auto_continue as i64, c.max_batches])?;
+            "INSERT INTO autopilot_config (project_id, max_calls, max_minutes, auto_continue, max_batches, standup_blocks) VALUES (?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(project_id) DO UPDATE SET max_calls=?2, max_minutes=?3, auto_continue=?4, max_batches=?5, standup_blocks=?6",
+            params![project_id, c.max_calls, c.max_minutes, c.auto_continue as i64, c.max_batches, c.standup_blocks as i64])?;
         Ok(())
     }
 
@@ -277,6 +288,8 @@ pub struct Autopilot<A: Approver + Send + Sync + 'static> {
     max_minutes: u64,
     merge_lock: tokio::sync::Mutex<()>,
     standup_lock: tokio::sync::Mutex<()>,
+    /// 后台开的对齐会（设置里关掉“阻塞任务”时）；批次结束前等它们收尾
+    bg_standups: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     merged: AtomicUsize,
     last_standup_at_merged: AtomicUsize,
     last_curated_at_merged: AtomicUsize,
@@ -397,7 +410,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let orch = { let mut o = (*orch).clone(); o.origin = "autopilot".into(); Arc::new(o) };
         Ok(Arc::new(Self {
             orch, sched, approver, ctl, project_id: run.project_id.clone(), run_id: run.id.clone(), repo: std::path::PathBuf::from(project.path),
-            calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()),
+            calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()), bg_standups: Default::default(),
             merged: AtomicUsize::new(0), last_standup_at_merged: AtomicUsize::new(0), last_curated_at_merged: AtomicUsize::new(0), last_triaged_at_merged: AtomicUsize::new(0), uncounted: AtomicUsize::new(0), standups: AtomicUsize::new(0),
             handled_actions: std::sync::Mutex::new(Vec::new()), busy, on_busy_change,
         }))
@@ -581,7 +594,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             self.say("autopilot_step", format!("{} 做完《{}》第一轮：{}", emp.name, item.title, clip(&r.text, 140)));
         }
         let task = self.db().get_task(self.db().get_plan_item(&item_id)?.context("条目不存在")?.task_id.as_deref().context("条目没有任务")?)?.context("任务不存在")?;
-        self.maybe_standup().await;
+        self.standup_after_round().await;
 
         let mut fixes = 0;
         let mut verdict = self.verify(&task).await;
@@ -852,6 +865,21 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     }
 
     /// 有两个以上的任务同时在做时开一次站会，先对齐接口和进度。限流：第一次直接开，之后至少合并过一个任务才再开。
+    /// 任务做完第一轮后看要不要开对齐会。项目设置“对齐会阻塞任务”开（默认）：等会开完再继续；
+    /// 关：放到后台开，任务马上继续验证、评审、合并。设置每次现读，改了下一次对齐会起生效。
+    async fn standup_after_round(self: &Arc<Self>) {
+        let blocks = self.db().autopilot_config(&self.project_id).map(|c| c.standup_blocks).unwrap_or(true);
+        if blocks {
+            self.maybe_standup().await;
+        } else {
+            let me = self.clone();
+            let h = tokio::spawn(async move { me.maybe_standup().await });
+            let mut v = self.bg_standups.lock().unwrap();
+            v.retain(|h| !h.is_finished());
+            v.push(h);
+        }
+    }
+
     async fn maybe_standup(&self) {
         let Ok(_g) = self.standup_lock.try_lock() else { return };
         let active = self.db().list_tasks(&self.repo.to_string_lossy()).map(|t| t.into_iter().filter(|t| t.status == "active").count()).unwrap_or(0);
@@ -864,6 +892,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         self.last_standup_at_merged.store(merged, Ordering::SeqCst);
         self.say("autopilot_step", format!("{active} 个任务并行，开站会对齐：{}", who.iter().map(|e| e.name.clone()).collect::<Vec<_>>().join("、")));
         for w in &who {
+            if self.ctl.stop.load(Ordering::SeqCst) { break; }
             let _p = self.permit_for(Some(w)).await;
             let _busy = self.busy_scope(&w.name);
             if let Err(e) = self.orch.meeting_reply(&m.id, w, &*self.approver).await {
@@ -997,6 +1026,9 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             }
         };
         while set.join_next().await.is_some() {}
+        // 后台开的对齐会也要收尾（写完纪要、关会）再结束批次
+        let pending: Vec<_> = std::mem::take(&mut *self.bg_standups.lock().unwrap());
+        for h in pending { let _ = h.await; }
         let calls = self.calls.load(Ordering::SeqCst) as i64;
         let _ = self.db().set_autopilot_run(&self.run_id, status, calls, &reason);
         let done = self.db().plan_view(&self.project_id).map(|v| format!("计划完成 {}/{}", v.counts.done, v.items.iter().filter(|i| i.status != "cancelled").count())).unwrap_or_default();

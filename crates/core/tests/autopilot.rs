@@ -439,6 +439,23 @@ fn parallel_standups(e: &Env) -> usize {
 }
 
 #[tokio::test]
+async fn a_standup_in_the_background_does_not_block_tasks_but_still_finishes_before_the_batch_ends() {
+    use crewforge_core::autopilot::AutopilotConfig;
+    let e = setup().await;
+    e.db.set_plan_status(&e.ids[1], "cancelled", "测试").unwrap();
+    e.db.set_autopilot_config(&e.pid, &AutopilotConfig { standup_blocks: false, ..AutopilotConfig::default() }).unwrap();
+    let r = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    assert!(parallel_standups(&e) > 0, "关掉阻塞后对齐会照开");
+    let evs = e.db.recent_events(900).unwrap();
+    let started = evs.iter().filter(|x| x.kind == "meeting_started" && x.payload["kind"] == "standup").count();
+    let closed = evs.iter().filter(|x| x.kind == "meeting_closed" && x.payload["title"].as_str().is_some_and(|t| t.contains("对齐会"))).count();
+    assert!(started > 0 && closed == started, "批次结束前后台的对齐会都已收尾：开了 {started}，关了 {closed}");
+    let v = e.db.plan_view(&e.pid).unwrap();
+    assert!(v.items.iter().filter(|i| i.title == "A" || i.title == "C").all(|i| i.status == "done"), "任务照常完成");
+}
+
+#[tokio::test]
 async fn items_expected_to_touch_the_same_file_never_run_in_parallel() {
     // 对照：不写文件时，A 和 C 互不依赖，会并行
     let free = setup().await;
@@ -583,10 +600,14 @@ async fn project_config_is_remembered_and_validated_and_drives_auto_continue_and
     use crewforge_core::autopilot::{AutoContinue, AutopilotConfig, ResumeDecision};
     let e = setup().await;
     assert_eq!(e.db.autopilot_config(&e.pid).unwrap().max_calls, 30, "没设置过用默认值");
-    let cfg = AutopilotConfig { max_calls: 40, max_minutes: 0, auto_continue: true, max_batches: 3 };
+    let cfg = AutopilotConfig { max_calls: 40, max_minutes: 0, auto_continue: true, max_batches: 3, standup_blocks: true };
+    assert!(e.db.autopilot_config(&e.pid).unwrap().standup_blocks, "对齐会阻塞任务默认开");
     e.db.set_autopilot_config(&e.pid, &cfg).unwrap();
     let got = e.db.autopilot_config(&e.pid).unwrap();
     assert_eq!((got.max_calls, got.max_minutes, got.auto_continue, got.max_batches), (40, 0, true, 3));
+    e.db.set_autopilot_config(&e.pid, &AutopilotConfig { standup_blocks: false, ..cfg.clone() }).unwrap();
+    assert!(!e.db.autopilot_config(&e.pid).unwrap().standup_blocks, "关掉后记住");
+    e.db.set_autopilot_config(&e.pid, &cfg).unwrap();
     for bad in [AutopilotConfig { max_calls: 0, ..cfg.clone() }, AutopilotConfig { max_minutes: -1, ..cfg.clone() }, AutopilotConfig { max_batches: 0, ..cfg.clone() }] {
         assert!(e.db.set_autopilot_config(&e.pid, &bad).is_err());
     }
