@@ -38,6 +38,7 @@ read -r line
 echo '{"type":"system","subtype":"init","session_id":"x"}'
 f="w_$$_$(date +%s%N).txt"
 case "$line" in
+  *清理计划里的重复条目*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"cancel\",\"item\":4,\"reason\":\"与 #1 重复\"},{\"op\":\"add\",\"title\":\"夹带\",\"reason\":\"x\"}],\"escalate\":null,\"summary\":\"取消重复\"}","usage":{}}' ;;
   *是否需要评审*) if [ -f "@SKIP@" ]; then printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"review\":false,\"reason\":\"只改了一个小文件\"}","usage":{}}'; else printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"review\":true,\"reason\":\"逻辑有改动\"}","usage":{}}'; fi ;;
   *起草计划*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"items\":[{\"title\":\"搭脚手架\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[]},{\"title\":\"写核心逻辑\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[0]},{\"title\":\"补测试\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"carol\",\"depends_on\":[1]}]}","usage":{}}' ;;
   *调整计划*完成度复盘*) if [ -f "@MARK@" ]; then printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[],\"escalate\":null,\"summary\":\"没有遗漏\"}","usage":{}}'; else touch "@MARK@"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"add\",\"title\":\"补收尾文档\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[\"#1\"],\"reason\":\"目标要求有说明文档\"},{\"op\":\"cancel\",\"item\":1,\"reason\":\"复盘时不该取消\"}],\"escalate\":null,\"summary\":\"补文档\"}","usage":{}}'; fi ;;
@@ -659,4 +660,18 @@ async fn lead_can_skip_the_review_meeting_for_small_changes_and_reviews_otherwis
     assert_eq!(r2.status, "finished", "{r2:?}");
     assert_eq!(e2.db.list_meetings(&e2.pid).unwrap().iter().filter(|m| m.title.starts_with("评审：")).count(), 1);
     assert_eq!(count_events(&e2, "autopilot_step", "开评审会：逻辑有改动"), 1);
+}
+
+#[tokio::test]
+async fn lead_cancels_duplicate_items_at_batch_start_and_may_only_cancel() {
+    let e = setup().await;
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    let dup = e.db.create_plan_item(&e.pid, &NewPlanItem { title: "A".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: None, deps: vec![] }, None).unwrap();
+    let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    assert_eq!(e.db.get_plan_item(&dup).unwrap().unwrap().status, "cancelled");
+    assert!(e.db.get_plan_item(&dup).unwrap().unwrap().note.contains("与 #1 重复"));
+    assert!(e.db.plan_view(&e.pid).unwrap().items.iter().all(|i| i.title != "夹带"), "清理时不能追加条目");
+    assert_eq!(count_events(&e, "autopilot_step", "清理重复条目时只能取消"), 1);
+    assert_eq!(count_events(&e, "autopilot_plan_changed", "取消 《A》"), 1);
 }

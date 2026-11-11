@@ -151,6 +151,22 @@ pub enum AdjustTrigger {
     ItemFailed,
     /// 计划做完后的完成度复盘：只能追加
     FinalReview,
+    /// 批次开始时清理重复条目：只能取消
+    Dedupe,
+}
+
+/// 疑似重复的条目对（#编号 与 plan_table 一致）：至少有一条还没开始（待开始/已阻塞），标题相似度 ≥ 0.7。
+/// 已取消的不算；已完成的可以作为“对照”（待开始的条目和已完成的重复，也是多余的）。
+pub fn duplicate_candidates(items: &[PlanItem]) -> Vec<(usize, usize)> {
+    let open = |s: &str| matches!(s, "planned" | "blocked");
+    let mut out = vec![];
+    for (i, a) in items.iter().enumerate() {
+        for (j, b) in items.iter().enumerate().skip(i + 1) {
+            if a.status == "cancelled" || b.status == "cancelled" || !(open(&a.status) || open(&b.status)) { continue; }
+            if crate::mcp::similarity(&a.title, &b.title) >= 0.7 { out.push((i + 1, j + 1)); }
+        }
+    }
+    out
 }
 
 pub(crate) fn plan_table(items: &[PlanItem]) -> String {
@@ -266,6 +282,10 @@ impl Orchestrator {
         }
         match trigger {
             AdjustTrigger::ItemFailed => p.push_str(&format!("\n\n触发原因：有条目反复失败，没能做成：\n{failure}\n你可以：追加条目（比如把失败的拆小、补一个前置）、取消作废的条目、给还没开始的条目改派负责人、让失败的条目换一个更清楚的说明重试。")),
+            AdjustTrigger::Dedupe => {
+                let pairs = duplicate_candidates(&view.items).iter().map(|(a, b)| format!("#{a} 与 #{b}")).collect::<Vec<_>>().join("、");
+                p.push_str(&format!("\n\n触发原因：批次开始，清理计划里的重复条目。系统按标题相似度找到这些疑似重复：{pairs}。请逐对核实它们是不是同一件事（看说明和验收标准，不要只看标题）：是同一件事，就取消还没开始的那一条（两条都没开始时保留编号小的，也就是更早建的），原因写“与 #N 重复”；不是同一件事就不要动。只能取消，不能追加、改派或重试；没有真正的重复就返回空 changes。"));
+            }
             AdjustTrigger::FinalReview => p.push_str("\n\n触发原因：计划里的条目都做完了。请对照项目目标做一次完成度复盘：还有没覆盖到的必要工作吗？只能追加条目；没有就返回空 changes。不要为了凑数追加。"),
         }
         p.push_str(&format!("\n\n规则：每次最多追加 {MAX_ADDED_PER_ADJUST} 个条目，每条都要写原因；已开始和已完成的条目不能动；涉及项目目标、需求或范围变更时，不要自己改，用 escalate 交给人（写明原因）。\
@@ -278,6 +298,10 @@ impl Orchestrator {
         let member = |name: &str| members.iter().find(|m| m.name == name).map(|m| m.employee_id.clone());
         let mut new_ids: Vec<String> = Vec::new();
         for ch in adj.changes {
+            if trigger == AdjustTrigger::Dedupe && !matches!(ch, Change::Cancel { .. }) {
+                out.rejected.push("清理重复条目时只能取消".into());
+                continue;
+            }
             match ch {
                 Change::Add { title, description, acceptance, assignee, depends_on, files, reason } => {
                     if new_ids.len() >= MAX_ADDED_PER_ADJUST {
@@ -343,6 +367,15 @@ impl Orchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_candidates_need_one_open_item_and_ignore_cancelled() {
+        let mk = |t: &str, st: &str| PlanItem { title: t.into(), status: st.into(), ..Default::default() };
+        let v = vec![mk("前端健壮性与防误操作：renderBoard 空值防御", "planned"), mk("SQLite 存储实现", "done"), mk("前端健壮性与防误操作：renderBoard 空值防御", "planned"),
+            mk("SQLite 存储实现", "done"), mk("前端健壮性与防误操作：renderBoard 空值防御", "cancelled")];
+        assert_eq!(duplicate_candidates(&v), vec![(1, 3)], "两条已完成的同名不算；已取消的不算");
+    }
+
 
     fn names() -> Vec<String> { vec!["alice".into(), "bob".into()] }
 

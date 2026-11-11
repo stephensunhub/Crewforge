@@ -70,7 +70,7 @@ CREATE TABLE plan_deps (
 pub const PLAN_KINDS: &[&str] = &["characterize", "migrate", "cleanup", "other"];
 const MAX_ITEMS_PER_PROJECT: i64 = 300;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct PlanItem {
     pub id: String,
     pub project_id: String,

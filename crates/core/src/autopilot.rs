@@ -841,6 +841,8 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 if !a.retried.is_empty() { parts.push(format!("重试 {}", a.retried.iter().map(|t| format!("《{t}》")).collect::<Vec<_>>().join("、"))); }
                 if !parts.is_empty() {
                     self.say("autopilot_plan_changed", format!("{} 调整了计划：{}{}", lead.name, parts.join("；"), if a.summary.is_empty() { String::new() } else { format!("（{}）", clip(&a.summary, 100)) }));
+                } else if trigger == AdjustTrigger::Dedupe {
+                    self.say("autopilot_step", format!("{} 核对了疑似重复的条目：没有需要取消的", lead.name));
                 } else if trigger == AdjustTrigger::FinalReview && a.escalate.is_none() {
                     self.say("autopilot_step", format!("{} 做了完成度复盘：不需要追加条目", lead.name));
                 }
@@ -966,6 +968,11 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             let me = self.clone();
             let h = tokio::spawn(async move { me.maybe_triage(true).await });
             self.bg_standups.lock().unwrap().push(h);
+        }
+        // 计划里有疑似重复的条目：批次开始时先让负责人核对并取消，再派活（同步：放到后台的话，重复的条目可能在取消之前就被派出去做了两遍）。
+        // 只有存在疑似重复时才会花这一次调用；整理转计划已经按标题去重，之后一般不会再有。
+        if self.lead().is_some() && !crate::planning::duplicate_candidates(&self.db().plan_view(&self.project_id).map(|v| v.items).unwrap_or_default()).is_empty() {
+            self.adjust_plan(AdjustTrigger::Dedupe, "").await;
         }
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();
