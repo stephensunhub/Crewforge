@@ -936,10 +936,14 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             self.say("autopilot_step", "批次运行期间已阻止 Mac 因空闲而睡眠（批次结束自动放开；到“设置”里可以关掉）");
         }
         self.requeue_orphaned_items();
-        // 积压很多（≥ START_TRIAGE_BACKLOG 条）时，批次一开始先清一遍；不多就先开工，不让负责人整理的这十几分钟
-        // （本地模型很慢）挡住所有人，之后每合并 2 个条目、积压够多时会再整理
+        // 积压很多（≥ START_TRIAGE_BACKLOG 条）时，批次一开始就在后台清一遍，不挡派活（本地模型很慢，整理要十几分钟）；
+        // 之后每合并 2 个条目、积压够多时会再整理
         if self.orch.later_actions(&self.project_id).map(|v| v.len()).unwrap_or(0) >= START_TRIAGE_BACKLOG {
-            self.maybe_triage(true).await;
+            // 放到后台整理：批次马上开始派活（整理出的新条目之后的循环里会被看到）；
+            // 整理期间负责人被标为忙，所以不会同时被派别的活
+            let me = self.clone();
+            let h = tokio::spawn(async move { me.maybe_triage(true).await });
+            self.bg_standups.lock().unwrap().push(h);
         }
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();
@@ -1033,7 +1037,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             }
         };
         while set.join_next().await.is_some() {}
-        // 后台开的对齐会也要收尾（写完纪要、关会）再结束批次
+        // 后台开的对齐会和批次开始的整理也要收尾（写完纪要、关会）再结束批次
         let pending: Vec<_> = std::mem::take(&mut *self.bg_standups.lock().unwrap());
         for h in pending { let _ = h.await; }
         let calls = self.calls.load(Ordering::SeqCst) as i64;
