@@ -601,7 +601,7 @@ async fn project_config_is_remembered_and_validated_and_drives_auto_continue_and
     let e = setup().await;
     assert_eq!(e.db.autopilot_config(&e.pid).unwrap().max_calls, 30, "没设置过用默认值");
     let cfg = AutopilotConfig { max_calls: 40, max_minutes: 0, auto_continue: true, max_batches: 3, standup_blocks: true };
-    assert!(e.db.autopilot_config(&e.pid).unwrap().standup_blocks, "对齐会阻塞任务默认开");
+    assert!(!e.db.autopilot_config(&e.pid).unwrap().standup_blocks, "对齐会阻塞任务默认关（后台开）");
     e.db.set_autopilot_config(&e.pid, &cfg).unwrap();
     let got = e.db.autopilot_config(&e.pid).unwrap();
     assert_eq!((got.max_calls, got.max_minutes, got.auto_continue, got.max_batches), (40, 0, true, 3));

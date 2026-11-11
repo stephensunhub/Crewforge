@@ -58,6 +58,9 @@ CREATE TABLE autopilot_config (
 "#;
 
 /// 迁移 21：自主推进里“并行任务对齐会”是否阻塞触发它的任务（默认阻塞，保持原来的行为）。
+/// 对齐会默认放到后台开（不阻塞任务）：把迁移 21 按旧默认写入的“阻塞”改成“不阻塞”。
+pub const MIGRATION_22: &str = "UPDATE autopilot_config SET standup_blocks = 0;";
+
 pub const MIGRATION_21: &str = r#"
 ALTER TABLE autopilot_config ADD COLUMN standup_blocks INTEGER NOT NULL DEFAULT 1;
 "#;
@@ -86,14 +89,13 @@ pub struct AutopilotConfig {
     pub max_batches: i64,
     /// 并行任务的对齐会是否阻塞触发它的任务：开（默认）时任务做完第一轮后要等会开完才继续验证、评审、合并；
     /// 关时会在后台开，任务不等。每次要开会时读取，改了之后下一次对齐会起生效。
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub standup_blocks: bool,
 }
 
-fn default_true() -> bool { true }
 
 impl Default for AutopilotConfig {
-    fn default() -> Self { Self { max_calls: 30, max_minutes: 60, auto_continue: false, max_batches: 6, standup_blocks: true } }
+    fn default() -> Self { Self { max_calls: 30, max_minutes: 60, auto_continue: false, max_batches: 6, standup_blocks: false } }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -868,7 +870,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     /// 任务做完第一轮后看要不要开对齐会。项目设置“对齐会阻塞任务”开（默认）：等会开完再继续；
     /// 关：放到后台开，任务马上继续验证、评审、合并。设置每次现读，改了下一次对齐会起生效。
     async fn standup_after_round(self: &Arc<Self>) {
-        let blocks = self.db().autopilot_config(&self.project_id).map(|c| c.standup_blocks).unwrap_or(true);
+        let blocks = self.db().autopilot_config(&self.project_id).map(|c| c.standup_blocks).unwrap_or(false);
         if blocks {
             self.maybe_standup().await;
         } else {

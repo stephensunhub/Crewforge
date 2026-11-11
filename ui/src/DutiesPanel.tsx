@@ -28,7 +28,7 @@ const hms = (ts: number) => { const d = new Date(ts); const p = (n: number) => S
 function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: string; events: EventRow[]; onGoTab: (t: ProjectTab) => void; onError: (m: string) => void }) {
   const [st, setSt] = useState<AutopilotStatus | null>(null);
   // 每批次的预算和自动续批次的设置按项目保存，不用每次重填
-  const [cfg, setCfg] = useState<AutopilotConfig>({ max_calls: 30, max_minutes: 60, auto_continue: false, max_batches: 6, standup_blocks: true });
+  const [cfg, setCfg] = useState<AutopilotConfig>({ max_calls: 30, max_minutes: 60, auto_continue: false, max_batches: 6, standup_blocks: false });
   useEffect(() => { void api.getAutopilotConfig(projectId).then(setCfg).catch(() => undefined); }, [projectId]);
   const saveCfg = (next: AutopilotConfig) => { setCfg(next); void api.setAutopilotConfig(projectId, next).catch((e) => onError(String(e))); };
   const calls = cfg.max_calls;
@@ -72,9 +72,9 @@ function AutopilotBox({ projectId, events, onGoTab, onError }: { projectId: stri
             <input type="number" min={1} max={50} style={{ width: 56 }} value={cfg.max_batches} disabled={!cfg.auto_continue} onChange={(e) => setCfg({ ...cfg, max_batches: Math.max(1, Math.min(50, Number(e.target.value) || 1)) })} onBlur={() => saveCfg(cfg)} />
             个批次
           </label>
-          <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center" }} title="开（默认）：任务做完第一轮后，要等并行任务的对齐会开完才继续验证、评审、合并。关：对齐会放到后台开，任务不等。本地模型很慢时对齐会要几十分钟，可以关掉。改了之后下一次对齐会起生效。">
+          <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center" }} title="关（默认）：对齐会放到后台开，任务不等。开：任务做完第一轮后，要等并行任务的对齐会开完才继续验证、评审、合并（本地模型很慢时对齐会要几十分钟）。改了之后下一次对齐会起生效。">
             <input type="checkbox" checked={cfg.standup_blocks} onChange={(e) => saveCfg({ ...cfg, standup_blocks: e.target.checked })} />
-            对齐会阻塞任务（关掉后在后台开）
+            对齐会阻塞任务（默认关：在后台开）
           </label>
         </div>
       </div>

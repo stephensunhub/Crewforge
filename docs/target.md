@@ -1765,3 +1765,13 @@ QA 的测试经验可以被全栈工程师检索。
 
 **验证了什么**：`cargo test -p crewforge-core` 249 个通过（新增 2 个：开关关着不防、打开立刻生效、多批次共用、结束放开、运行中关掉立刻放开；设置默认开并能记住，用 `sleep` 代替 `caffeinate` 测，连跑 3 次稳定）；手动起了一次真实的 `caffeinate -i -s -w`，`pmset -g assertions` 里出现 `PreventUserIdleSystemSleep` 和 `PreventSystemSleep`；`npx tsc --noEmit`、`cargo check -p crewforge-app` 通过。
 **没验证什么**：界面没在真实窗口里看过；没有在装好的应用里确认批次一开始就出现应用自己的 `caffeinate`，也没有实际让 Mac 空闲 1 分钟验证它不睡；`-s` 只在接电源时有效，用电池时只有 `-i`，没有测过用电池的情况；睡眠后恢复的行为没验证。
+
+### 20.73 对齐会默认放到后台开
+
+用户要求“后台运行的默认值改成默认后台运行，而不是前台运行”：项目设置“对齐会阻塞任务”的默认值从开改成**关**（对齐会在后台开，不挡任务）。
+
+- `AutopilotConfig.standup_blocks` 默认 `false`（serde 缺省、`Default`、读不到设置时都是 false）；界面初始值和说明文字同步。
+- 迁移 22：把迁移 21 按旧默认写入的值统一改成 0。此前没有人手动设置过这一项，所以不会覆盖用户的选择；想要旧行为，在“批次设置”里重新勾选。
+
+**验证了什么**：`cargo test -p crewforge-core` 全部通过（默认值断言改为默认关），`npx tsc --noEmit` 通过。
+**没验证什么**：界面没在真实窗口里看过；迁移 22 没有在装好的应用的真实数据库上跑过（装的版本会在启动时执行）。
