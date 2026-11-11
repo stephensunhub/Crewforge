@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { Avatar, formatApprovalInput, hhmm, short } from "./common";
 import type { ApprovalReq, EventRow, Member, Project, RepoStatus, TaskView } from "./types";
+import type { ProjectTab } from "./ProjectView";
 
 function toolSummary(input: Record<string, unknown> | undefined): string {
   if (!input) return "";
@@ -10,7 +11,7 @@ function toolSummary(input: Record<string, unknown> | undefined): string {
 }
 
 export function Chat({
-  project, members, events, nameById, running, approvals, concurrency, repo, taskViews, onboarding, onGoOnboarding, onDecide, onError, onInitGit,
+  project, members, events, nameById, running, approvals, concurrency, repo, taskViews, onboarding, onGoOnboarding, onGoTab, onOpenMeeting, onDecide, onError, onInitGit,
 }: {
   project: Project;
   members: Member[];
@@ -23,6 +24,8 @@ export function Chat({
   taskViews: TaskView[];
   onboarding: string;
   onGoOnboarding: () => void;
+  onGoTab: (t: ProjectTab) => void;
+  onOpenMeeting: (id: string) => void;
   onDecide: (a: ApprovalReq, allow: boolean) => void;
   onError: (m: string) => void;
   onInitGit: () => void;
@@ -80,6 +83,50 @@ export function Chat({
 
   const who = (e: EventRow) => (e.employee_id ? nameById.get(e.employee_id) ?? "未知员工" : "系统");
 
+  // 点击跳到相关页面；会议直接打开那场会议
+  const jump = (tab: ProjectTab, meetingId?: unknown) => ({
+    onClick: () => { if (typeof meetingId === "string" && meetingId) onOpenMeeting(meetingId); else onGoTab(tab); },
+    style: { cursor: "pointer" } as const,
+    title: "点击跳转",
+  });
+  const TAB_NAME: Record<string, string> = { duties: "职责", plan: "计划", tasks: "任务", issues: "议题", meetings: "会议", actions: "行动项", members: "成员", memory: "记忆", onboarding: "导入" };
+
+  /** 项目级事件：[图标, 文字, 色调, 跳转页]。没有列在这里的事件（工具调用细节、限额读数、会议逐条消息、调度状态、记忆注入）太碎，不进群聊。 */
+  function projectLine(e: EventRow, name: string): [string, string, string, ProjectTab] | null {
+    const p = e.payload ?? {};
+    const text = String(p.text ?? "");
+    switch (e.kind) {
+      case "autopilot_started": return ["▶", text, "ok", "duties"];
+      case "autopilot_finished": return [p.status === "finished" ? "🏁" : p.status === "stopped" ? "⏹" : p.status === "paused" ? "⏸" : p.status === "budget" ? "💰" : "✋", text, p.status === "finished" ? "ok" : p.status === "failed" || p.status === "escalated" ? "bad" : "warn", "duties"];
+      case "autopilot_step": return ["🧭", text, "", "duties"];
+      case "autopilot_merged": return ["🔀", text, "ok", "plan"];
+      case "autopilot_decided": return ["⚖", text, "", "issues"];
+      case "autopilot_issue_escalated": return ["🙋", text, "warn", "issues"];
+      case "lead_triaged_actions": return ["🧹", text, "", "actions"];
+      case "lead_decided_action": return ["⚖", `${name === "系统" ? "" : name + " "}处理了需要人决定的事项：${short(String(p.decision ?? ""), 100)}`, "", "actions"];
+      case "plan_drafted_by_lead": return ["📋", text, "warn", "plan"];
+      case "stuck_detected": return ["🚨", String(p.title ?? "有员工卡住") + (p.detail ? `：${short(String(p.detail), 120)}` : ""), "warn", "duties"];
+      case "handoff_started": case "handoff_finished": return ["🔄", text, "", "members"];
+      case "session_rotated": return ["🔄", `${name} 换新会话（上下文 ${Math.round(Number(p.context_tokens ?? 0) / 1000)}K，上限 ${Math.round(Number(p.limit ?? 0) / 1000)}K）`, "", "members"];
+      case "meeting_started": return ["📣", `会议开始：${p.title ?? ""}`, "", "meetings"];
+      case "meeting_closed": return ["📣", `会议结束：${p.title ?? ""}`, "", "meetings"];
+      case "alignment_done": return ["🧭", `对齐检查：${short(String(p.check ?? ""), 100)} ${short(String(p.goal_note ?? ""), 100)}`, "", "meetings"];
+      case "issue_created": return ["💡", `新议题《${p.title ?? ""}》`, "", "issues"];
+      case "issue_status": return ["💡", `议题《${p.title ?? ""}》→ ${p.to}`, "", "issues"];
+      case "issue_decided": return ["🗳", `议题《${p.title ?? ""}》已定：${short(String(p.decision ?? ""), 100)}`, "ok", "issues"];
+      case "memory_created": return ["🧠", `新增记忆《${p.title ?? ""}》`, "", "memory"];
+      case "task_checked": return ["🔎", `${name} 的任务验证完成：修好 ${p.fixed ?? 0}，新引入 ${p.introduced ?? 0}，原有 ${p.pre_existing ?? 0}，未知 ${p.unknown ?? 0}`, Number(p.introduced ?? 0) > 0 ? "warn" : "", "tasks"];
+      case "report_flags": return ["📝", `汇报有问题：${((p.flags as string[] | undefined) ?? []).join("；")}`, "warn", "tasks"];
+      case "onboarding_scanned": return ["📂", "项目扫描完成", "", "onboarding"];
+      case "baseline_started": return ["🧪", "开始跑测试基线", "", "onboarding"];
+      case "baseline_finished": return ["🧪", `测试基线完成，失败 ${p.failed ?? 0} 项`, Number(p.failed ?? 0) > 0 ? "warn" : "ok", "onboarding"];
+      case "onboarding_confirmed": return ["✅", "导入已确认", "ok", "onboarding"];
+      case "issue_ruling_failed": return ["⚠", text || "议题裁决没有完成", "bad", "issues"];
+      case "lead_format_retry": return ["↻", text || "负责人回复格式不对，重试中", "warn", "duties"];
+      default: return null;
+    }
+  }
+
   function render(e: EventRow) {
     const name = who(e);
     const p = e.payload ?? {};
@@ -111,21 +158,21 @@ export function Chat({
       case "task_queued":
         return <div className="line warn" key={e.id}><span>⏸ {name} 排队中：{p.reason ?? `并发已满（上限 ${concurrency}）`}，条件允许后自动开始</span>{t}</div>;
       case "task_created":
-        return <div className="line" key={e.id}><span>🌿 {name} 开始新任务</span><span className="t">{p.title}</span><code>{p.branch}</code>{t}</div>;
+        return <div className="line" key={e.id} {...jump("tasks")}><span>🌿 {name} 开始新任务</span><span className="t">{p.title}</span><code>{p.branch}</code>{t}</div>;
       case "checkpoint_committed":
-        return <div className="line" key={e.id}><span>💾 {name} 保存检查点</span><span>{p.files} 个文件 <span className="add">+{p.insertions}</span> <span className="del">−{p.deletions}</span></span><code>{String(p.commit).slice(0, 8)}</code>{t}</div>;
+        return <div className="line" key={e.id} {...jump("tasks")}><span>💾 {name} 保存检查点</span><span>{p.files} 个文件 <span className="add">+{p.insertions}</span> <span className="del">−{p.deletions}</span></span><code>{String(p.commit).slice(0, 8)}</code>{t}</div>;
       case "checkpoint_failed":
         return <div className="line bad" key={e.id}><span>✗ {name} 检查点保存失败：{short(String(p.error ?? ""), 160)}</span>{t}</div>;
       case "task_merged":
-        return <div className="line ok" key={e.id}><span>🔀 已合并 {name} 的任务</span><span className="t">{p.title}</span>{p.commit && <code>{String(p.commit).slice(0, 8)}</code>}{t}</div>;
+        return <div className="line ok" key={e.id} {...jump("tasks")}><span>🔀 已合并 {name} 的任务</span><span className="t">{p.title}</span>{p.commit && <code>{String(p.commit).slice(0, 8)}</code>}{t}</div>;
       case "task_merge_blocked":
-        return <div className="line bad" key={e.id}><span>⛔ {name} 的任务未能合并</span><span>{p.kind === "conflict" ? `冲突：${(p.files ?? []).join("、")}` : p.kind === "action_items" ? `评审里还有 ${(p.items ?? []).length} 条合并前行动项没处理` : p.reason}</span>{t}</div>;
+        return <div className="line bad" key={e.id} {...jump("tasks")}><span>⛔ {name} 的任务未能合并</span><span>{p.kind === "conflict" ? `冲突：${(p.files ?? []).join("、")}` : p.kind === "action_items" ? `评审里还有 ${(p.items ?? []).length} 条合并前行动项没处理` : p.reason}</span>{t}</div>;
       case "merged_with_open_items":
-        return <div className="line warn" key={e.id}><span>⚠ {name} 的任务在还有 {(p.items ?? []).length} 条未处理的行动项时被确认合并</span>{t}</div>;
+        return <div className="line warn" key={e.id} {...jump("tasks")}><span>⚠ {name} 的任务在还有 {(p.items ?? []).length} 条未处理的行动项时被确认合并</span>{t}</div>;
       case "action_item_status":
-        return <div className="line" key={e.id}><span>{p.to === "done" ? "✅ 行动项已处理" : p.to === "dismissed" ? "🚫 行动项已驳回" : "↩ 行动项重新打开"}</span><span className="t">{short(String(p.text ?? ""), 80)}</span>{t}</div>;
+        return <div className="line" key={e.id} {...jump("actions")}><span>{p.to === "done" ? "✅ 行动项已处理" : p.to === "dismissed" ? "🚫 行动项已驳回" : "↩ 行动项重新打开"}</span><span className="t">{short(String(p.text ?? ""), 80)}</span>{t}</div>;
       case "task_abandoned":
-        return <div className="line" key={e.id}><span>🗑 {name} 的任务已放弃（分支 {p.branch} 保留）</span>{t}</div>;
+        return <div className="line" key={e.id} {...jump("tasks")}><span>🗑 {name} 的任务已放弃（分支 {p.branch} 保留）</span>{t}</div>;
       case "agent_text":
         return (
           <div className="msg" key={e.id}>
@@ -158,9 +205,9 @@ export function Chat({
       case "task_error":
         return <div className="line bad" key={e.id}><span>✗ {name} 任务失败：{short(String(p.error ?? ""), 200)}</span>{t}</div>;
       case "plan_item_status":
-        return <div className="line" key={e.id}><span>{p.to === "done" ? "✅" : p.to === "in_progress" ? "▶" : "📋"} 计划条目《{short(String(p.title ?? ""), 40)}》→ {({ planned: "待开始", in_progress: "进行中", done: "已完成", blocked: "已阻塞", cancelled: "已取消" } as Record<string, string>)[p.to] ?? p.to}</span>{t}</div>;
+        return <div className="line" key={e.id} {...jump("plan")}><span>{p.to === "done" ? "✅" : p.to === "in_progress" ? "▶" : "📋"} 计划条目《{short(String(p.title ?? ""), 40)}》→ {({ planned: "待开始", in_progress: "进行中", done: "已完成", blocked: "已阻塞", cancelled: "已取消" } as Record<string, string>)[p.to] ?? p.to}</span>{t}</div>;
       case "plan_approved":
-        return <div className="line ok" key={e.id}><span>📋 已批准 {p.count} 个计划条目</span>{t}</div>;
+        return <div className="line ok" key={e.id} {...jump("plan")}><span>📋 已批准 {p.count} 个计划条目</span>{t}</div>;
       case "agent_proposed": {
         const icons: Record<string, string> = { issue: "💡", option: "➕", request_decision: "🗳", memory: "🧠", plan: "📋" };
         const text: Record<string, string> = {
@@ -171,8 +218,13 @@ export function Chat({
       }
       case "project_created":
         return <div className="line" key={e.id}><span>📁 项目「{p.name}」已创建</span>{t}</div>;
-      default:
-        return null;
+      default: {
+        const pl = projectLine(e, name);
+        if (!pl) return null;
+        const [icon, txt, tone, tab] = pl;
+        const mid = e.kind.startsWith("meeting_") || e.kind === "alignment_done" ? p.meeting_id : undefined;
+        return <div className={`line ${tone}`} key={e.id} {...jump(tab, mid)}><span>{icon} {txt}</span><span className="hint">→ {TAB_NAME[tab] ?? tab}</span>{t}</div>;
+      }
     }
   }
 

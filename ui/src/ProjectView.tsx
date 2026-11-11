@@ -101,7 +101,7 @@ export function ProjectView({
   if (tab === "chat")
     return (
       <Chat project={project} members={members} events={events} nameById={nameById} running={running} approvals={mine}
-        concurrency={concurrency} repo={repo} taskViews={taskViews} onboarding={project.onboarding} onGoOnboarding={onGoOnboarding} onDecide={onDecide} onError={onError} onInitGit={initGit} />
+        concurrency={concurrency} repo={repo} taskViews={taskViews} onboarding={project.onboarding} onGoOnboarding={onGoOnboarding} onGoTab={onGoTab} onOpenMeeting={onOpenMeeting} onDecide={onDecide} onError={onError} onInitGit={initGit} />
     );
   if (tab === "tasks")
     return (
