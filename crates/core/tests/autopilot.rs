@@ -38,6 +38,7 @@ read -r line
 echo '{"type":"system","subtype":"init","session_id":"x"}'
 f="w_$$_$(date +%s%N).txt"
 case "$line" in
+  *是否需要评审*) if [ -f "@SKIP@" ]; then printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"review\":false,\"reason\":\"只改了一个小文件\"}","usage":{}}'; else printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"review\":true,\"reason\":\"逻辑有改动\"}","usage":{}}'; fi ;;
   *起草计划*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"items\":[{\"title\":\"搭脚手架\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[]},{\"title\":\"写核心逻辑\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[0]},{\"title\":\"补测试\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"carol\",\"depends_on\":[1]}]}","usage":{}}' ;;
   *调整计划*完成度复盘*) if [ -f "@MARK@" ]; then printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[],\"escalate\":null,\"summary\":\"没有遗漏\"}","usage":{}}'; else touch "@MARK@"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"add\",\"title\":\"补收尾文档\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[\"#1\"],\"reason\":\"目标要求有说明文档\"},{\"op\":\"cancel\",\"item\":1,\"reason\":\"复盘时不该取消\"}],\"escalate\":null,\"summary\":\"补文档\"}","usage":{}}'; fi ;;
   *撰写文档*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"# 项目概览\n\n这是一个测试项目。\n\n## 怎么运行\n见 README。","usage":{}}' ;;
@@ -50,7 +51,7 @@ case "$line" in
   *站会*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"做完了；无依赖。","usage":{}}' ;;
   *) echo x > "$f"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已完成。","usage":{}}' ;;
 esac
-"###.replace("@MARK@", &dir.join("final_add_once").to_string_lossy()).replace("@ACTIONS@", actions);
+"###.replace("@MARK@", &dir.join("final_add_once").to_string_lossy()).replace("@SKIP@", &dir.join("review_skip").to_string_lossy()).replace("@ACTIONS@", actions);
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path.to_string_lossy().into_owned()
@@ -634,4 +635,28 @@ async fn project_config_is_remembered_and_validated_and_drives_auto_continue_and
     let mut u = e.db.create_autopilot_run_chained(&e.pid, 40, 0, 0).unwrap();
     u.calls = 10;
     assert_eq!(e.db.resume_decision(&u, u.started_at + 500 * 60_000).unwrap(), ResumeDecision::Resume { calls: 30, minutes: 0 });
+}
+
+#[tokio::test]
+async fn lead_can_skip_the_review_meeting_for_small_changes_and_reviews_otherwise() {
+    // 负责人说不用评审：不开评审会，仍然合并，并留下原因
+    let e = setup().await;
+    std::fs::write(e._d.path().join("bin").join("review_skip"), "").unwrap();
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    for id in &e.ids[1..] { e.db.set_plan_status(id, "cancelled", "测试").unwrap(); }
+    let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    assert_eq!(e.db.list_meetings(&e.pid).unwrap().iter().filter(|m| m.title.starts_with("评审：")).count(), 0, "不应开评审会");
+    assert_eq!(count_events(&e, "autopilot_step", "不开评审会：只改了一个小文件"), 1);
+    assert!(e.db.recent_events(500).unwrap().iter().any(|x| x.kind == "review_decided" && x.payload["review"] == false));
+    assert!(e.db.recent_events(500).unwrap().iter().any(|x| x.kind == "task_merged"));
+
+    // 负责人说要评审：照常开会
+    let e2 = setup().await;
+    std::fs::write(e2._d.path().join("bin").join("final_add_once"), "").unwrap();
+    for id in &e2.ids[1..] { e2.db.set_plan_status(id, "cancelled", "测试").unwrap(); }
+    let r2 = run(&e2, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r2.status, "finished", "{r2:?}");
+    assert_eq!(e2.db.list_meetings(&e2.pid).unwrap().iter().filter(|m| m.title.starts_with("评审：")).count(), 1);
+    assert_eq!(count_events(&e2, "autopilot_step", "开评审会：逻辑有改动"), 1);
 }

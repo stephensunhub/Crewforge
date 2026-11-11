@@ -621,6 +621,26 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         } else {
             ms.iter().find(|(e, r)| r == "qa" && e.id != emp.id).or_else(|| ms.iter().find(|(e, _)| e.id != emp.id)).map(|(e, _)| e.clone())
         };
+        // 要不要评审：改动大的一律评审，其余由负责人判断；小改动不开会
+        let reviewer = match reviewer {
+            Some(rv) => {
+                let files = self.orch.ws.changed_files(std::path::Path::new(&task.worktree_path), &task.base_commit).await.unwrap_or_default();
+                let (need, why) = {
+                    let _p = self.permit_for(lead.as_ref()).await;
+                    let _busy = lead.as_ref().map(|l| self.busy_scope(&l.name));
+                    let cur = self.db().get_plan_item(&item_id)?.unwrap_or(item.clone());
+                    self.orch.decide_review(&self.project_id, lead.as_ref(), &emp, &cur, &files, &*self.approver).await
+                };
+                if need {
+                    self.say("autopilot_step", format!("《{}》开评审会：{}", item.title, clip(&why, 160)));
+                    Some(rv)
+                } else {
+                    self.say("autopilot_step", format!("《{}》不开评审会：{}", item.title, clip(&why, 160)));
+                    None
+                }
+            }
+            None => None,
+        };
         if let Some(rv) = reviewer {
             let m = self.db().create_meeting(&self.project_id, "code_review", &format!("评审：{}", item.title), lead.as_ref().map(|l| l.id.as_str()), Some(&task.id), &[], 6)?;
             self.db().post_message(&m.id, "autopilot", None, &format!("@{} 请评审 {} 的改动《{}》。重点看：逻辑是否正确、边界情况、测试是否充分、是否符合项目目标；发现需要团队决定的设计问题请先 list_issues 再 propose_issue。（这条消息由负责人流程自动发出）", rv.name, emp.name, item.title))?;
