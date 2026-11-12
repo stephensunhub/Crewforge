@@ -250,9 +250,7 @@ export default function App() {
           <button ref={bellRef} className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
             🔔{inboxTotal > 0 && <span className="count">{inboxTotal}</span>}
           </button>
-          <button className={`icon-btn text ${scope.kind === "models" ? "on" : ""}`} onClick={() => setScope({ kind: "models" })}>模型</button>
           <button className={`icon-btn text ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>用量</button>
-          <button className={`icon-btn ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })} title="设置">⚙</button>
         </div>
         {inbox && (
           <div className="inbox" ref={inboxRef}>
@@ -356,8 +354,7 @@ export default function App() {
       </header>
 
       <div className="shell">
-      {sideOpen && (
-        <aside className="projbar">
+      <aside className={`projbar ${sideOpen ? "" : "slim"}`}>
           <button className={`scope ${scope.kind === "company" ? "on" : ""}`} onClick={() => setScope({ kind: "company" })} title={company?.name ?? "公司"}><span className="scope-name">{company?.name ?? "公司"}</span></button>
           <div className="projbar-head"><span>项目 · {projects.length}</span></div>
           {projects.length > 6 && <input className="projbar-search" placeholder="搜索项目" value={projQuery} onChange={(e) => setProjQuery(e.target.value)} />}
@@ -370,8 +367,11 @@ export default function App() {
             {projects.length > 0 && projQuery.trim() && !projects.some((p) => p.project.name.toLowerCase().includes(projQuery.trim().toLowerCase())) && <div className="hint" style={{ padding: "6px 10px" }}>没有匹配的项目</div>}
             {projects.length === 0 && <div className="hint" style={{ padding: "6px 10px" }}>还没有项目</div>}
           </div>
-        </aside>
-      )}
+        <div className="projbar-foot">
+          <button className={`scope ${scope.kind === "models" ? "on" : ""}`} onClick={() => setScope({ kind: "models" })} title="模型：LLM 通道、端点和每个通道里的模型"><span className="foot-ico">◈</span><span className="scope-name foot-label">模型</span></button>
+          <button className={`scope ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })} title="设置"><span className="foot-ico">⚙</span><span className="scope-name foot-label">设置</span></button>
+        </div>
+      </aside>
       <div className="shell-main">
       {tabs && (
         <div className="tabbar">

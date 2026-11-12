@@ -434,3 +434,14 @@ button.u-cell:hover { background: var(--panel-2); }
 .channel.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
 .channel.off { opacity: .55; cursor: not-allowed; }
 .channel input { margin-top: 3px; width: auto; }
+
+/* 左侧栏底部：模型、设置。收起时只剩一条窄栏，只显示图标 */
+.projbar-foot { display: flex; flex-direction: column; gap: 2px; border-top: 1px solid var(--line); padding-top: 6px; margin-top: 4px; }
+.foot-ico { width: 18px; text-align: center; flex: none; }
+.projbar .scope { justify-content: flex-start; }
+.projbar > .scope, .projbar-list .scope { justify-content: space-between; }
+.projbar.slim { width: 52px; align-items: stretch; }
+.projbar.slim > .scope:first-child, .projbar.slim .projbar-head, .projbar.slim .projbar-search, .projbar.slim .projbar-list, .projbar.slim .foot-label { display: none; }
+.projbar.slim .projbar-foot { margin-top: auto; border-top: none; }
+.projbar.slim .projbar-foot .scope { justify-content: center; padding: 8px 0; }
+.projbar:not(.slim) .projbar-foot { margin-top: 0; }
