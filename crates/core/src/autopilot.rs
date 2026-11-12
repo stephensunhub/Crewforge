@@ -406,7 +406,11 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         }
         let view = db.plan_view(project_id)?;
         if view.items.iter().filter(|i| i.status != "cancelled").count() == 0 {
-            bail!("项目还没有计划。请先在“计划”页点“让负责人起草计划”，或手动添加条目");
+            // 有架构师的项目可以从空计划开始：先做设计，设计做完负责人再起草实现计划
+            if db.architects(project_id)?.is_empty() {
+                bail!("项目还没有计划。请先在“计划”页点“让负责人起草计划”，或手动添加条目");
+            }
+            db.create_design_items(project_id, project.onboarding != "none")?;
         }
         let approved = if approve { db.approve_proposed_plan(project_id)? } else { 0 };
         let run = db.create_autopilot_run_chained(project_id, max_calls, max_minutes, chain)?;
@@ -493,11 +497,21 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     }
 
     fn pick(&self, item: &PlanItem, busy: &HashSet<String>) -> Option<Employee> {
-        let ms = self.members();
+        let ms_all = self.members();
         let human_busy = self.busy.lock().unwrap().clone();
         let busy_for = |e: &Employee| busy.contains(&e.id) || human_busy.contains(&e.name);
+        // 架构师只做设计条目，设计条目只给架构师做（项目里没有架构师时，设计条目按普通条目处理）
+        let has_architect = ms_all.iter().any(|(_, r)| r == "architect");
+        if item.kind == crate::design::DESIGN_KIND && has_architect {
+            let archs: Vec<&Employee> = ms_all.iter().filter(|(_, r)| r == "architect").map(|(e, _)| e).collect();
+            if let Some(a) = item.assignee_id.as_ref().filter(|a| archs.iter().any(|e| &e.id == *a)) {
+                return archs.iter().find(|e| &e.id == a && !busy_for(e)).map(|e| (*e).clone());
+            }
+            return archs.into_iter().find(|e| !busy_for(e)).cloned();
+        }
+        let ms: Vec<(Employee, String)> = ms_all.into_iter().filter(|(_, r)| r != "architect").collect();
         if let Some(a) = &item.assignee_id {
-            // 指定的人还在项目里：只能是 TA（忙就等）；已经不在项目里（移出、归档）：当作未指定，按角色重新选人，不能永远卡住
+            // 指定的人还在项目里：只能是 TA（忙就等）；已经不在项目里（移出、归档）或是架构师（架构师不做实现）：当作未指定，按角色重新选人，不能永远卡住
             if ms.iter().any(|(e, _)| &e.id == a) {
                 return ms.iter().find(|(e, _)| &e.id == a && !busy_for(e)).map(|(e, _)| e.clone());
             }
@@ -575,6 +589,16 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     }
 
     /// 验证一个进行中的任务：有基线就与基线对比（引入新失败或无法确认都算不通过），否则直接构建测试。
+    /// 条目的验证：设计条目不跑构建和测试，只检查有没有改到文档以外的文件；其他条目照常验证。
+    async fn verify_item(&self, task: &Task, item: &PlanItem) -> (bool, String) {
+        if item.kind != crate::design::DESIGN_KIND { return self.verify(task).await; }
+        let files = self.orch.ws.changed_files(std::path::Path::new(&task.worktree_path), &task.base_commit).await.unwrap_or_default();
+        let bad = crate::design::non_doc_changes(&files);
+        if bad.is_empty() { (true, "设计条目：只改了文档".into()) } else {
+            (false, format!("设计类条目只能改文档，但改了这些非文档文件：{}。请撤销这些改动（git checkout 还原或删除），只保留文档。", bad.join("、")))
+        }
+    }
+
     async fn verify(&self, task: &Task) -> (bool, String) {
         if self.is_merged(&task.id) {
             return (true, "任务已被合并".into());
@@ -652,12 +676,12 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         self.standup_after_round().await;
 
         let mut fixes = 0;
-        let mut verdict = self.verify(&task).await;
+        let mut verdict = self.verify_item(&task, &item).await;
         while !verdict.0 && fixes < 3 && !self.ctl.stop.load(Ordering::SeqCst) {
             self.say("autopilot_step", format!("《{}》验证未通过（第 {} 次），让 {} 修：{}", item.title, fixes + 1, emp.name, clip(&verdict.1, 160)));
             self.work(&emp, &format!("验证没有通过，请修复。验证输出：\n{}\n如果失败是因为发现了代码里真实的 bug、而修复超出了这个条目的范围，请把对应的测试用 #[ignore]（或对应语言的跳过标记）标注并在说明里写清复现方式，不要提交会失败的测试。修好后运行测试确认。", verdict.1)).await?;
             fixes += 1;
-            verdict = self.verify(&task).await;
+            verdict = self.verify_item(&task, &item).await;
         }
         if !verdict.0 {
             self.db().set_plan_status(&item_id, "blocked", &format!("验证仍未通过：{}", clip(&verdict.1, 300)))?;
@@ -783,6 +807,13 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 MergeOutcome::Merged { commit } => {
                     self.merged.fetch_add(1, Ordering::SeqCst);
                     self.say("autopilot_merged", format!("已合并《{}》{}", item.title, &commit[..commit.len().min(8)]));
+                    if item.kind == crate::design::DESIGN_KIND {
+                        match self.orch.publish_design_memories(&self.project_id, &emp.name).await {
+                            Ok(n) if n > 0 => self.say("autopilot_step", format!("架构师的设计要点已写入项目记忆（{n} 条），之后每位员工都会看到")),
+                            Ok(_) => self.say("autopilot_step", "设计文档里没有找到「给团队的要点」一节，没有写入项目记忆"),
+                            Err(e) => self.say("autopilot_step", format!("设计要点没能写入项目记忆：{e}")),
+                        }
+                    }
                     return Ok(());
                 }
                 MergeOutcome::Empty => {
@@ -878,6 +909,21 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             }
             Ok(None) => {}
             Err(e) => self.say("autopilot_step", format!("整理行动项没有完成：{e}")),
+        }
+    }
+
+    /// 设计阶段做完后：负责人按架构师的文档起草实现计划并批准。
+    async fn draft_after_design(&self) {
+        let Some(lead) = self.lead() else { return };
+        self.say("autopilot_step", format!("设计阶段完成，{} 按架构师的设计文档起草实现计划", lead.name));
+        let _p = self.permit_for(Some(&lead)).await;
+        let _busy = self.busy_scope(&lead.name);
+        match self.orch.lead_draft_plan(&self.project_id, &lead, &*self.approver).await {
+            Ok(n) => {
+                let approved = self.db().approve_proposed_plan(&self.project_id).unwrap_or(0);
+                self.say("autopilot_plan_changed", format!("{} 按设计文档起草了 {n} 个实现条目，已批准（{approved} 个开始生效）", lead.name));
+            }
+            Err(e) => self.say("autopilot_step", format!("起草实现计划没有完成：{e}")),
         }
     }
 
@@ -1036,6 +1082,14 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 let _ = self.db().mark_duplicates_checked(&self.project_id, &items, &pairs);
             }
         }
+        // 项目里有架构师、还没有设计条目：建设计条目，设计先做
+        if matches!(self.db().design_phase(&self.project_id), Ok(crate::design::DesignPhase::NotStarted)) {
+            let imported = self.db().get_project(&self.project_id).ok().flatten().map(|p| p.onboarding != "none").unwrap_or(false);
+            if let Ok(ids) = self.db().create_design_items(&self.project_id, imported) {
+                if !ids.is_empty() { self.say("autopilot_step", format!("项目里有架构师：先做设计（{} 个设计条目），设计做完其他条目才会开始", ids.len())); }
+            }
+        }
+        let mut drafted_after_design = false;
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();
         let mut ruled: HashSet<String> = HashSet::new();
@@ -1059,7 +1113,19 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 }
                 break end;
             }
-            let view = match self.db().plan_view(&self.project_id) { Ok(v) => v, Err(e) => break ("failed", e.to_string()) };
+            let mut view = match self.db().plan_view(&self.project_id) { Ok(v) => v, Err(e) => break ("failed", e.to_string()) };
+            // 设计做完、计划里还没有实现条目：负责人按设计文档起草实现计划，并直接批准（项目负责人是 AI，计划由它来定）
+            if set.is_empty() && !drafted_after_design && !paused && budget.is_none()
+                && matches!(self.db().design_phase(&self.project_id), Ok(crate::design::DesignPhase::Done))
+                && !self.db().has_implementation_items(&self.project_id).unwrap_or(true)
+            {
+                drafted_after_design = true;
+                self.draft_after_design().await;
+                if !self.db().has_implementation_items(&self.project_id).unwrap_or(false) {
+                    break ("escalated", "设计已经做完，但负责人没能按设计起草出实现计划，请到“计划”页看一下".to_string());
+                }
+                if let Ok(v) = self.db().plan_view(&self.project_id) { view = v; }
+            }
             if view.items.iter().filter(|i| i.status != "cancelled").all(|i| i.status == "done") {
                 // 做完后让负责人对照目标复盘一次：还有必要的工作就追加，继续推进
                 if !final_review_done && !paused && budget.is_none() && human.is_none() && set.is_empty() {
@@ -1084,7 +1150,9 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 self.handle_human_actions(&mut handled_human).await;
                 let busy: HashSet<String> = running.iter().filter_map(|rid| self.db().get_plan_item(rid).ok().flatten().and_then(|i| i.task_id).and_then(|t| self.db().get_task(&t).ok().flatten()).map(|t| t.employee_id)).collect();
                 let mut busy = busy;
-                let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id)).cloned().collect();
+                // 设计阶段：项目里有架构师时，设计条目没做完，其他条目不开始
+                let design_open = matches!(self.db().design_phase(&self.project_id), Ok(crate::design::DesignPhase::Pending(_)));
+                let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id) && (!design_open || i.kind == crate::design::DESIGN_KIND)).cloned().collect();
                 let mut starts: Vec<(String, Employee)> = vec![];
                 // 预计会改同一个文件的条目不并行（并行必然合并冲突，每次解决要多花调用）
                 let files = self.db().plan_files(&self.project_id).unwrap_or_default();

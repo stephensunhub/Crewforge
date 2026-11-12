@@ -67,7 +67,7 @@ CREATE TABLE plan_deps (
 );
 "#;
 
-pub const PLAN_KINDS: &[&str] = &["characterize", "migrate", "cleanup", "other"];
+pub const PLAN_KINDS: &[&str] = &["characterize", "migrate", "cleanup", "other", "design"];
 const MAX_ITEMS_PER_PROJECT: i64 = 300;
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -247,6 +247,7 @@ impl Db {
     /// `busy` 是此刻正在工作的员工名；`autopilot_live` 表示这个项目的自主推进是否在运行。
     pub fn plan_waiting(&self, project_id: &str, busy: &std::collections::HashSet<String>, autopilot_live: bool) -> Result<std::collections::HashMap<String, Vec<String>>> {
         let view = self.plan_view(project_id)?;
+        let design_open = matches!(self.design_phase(project_id)?, crate::design::DesignPhase::Pending(_));
         let files = self.plan_files(project_id)?;
         let members: std::collections::HashSet<String> = self.list_members(project_id)?.into_iter().map(|m| m.employee_id).collect();
         // 员工正在做哪个条目：用于说明“等 TA 做完手上的”
@@ -259,6 +260,9 @@ impl Db {
                 "proposed" => why.push("待确认：你批准计划（或开始自主推进）之后才会开始".into()),
                 "blocked" => why.push(if it.note.is_empty() { "已阻塞".into() } else { format!("已阻塞：{}", it.note) }),
                 "planned" => {
+                    if design_open && it.kind != crate::design::DESIGN_KIND {
+                        why.push("等架构师完成设计：设计条目都做完，其他条目才会开始".into());
+                    }
                     if !it.waiting_for.is_empty() {
                         why.push(format!("等前置完成：{}", it.waiting_for.join("、")));
                     }

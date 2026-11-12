@@ -38,6 +38,8 @@ read -r line
 echo '{"type":"system","subtype":"init","session_id":"x"}'
 f="w_$$_$(date +%s%N).txt"
 case "$line" in
+  *"写 docs/architecture.md"*) mkdir -p docs; if [ -f "@BADDOC@" ]; then echo 'package main' > main.go; fi; printf '# 架构\n## 模块\nx\n## 给团队的要点\n- 模块之间只通过接口通信\n- 错误统一用 error 返回\n' > docs/architecture.md; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已写完架构文档。","usage":{}}' ;;
+  *"写 docs/conventions.md"*) mkdir -p docs; printf '# 规范\n## 命名\nx\n## 给团队的要点\n- 函数小而纯\n- 先写测试\n' > docs/conventions.md; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已写完规范文档。","usage":{}}' ;;
   *清理计划里的重复条目*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"cancel\",\"item\":4,\"reason\":\"与 #1 重复\"},{\"op\":\"add\",\"title\":\"夹带\",\"reason\":\"x\"}],\"escalate\":null,\"summary\":\"取消重复\"}","usage":{}}' ;;
   *是否需要评审*) if [ -f "@SKIP@" ]; then printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"review\":false,\"reason\":\"只改了一个小文件\"}","usage":{}}'; else printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"review\":true,\"reason\":\"逻辑有改动\"}","usage":{}}'; fi ;;
   *起草计划*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"items\":[{\"title\":\"搭脚手架\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[]},{\"title\":\"写核心逻辑\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[0]},{\"title\":\"补测试\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"carol\",\"depends_on\":[1]}]}","usage":{}}' ;;
@@ -52,7 +54,7 @@ case "$line" in
   *站会*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"做完了；无依赖。","usage":{}}' ;;
   *) echo x > "$f"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已完成。","usage":{}}' ;;
 esac
-"###.replace("@MARK@", &dir.join("final_add_once").to_string_lossy()).replace("@SKIP@", &dir.join("review_skip").to_string_lossy()).replace("@ACTIONS@", actions);
+"###.replace("@MARK@", &dir.join("final_add_once").to_string_lossy()).replace("@SKIP@", &dir.join("review_skip").to_string_lossy()).replace("@BADDOC@", &dir.join("bad_doc").to_string_lossy()).replace("@ACTIONS@", actions);
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path.to_string_lossy().into_owned()
@@ -799,4 +801,78 @@ async fn when_nobody_is_capable_the_strongest_free_employee_tries_anyway() {
     let t = e.db.get_plan_item(&id).unwrap().unwrap().task_id.unwrap();
     assert_eq!(e.db.employee_by_id(&e.db.get_task(&t).unwrap().unwrap().employee_id).unwrap().unwrap().name, "bob", "能力最高的 bob（3）试试");
     assert!(count_events(&e, "autopilot_step", "项目里没有人的能力上限够") >= 1);
+}
+
+
+/// 项目里加一位架构师，清掉 setup 里的条目，项目目标写好（负责人起草计划需要）。
+fn with_architect(e: &Env) -> String {
+    for id in &e.ids { e.db.set_plan_status(id, "cancelled", "测试").unwrap(); }
+    e.db.set_project_goal(&e.pid, "做一个小工具").unwrap();
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    let arch = e.db.add_employee("arch", "架构师", "你是 arch").unwrap();
+    e.db.add_member(&e.pid, &arch.id, "architect").unwrap();
+    arch.id
+}
+
+#[tokio::test]
+async fn with_an_architect_design_comes_first_then_memories_are_published_and_the_lead_plans_from_the_design() {
+    let e = setup().await;
+    let arch = with_architect(&e);
+    // 空计划也能开始：有架构师就先建设计条目
+    let r = run(&e, 400, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    let v = e.db.plan_view(&e.pid).unwrap();
+    let design: Vec<_> = v.items.iter().filter(|i| i.kind == "design").collect();
+    assert_eq!(design.len(), 2);
+    assert!(design.iter().all(|i| i.status == "done"), "设计条目都做完");
+    // 设计条目由架构师做；实现条目一个都不给架构师
+    let doer = |id: &str| { let t = e.db.get_plan_item(id).unwrap().unwrap().task_id.unwrap(); e.db.get_task(&t).unwrap().unwrap().employee_id };
+    assert!(design.iter().all(|i| doer(&i.id) == arch));
+    let imp: Vec<_> = v.items.iter().filter(|i| i.kind != "design" && i.status != "cancelled").collect();
+    assert!(imp.len() >= 3 && imp.iter().all(|i| i.status == "done" && doer(&i.id) != arch), "负责人按设计起草了实现条目，都做完了，没有给架构师");
+    // 设计先于实现：第一个实现条目开始之前，两个设计条目都已合并
+    let events = e.db.recent_events(2000).unwrap();
+    let pos = |pred: &dyn Fn(&crewforge_core::db::EventRow) -> bool| events.iter().position(|x| pred(x));
+    let text = |x: &crewforge_core::db::EventRow| x.payload["text"].as_str().unwrap_or("").to_string();
+    let last_design_merge = events.iter().rposition(|x| x.kind == "autopilot_merged" && (text(x).contains("架构设计") || text(x).contains("文档与代码规范"))).unwrap();
+    let first_impl_start = pos(&|x| x.kind == "autopilot_step" && text(x).starts_with("派《搭脚手架》")).unwrap();
+    // recent_events 按时间正序：下标小的更早
+    assert!(last_design_merge < first_impl_start, "设计合并（{last_design_merge}）应早于实现开始（{first_impl_start}）");
+    // 设计要点写进了项目记忆（规范类、已验证、来源架构师）
+    let mems = e.db.list_memories(&crewforge_core::memory::MemoryFilter { layer: Some("project".into()), project_id: Some(e.pid.clone()), ..Default::default() }).unwrap();
+    let arch_mems: Vec<_> = mems.iter().filter(|m| m.source_kind == "architect").collect();
+    assert_eq!(arch_mems.len(), 2, "{mems:?}");
+    assert!(arch_mems.iter().all(|m| m.kind == "convention" && m.status == "verified"));
+    assert!(arch_mems.iter().any(|m| m.content.contains("模块之间只通过接口通信")) && arch_mems.iter().any(|m| m.content.contains("先写测试")));
+    assert_eq!(count_events(&e, "autopilot_plan_changed", "按设计文档起草了"), 1);
+}
+
+#[tokio::test]
+async fn other_items_wait_for_the_design_and_design_items_may_only_change_docs() {
+    // 1) 已有实现条目的项目里加架构师：实现条目要等设计做完
+    let e = setup().await;
+    let arch = e.db.add_employee("arch", "架构师", "你是 arch").unwrap();
+    e.db.add_member(&e.pid, &arch.id, "architect").unwrap();
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    e.db.create_design_items(&e.pid, false).unwrap();
+    let waiting = e.db.plan_waiting(&e.pid, &Default::default(), true).unwrap();
+    assert!(waiting[&e.ids[0]].iter().any(|w| w.contains("等架构师完成设计")), "{:?}", waiting[&e.ids[0]]);
+    let r = run(&e, 400, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    let events = e.db.recent_events(2000).unwrap();
+    let text = |x: &crewforge_core::db::EventRow| x.payload["text"].as_str().unwrap_or("").to_string();
+    let first_old_start = events.iter().position(|x| x.kind == "autopilot_step" && text(x).starts_with("派《A》")).unwrap();
+    let last_design_merge = events.iter().rposition(|x| x.kind == "autopilot_merged" && (text(x).contains("架构设计") || text(x).contains("文档与代码规范"))).unwrap();
+    assert!(last_design_merge < first_old_start, "已有的条目 A 也要等设计合并之后才开始");
+
+    // 2) 设计条目改了代码文件：验证不过，架构师被要求撤销；做不到就阻塞
+    let e2 = setup().await;
+    with_architect(&e2);
+    std::fs::write(e2._d.path().join("bin").join("bad_doc"), "").unwrap();
+    let r2 = run(&e2, 400, Arc::new(AutopilotCtl::default())).await;
+    assert_ne!(r2.status, "finished", "{r2:?}");
+    let d1 = e2.db.plan_view(&e2.pid).unwrap().items.into_iter().find(|i| i.kind == "design" && i.title.contains("架构设计")).unwrap();
+    assert_ne!(d1.status, "done", "改了代码文件的设计条目不能算完成：{d1:?}");
+    assert!(count_events(&e2, "autopilot_step", "设计类条目只能改文档，但改了这些非文档文件：main.go") >= 1, "验证失败要说明改了哪些非文档文件");
+    assert!(!e2.repo.join("main.go").exists(), "代码文件没有合并进主分支");
 }

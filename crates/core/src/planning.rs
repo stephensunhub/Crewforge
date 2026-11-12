@@ -260,7 +260,11 @@ impl Orchestrator {
         if project.goal.trim().is_empty() {
             bail!("项目还没有写目标。请先在“计划”页写下项目目标与硬性约束，负责人才知道往哪里推进");
         }
+        if let crate::design::DesignPhase::NotStarted | crate::design::DesignPhase::Pending(_) = self.db.design_phase(project_id)? {
+            bail!("项目里有架构师，要等设计做完再起草实现计划。点“开始自主推进”，架构师会先做设计，做完后负责人自动按设计文档起草计划");
+        }
         p.push_str(&format!("\n项目目标与硬性约束：\n{}\n", project.goal.trim()));
+        p.push_str(&self.design_docs_block(project_id).await);
         if let Some(scan) = self.db.latest_scan(project_id)? {
             p.push_str(&format!("\n项目扫描结果：\n{}\n", summarize_scan(&scan)));
         }
@@ -275,6 +279,9 @@ impl Orchestrator {
             p.push_str(&format!("- {}（{}，项目角色 {}{}）\n", m.name, m.title, m.role, self.db.cap_suffix(&m.employee_id)));
         }
         p.push_str(&format!("\n{}\n", crate::levels::LEVEL_RUBRIC));
+        if members.iter().any(|m| m.role == "architect") {
+            p.push_str("\n架构师只做设计类条目（kind=design，已经做完了），不要把实现条目指派给架构师；实现条目要遵守上面的设计文档。\n");
+        }
         if !existing.items.is_empty() {
             p.push_str(&format!("\n已有计划（不要重复，新条目要和它们衔接）：\n{}", plan_table(&existing.items)));
         }
@@ -303,6 +310,7 @@ impl Orchestrator {
         let members = self.db.list_members(project_id)?;
         let view = self.db.plan_view(project_id)?;
         let mut p = format!("[调整计划] 你是项目「{}」的负责人。\n\n项目目标与硬性约束：\n{}\n\n当前计划：\n{}", project.name, project.goal.trim(), plan_table(&view.items));
+        p.push_str(&self.design_docs_block(project_id).await);
         p.push_str("\n团队成员：");
         p.push_str(&members.iter().map(|m| format!("{}（{}{}）", m.name, m.role, self.db.cap_suffix(&m.employee_id))).collect::<Vec<_>>().join("、"));
         p.push_str(&format!("\n\n{}", crate::levels::LEVEL_RUBRIC));

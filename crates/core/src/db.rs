@@ -176,7 +176,7 @@ pub struct Member {
     pub name: String,
     /// 员工的岗位（公司级）
     pub title: String,
-    /// 员工在本项目中的角色：lead | developer | qa | reviewer
+    /// 员工在本项目中的角色：lead | developer | qa | reviewer | architect
     pub role: String,
 }
 
@@ -187,7 +187,7 @@ pub struct EmployeeCard {
     pub active_tasks: usize,
 }
 
-pub const PROJECT_ROLES: &[&str] = &["lead", "developer", "qa", "reviewer"];
+pub const PROJECT_ROLES: &[&str] = &["lead", "developer", "qa", "reviewer", "architect"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {

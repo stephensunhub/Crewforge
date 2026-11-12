@@ -3,8 +3,8 @@ import type { Activity, ProjectRole } from "./types";
 
 const COLORS = ["#ffb347", "#6ec1ff", "#9be37a", "#e58bff", "#ff8a8a", "#7fe3d0"];
 
-export const ROLE_LABEL: Record<ProjectRole, string> = { lead: "负责人", developer: "开发", qa: "QA", reviewer: "审查" };
-export const ROLE_ORDER: ProjectRole[] = ["lead", "developer", "qa", "reviewer"];
+export const ROLE_LABEL: Record<ProjectRole, string> = { lead: "负责人", architect: "架构师", developer: "开发", qa: "QA", reviewer: "审查" };
+export const ROLE_ORDER: ProjectRole[] = ["lead", "architect", "developer", "qa", "reviewer"];
 
 export const colorFor = (name: string) => {
   let h = 0;

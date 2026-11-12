@@ -82,7 +82,7 @@ export function OnboardingView({ projectId, members, events, running, onError, o
   }, [st?.scan, cmds.length]);
   useEffect(() => {
     setEmp((p) => ({
-      architect: p.architect || members.find((m) => m.role === "lead")?.employee_id || members[0]?.employee_id || "",
+      architect: p.architect || members.find((m) => m.role === "architect")?.employee_id || members.find((m) => m.role === "lead")?.employee_id || members[0]?.employee_id || "",
       qa: p.qa || members.find((m) => m.role === "qa")?.employee_id || members.find((m) => m.role === "reviewer")?.employee_id || members[0]?.employee_id || "",
     }));
   }, [members]);

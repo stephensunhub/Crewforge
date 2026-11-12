@@ -36,7 +36,7 @@ export interface ProjectSummary {
   active_tasks: number;
   lead_name: string | null;
 }
-export type ProjectRole = "lead" | "developer" | "qa" | "reviewer";
+export type ProjectRole = "lead" | "developer" | "qa" | "reviewer" | "architect";
 export interface Member {
   employee_id: string;
   name: string;
