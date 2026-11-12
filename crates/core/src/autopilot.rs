@@ -986,9 +986,13 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             self.bg_standups.lock().unwrap().push(h);
         }
         // 计划里有疑似重复的条目：批次开始时先让负责人核对并取消，再派活（同步：放到后台的话，重复的条目可能在取消之前就被派出去做了两遍）。
-        // 只有存在疑似重复时才会花这一次调用；整理转计划已经按标题去重，之后一般不会再有。
-        if self.lead().is_some() && !crate::planning::duplicate_candidates(&self.db().plan_view(&self.project_id).map(|v| v.items).unwrap_or_default()).is_empty() {
-            self.adjust_plan(AdjustTrigger::Dedupe, "").await;
+        // 只有存在“没核对过”的疑似重复时才会花这一次调用（本地模型上约十几分钟）；核对过的条目对记在设置里，不再问。
+        if self.lead().is_some() {
+            let items = self.db().plan_view(&self.project_id).map(|v| v.items).unwrap_or_default();
+            let pairs = self.db().unchecked_duplicate_pairs(&self.project_id, &items);
+            if !pairs.is_empty() && self.adjust_plan(AdjustTrigger::Dedupe, "").await.is_some() {
+                let _ = self.db().mark_duplicates_checked(&self.project_id, &items, &pairs);
+            }
         }
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();

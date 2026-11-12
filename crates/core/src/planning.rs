@@ -169,6 +169,31 @@ pub fn duplicate_candidates(items: &[PlanItem]) -> Vec<(usize, usize)> {
     out
 }
 
+fn dedupe_key(project_id: &str) -> String { format!("dedupe_checked:{project_id}") }
+fn pair_key(a: &PlanItem, b: &PlanItem) -> String {
+    let (x, y) = if a.id <= b.id { (&a.id, &b.id) } else { (&b.id, &a.id) };
+    format!("{x}|{y}")
+}
+
+impl crate::db::Db {
+    /// 疑似重复的条目对里，负责人还没核对过的（核对过的“不是重复”不再问，每次批次开始、应用重启都问一遍要空等十几分钟）。
+    pub fn unchecked_duplicate_pairs(&self, project_id: &str, items: &[PlanItem]) -> Vec<(usize, usize)> {
+        let done: std::collections::HashSet<String> = self.get_setting(&dedupe_key(project_id)).ok().flatten()
+            .and_then(|v| serde_json::from_str::<Vec<String>>(&v).ok()).unwrap_or_default().into_iter().collect();
+        duplicate_candidates(items).into_iter().filter(|&(a, b)| !done.contains(&pair_key(&items[a - 1], &items[b - 1]))).collect()
+    }
+
+    /// 记下这些条目对负责人已经核对过（取消了的、保留下来的都算）。
+    pub fn mark_duplicates_checked(&self, project_id: &str, items: &[PlanItem], pairs: &[(usize, usize)]) -> Result<()> {
+        let mut all: Vec<String> = self.get_setting(&dedupe_key(project_id))?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+        for &(a, b) in pairs {
+            let k = pair_key(&items[a - 1], &items[b - 1]);
+            if !all.contains(&k) { all.push(k); }
+        }
+        self.set_setting(&dedupe_key(project_id), &serde_json::to_string(&all)?)
+    }
+}
+
 pub(crate) fn plan_table(items: &[PlanItem]) -> String {
     items.iter().enumerate().map(|(n, i)| format!("#{} [{}] {} → {}{}{}\n", n + 1, crate::plan::status_label(&i.status), i.title, i.assignee_name.clone().unwrap_or_else(|| "未指定".into()),
         if i.waiting_for.is_empty() { String::new() } else { format!("（依赖：{}）", i.waiting_for.join("、")) },
@@ -283,7 +308,7 @@ impl Orchestrator {
         match trigger {
             AdjustTrigger::ItemFailed => p.push_str(&format!("\n\n触发原因：有条目反复失败，没能做成：\n{failure}\n你可以：追加条目（比如把失败的拆小、补一个前置）、取消作废的条目、给还没开始的条目改派负责人、让失败的条目换一个更清楚的说明重试。")),
             AdjustTrigger::Dedupe => {
-                let pairs = duplicate_candidates(&view.items).iter().map(|(a, b)| format!("#{a} 与 #{b}")).collect::<Vec<_>>().join("、");
+                let pairs = self.db.unchecked_duplicate_pairs(project_id, &view.items).iter().map(|(a, b)| format!("#{a} 与 #{b}")).collect::<Vec<_>>().join("、");
                 p.push_str(&format!("\n\n触发原因：批次开始，清理计划里的重复条目。系统按标题相似度找到这些疑似重复：{pairs}。请逐对核实它们是不是同一件事（看说明和验收标准，不要只看标题）：是同一件事，就取消还没开始的那一条（两条都没开始时保留编号小的，也就是更早建的），原因写“与 #N 重复”；不是同一件事就不要动。只能取消，不能追加、改派或重试；没有真正的重复就返回空 changes。"));
             }
             AdjustTrigger::FinalReview => p.push_str("\n\n触发原因：计划里的条目都做完了。请对照项目目标做一次完成度复盘：还有没覆盖到的必要工作吗？只能追加条目；没有就返回空 changes。不要为了凑数追加。"),
@@ -374,6 +399,21 @@ mod tests {
         let v = vec![mk("前端健壮性与防误操作：renderBoard 空值防御", "planned"), mk("SQLite 存储实现", "done"), mk("前端健壮性与防误操作：renderBoard 空值防御", "planned"),
             mk("SQLite 存储实现", "done"), mk("前端健壮性与防误操作：renderBoard 空值防御", "cancelled")];
         assert_eq!(duplicate_candidates(&v), vec![(1, 3)], "两条已完成的同名不算；已取消的不算");
+    }
+
+    #[test]
+    fn checked_pairs_are_remembered_and_not_asked_again() {
+        let db = crate::db::Db::open_memory().unwrap();
+        let mk = |id: &str, t: &str| PlanItem { id: id.into(), title: t.into(), status: "planned".into(), ..Default::default() };
+        let v = vec![mk("a", "前端健壮性与防误操作：renderBoard 空值防御"), mk("b", "前端健壮性与防误操作：renderBoard 空值防御"), mk("c", "前端健壮性与防误操作：renderBoard 空值防御")];
+        let pairs = db.unchecked_duplicate_pairs("p1", &v);
+        assert_eq!(pairs.len(), 3);
+        db.mark_duplicates_checked("p1", &v, &pairs[..2]).unwrap();
+        assert_eq!(db.unchecked_duplicate_pairs("p1", &v), vec![pairs[2]], "核对过的不再问");
+        assert_eq!(db.unchecked_duplicate_pairs("p2", &v).len(), 3, "按项目分开记");
+        let mut v2 = v.clone();
+        v2.push(mk("d", "前端健壮性与防误操作：renderBoard 空值防御"));
+        assert_eq!(db.unchecked_duplicate_pairs("p1", &v2).len(), 4, "新条目和旧条目的对仍然要核对");
     }
 
 
