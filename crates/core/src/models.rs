@@ -240,7 +240,10 @@ mod tests {
             db.list_models(Some("claude")).unwrap(); // 写入内置清单
             let conn = db.conn.lock().unwrap();
             conn.execute("INSERT OR IGNORE INTO models (provider, model_id, label, builtin, created_at) VALUES ('claude','sonnet','Sonnet（别名）',1,1)", []).unwrap();
-            conn.execute("ALTER TABLE employees DROP COLUMN number", []).unwrap(); // 回到迁移 24 之前的结构
+            // 回到迁移 24 之前的结构
+            conn.execute("ALTER TABLE employees DROP COLUMN number", []).unwrap();
+            conn.execute("ALTER TABLE employees DROP COLUMN level_cap", []).unwrap();
+            conn.execute("ALTER TABLE plan_items DROP COLUMN level", []).unwrap();
             conn.pragma_update(None, "user_version", 22).unwrap();
         }
         let db = Db::open(d.path()).unwrap();

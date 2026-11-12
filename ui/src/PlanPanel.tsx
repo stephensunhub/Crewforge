@@ -10,12 +10,14 @@ const GOAL_TEMPLATES: [string, string][] = [
   ["新项目", "从零实现这个项目。技术栈：（写在这里）。要求：一条命令就能运行；核心逻辑有自动化测试；README 写明如何运行和测试。"],
 ];
 
+export const LEVEL_HINT = ["未定级", "1 机械改动", "2 简单", "3 中等", "4 较难", "5 最难"];
+
 function ItemForm({ initial, items, members, onSave, onClose }: {
   initial?: PlanItem; items: PlanItem[]; members: Member[]; onClose: () => void; onSave: (i: PlanItemInput) => Promise<void>;
 }) {
   const [f, setF] = useState<PlanItemInput>({
     title: initial?.title ?? "", description: initial?.description ?? "", acceptance: initial?.acceptance ?? "", kind: initial?.kind ?? "migrate",
-    module: initial?.module ?? "", assignee_id: initial?.assignee_id ?? null, deps: initial?.deps ?? [],
+    module: initial?.module ?? "", assignee_id: initial?.assignee_id ?? null, deps: initial?.deps ?? [], level: initial?.level ?? 0,
   });
   const others = items.filter((i) => i.id !== initial?.id && i.status !== "cancelled");
   return (
@@ -27,6 +29,8 @@ function ItemForm({ initial, items, members, onSave, onClose }: {
         <div className="row" style={{ gap: 12 }}>
           <Field label="类型"><select value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })}>{Object.entries(KIND).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
           <Field label="模块"><input value={f.module} onChange={(e) => setF({ ...f, module: e.target.value })} /></Field>
+          <Field label="等级" hint="按需要的推理、联想和记忆定，不是工作量。没指定负责人时，自主推进会选「能力上限够用的最低档」的人"><select value={f.level} onChange={(e) => setF({ ...f, level: Number(e.target.value) })}>
+            {LEVEL_HINT.map((l, n) => <option key={n} value={n}>{l}</option>)}</select></Field>
           <Field label="负责人"><select value={f.assignee_id ?? ""} onChange={(e) => setF({ ...f, assignee_id: e.target.value || null })}>
             <option value="">未指定</option>{members.map((m) => <option key={m.employee_id} value={m.employee_id}>{m.name}</option>)}</select></Field>
         </div>
@@ -141,7 +145,7 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
           </div>
           {proposed.map((i) => (
             <div className="plan-row" key={i.id}>
-              <div style={{ flex: 1 }}><b>{i.title}</b> <span className="hint">{KIND[i.kind]}{i.module ? ` · ${i.module}` : ""} · {i.proposed_by_name} 起草{i.assignee_name ? ` · 建议 ${i.assignee_name}` : ""}</span>
+              <div style={{ flex: 1 }}><b>{i.title}</b>{i.level > 0 && <span className="badge" style={{ marginLeft: 6 }} title={`等级：${LEVEL_HINT[i.level]}`}>L{i.level}</span>} <span className="hint">{KIND[i.kind]}{i.module ? ` · ${i.module}` : ""} · {i.proposed_by_name} 起草{i.assignee_name ? ` · 建议 ${i.assignee_name}` : ""}</span>
                 {i.deps.length > 0 && <div className="hint">依赖 {i.deps.length} 项</div>}</div>
               <button className="btn" onClick={() => setEditing(i)}>编辑</button>
               <button className="btn danger" onClick={() => void act(() => api.setPlanStatus(i.id, "cancelled", "不采纳"))}>取消</button>
@@ -158,6 +162,7 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
               <div className="plan-top">
                 <span className="plan-n">{idx + 1}</span>
                 <b style={{ flex: 1, cursor: "pointer" }} onClick={() => setOpen(open === i.id ? null : i.id)}>{i.title}</b>
+                {i.level > 0 && <span className="badge" title={`等级：${LEVEL_HINT[i.level]}`}>L{i.level}</span>}
                 <span className="chip static">{KIND[i.kind]}{i.module ? ` · ${i.module}` : ""}</span>
                 <span className={`badge ps-${i.status}`}>{STATUS[i.status]}</span>
               </div>

@@ -10,6 +10,8 @@ export interface Employee {
   endpoint_id: string | null;
   /** 员工编号（显示用，按创建顺序递增、不复用）；顾问为 0 */
   number: number;
+  /** 手动设置的能力上限（1–5）；0 = 按模型自动 */
+  level_cap: number;
 }
 export interface RenameReport { from: string; to: string; moved: string[]; warnings: string[]; persona_changed: boolean }
 export interface Company {
@@ -292,13 +294,15 @@ export interface PlanItem {
   id: string; project_id: string; title: string; description: string; acceptance: string; kind: string; module: string; position: number;
   assignee_id: string | null; assignee_name: string | null; status: PlanStatus; task_id: string | null; proposed_by: string | null;
   proposed_by_name: string | null; note: string; deps: string[]; waiting_for: string[]; ready: boolean;
+  /** 等级 1–5，0 = 未定级 */
+  level: number;
 }
 export interface PlanViewData {
   items: PlanItem[];
   counts: { proposed: number; planned: number; in_progress: number; done: number; blocked: number; cancelled: number };
   percent_done: number;
 }
-export interface PlanItemInput { title: string; description: string; acceptance: string; kind: string; module: string; assignee_id: string | null; deps: string[] }
+export interface PlanItemInput { title: string; description: string; acceptance: string; kind: string; module: string; assignee_id: string | null; deps: string[]; level: number }
 
 export interface ModelEntry { provider: string; model_id: string; label: string; note: string; enabled: boolean; builtin: boolean }
 export interface ProviderStatus { provider: string; label: string; enabled: boolean; installed: boolean; version: string; program: string; employees: number }

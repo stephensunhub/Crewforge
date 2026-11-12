@@ -23,7 +23,7 @@ pub fn max_plan_items(backlog: usize) -> usize { (backlog / 3).clamp(MAX_PLAN_IT
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     Dismiss { n: usize, reason: String },
-    Plan { n: usize, title: String, description: String, acceptance: String, assignee: Option<String>, files: Vec<String> },
+    Plan { n: usize, title: String, description: String, acceptance: String, assignee: Option<String>, files: Vec<String>, level: i64 },
     Keep { n: usize },
 }
 
@@ -55,7 +55,7 @@ pub fn parse_triage(text: &str) -> Result<Vec<Op>> {
                 let title = s(it, "title");
                 if title.is_empty() { bail!("第 {n} 条转计划没有标题"); }
                 let files = it["files"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).map(|x| x.trim().trim_start_matches("./").to_string()).filter(|x| !x.is_empty()).take(8).collect();
-                Op::Plan { n, title, description: s(it, "description"), acceptance: s(it, "acceptance"), assignee: Some(s(it, "assignee")).filter(|a| !a.is_empty() && a != "null"), files }
+                Op::Plan { n, title, description: s(it, "description"), acceptance: s(it, "acceptance"), assignee: Some(s(it, "assignee")).filter(|a| !a.is_empty() && a != "null"), files, level: crate::levels::parse_level(it) }
             }
             Some("keep") => Op::Keep { n },
             other => bail!("第 {n} 条的 op 不对：{other:?}"),
@@ -99,8 +99,9 @@ impl Orchestrator {
         }
         p.push_str("\n项目成员：\n");
         for m in &members {
-            p.push_str(&format!("- {}（{}，项目角色 {}）\n", m.name, m.title, m.role));
+            p.push_str(&format!("- {}（{}，项目角色 {}{}）\n", m.name, m.title, m.role, self.db.cap_suffix(&m.employee_id)));
         }
+        p.push_str(&format!("\n{}\n", crate::levels::LEVEL_RUBRIC));
         if !plan.items.is_empty() {
             p.push_str(&format!("\n现有计划（已经在做或做完的事不要重复）：\n{}", crate::planning::plan_table(&plan.items)));
         }
@@ -116,7 +117,7 @@ impl Orchestrator {
 - 重复的（和另一条意思相同，或已被上面的议题裁决覆盖）、已经被代码或现有计划解决的、事实已经变化而过期的、过度设计的、对目标没有价值的：dismiss，必须写原因（重复的写明和第几条重复）。\n\
 - 确实值得做、会提高质量的：最多 {plan_cap} 条转成计划条目（plan），写清 title、description、能用命令验证的 acceptance、assignee（项目成员名）、files（预计改的文件）；相近的几条合成一个条目。\n\
 - 拿不准的：keep（保留）。没提到的也会保留。不要为了清空而清空，也不要把每条都转成计划。\n"));
-        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"items\":[{\"n\":1,\"op\":\"dismiss\",\"reason\":\"...\"},{\"n\":2,\"op\":\"plan\",\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"files\":[\"路径\"]},{\"n\":3,\"op\":\"keep\"}]}");
+        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"items\":[{\"n\":1,\"op\":\"dismiss\",\"reason\":\"...\"},{\"n\":2,\"op\":\"plan\",\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"files\":[\"路径\"],\"level\":2},{\"n\":3,\"op\":\"keep\"}]}");
 
         let ops = self.lead_turn_parsed("curation", lead, project_id, &p, "整理行动项", approver, parse_triage).await?
             .map_err(|why| anyhow::anyhow!("负责人的整理结果{why}"))?;
@@ -132,7 +133,7 @@ impl Orchestrator {
                     self.db.set_action_status(&item.id, "dismissed", &format!("负责人（{}）整理：{reason}", lead.name))?;
                     out.dismissed += 1;
                 }
-                Op::Plan { title, description, acceptance, assignee, files, .. } => {
+                Op::Plan { title, description, acceptance, assignee, files, level, .. } => {
                     if out.planned.len() >= plan_cap { out.rejected.push(format!("第 {n} 条转计划：超过 {plan_cap} 个的上限，保留"));  continue; }
                     if open_titles.contains(title.trim()) {
                         self.db.set_action_status(&item.id, "done", &format!("负责人（{}）整理：计划里已有同名条目《{title}》，不重复建", lead.name))?;
@@ -143,6 +144,7 @@ impl Orchestrator {
                     match self.db.create_plan_item(project_id, &NewPlanItem { title: title.clone(), description, acceptance, kind: "migrate".into(), module: String::new(), assignee_id: aid, deps: vec![] }, None) {
                         Ok(id) => {
                             let _ = self.db.set_plan_item_files(&id, &files);
+                            let _ = self.db.set_plan_item_level(&id, level);
                             let _ = self.db.set_plan_note(&id, &format!("负责人整理行动项追加：{}", item.text.chars().take(80).collect::<String>()));
                             self.db.set_action_status(&item.id, "done", &format!("负责人（{}）整理：已转为计划条目《{title}》", lead.name))?;
                             open_titles.insert(title.trim().to_string());

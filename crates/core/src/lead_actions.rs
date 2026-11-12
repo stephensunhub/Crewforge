@@ -23,6 +23,7 @@ pub struct FollowUp {
     pub acceptance: String,
     pub assignee: Option<String>,
     pub files: Vec<String>,
+    pub level: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,7 +65,7 @@ pub fn parse_action_ruling(text: &str) -> Result<ActionRuling> {
                 let title = s(f, "title");
                 if title.is_empty() { bail!("后续条目必须有标题"); }
                 let files = f["files"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).map(|x| x.trim().trim_start_matches("./").to_string()).filter(|x| !x.is_empty()).take(8).collect();
-                follow_ups.push(FollowUp { title, description: s(f, "description"), acceptance: s(f, "acceptance"), assignee: Some(s(f, "assignee")).filter(|a| !a.is_empty() && a != "null"), files });
+                follow_ups.push(FollowUp { level: crate::levels::parse_level(f), title, description: s(f, "description"), acceptance: s(f, "acceptance"), assignee: Some(s(f, "assignee")).filter(|a| !a.is_empty() && a != "null"), files });
             }
             Ok(ActionRuling::Decide { decision, reason, follow_ups })
         }
@@ -93,8 +94,9 @@ impl Orchestrator {
         }
         p.push_str("\n项目成员：\n");
         for m in &members {
-            p.push_str(&format!("- {}（{}，项目角色 {}）\n", m.name, m.title, m.role));
+            p.push_str(&format!("- {}（{}，项目角色 {}{}）\n", m.name, m.title, m.role, self.db.cap_suffix(&m.employee_id)));
         }
+        p.push_str(&format!("\n{}\n", crate::levels::LEVEL_RUBRIC));
         if !plan.items.is_empty() {
             p.push_str(&format!("\n现有计划：\n{}", crate::planning::plan_table(&plan.items)));
         }
@@ -107,7 +109,7 @@ impl Orchestrator {
 - 决定之后如果需要改代码、补测试或改文档，在 follow_up 里列出条目（最多 2 个，每个写清 description 和能用命令验证的 acceptance，assignee 填项目成员名，files 列出预计会改的文件）；不需要改就让 follow_up 为空。\n\
 - 这件事其实不必做（已经符合需求、重复、过度设计），就驳回（dismiss），写明原因。\n\
 - 需求原文没写明的，按你的专业判断定并写明依据，不要把决定推给人；高风险的操作本身仍会在执行时经过审批，不需要你在这里回避。只有缺少你无法核实、也无法合理假设的关键事实时，才升级（escalate），并写明缺什么。\n");
-        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"action\":\"decide\",\"decision\":\"最终决定，一句话，具体到做法\",\"reason\":\"依据\",\"follow_up\":[{\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"files\":[\"路径\"]}]}\n或 {\"action\":\"dismiss\",\"reason\":\"...\"}\n或 {\"action\":\"escalate\",\"reason\":\"为什么必须是人\"}");
+        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"action\":\"decide\",\"decision\":\"最终决定，一句话，具体到做法\",\"reason\":\"依据\",\"follow_up\":[{\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"files\":[\"路径\"],\"level\":2}]}\n或 {\"action\":\"dismiss\",\"reason\":\"...\"}\n或 {\"action\":\"escalate\",\"reason\":\"为什么必须是人\"}");
 
         let ruling = match self.lead_turn_parsed("ruling", lead, &project.id, &p, "处理行动项", approver, parse_action_ruling).await? {
             Ok(r) => r,
@@ -131,6 +133,7 @@ impl Orchestrator {
                     match self.db.create_plan_item(&project.id, &NewPlanItem { title: f.title.clone(), description: f.description, acceptance: f.acceptance, kind: "migrate".into(), module: String::new(), assignee_id: aid, deps: vec![] }, None) {
                         Ok(id) => {
                             let _ = self.db.set_plan_item_files(&id, &f.files);
+                            let _ = self.db.set_plan_item_level(&id, f.level);
                             let _ = self.db.set_plan_note(&id, &format!("负责人处理行动项追加：{}", item.text.chars().take(80).collect::<String>()));
                             created.push(f.title);
                         }

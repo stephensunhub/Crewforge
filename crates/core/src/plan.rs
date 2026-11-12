@@ -92,6 +92,8 @@ pub struct PlanItem {
     pub waiting_for: Vec<String>,
     /// 可以开始：待开始、前置都已完成
     pub ready: bool,
+    /// 等级 1–5，0 = 未定级（见 `levels`）
+    pub level: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -198,12 +200,12 @@ impl Db {
     }
 
     pub fn plan_view(&self, project_id: &str) -> Result<PlanView> {
-        let rows: Vec<(String, String, String, String, String, String, String, i64, Option<String>, String, Option<String>, Option<String>, String)> = {
+        let rows: Vec<(String, String, String, String, String, String, String, i64, Option<String>, String, Option<String>, Option<String>, String, i64)> = {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "SELECT id, project_id, title, description, acceptance, kind, module, position, assignee_id, status, task_id, proposed_by, note
+                "SELECT id, project_id, title, description, acceptance, kind, module, position, assignee_id, status, task_id, proposed_by, note, level
                  FROM plan_items WHERE project_id = ?1 ORDER BY position, rowid")?;
-            stmt.query_map([project_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?)))?
+            stmt.query_map([project_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?)))?
                 .collect::<std::result::Result<_, _>>()?
         };
         let deps: Vec<(String, String)> = {
@@ -228,7 +230,7 @@ impl Db {
             items.push(PlanItem {
                 id: r.0.clone(), project_id: r.1.clone(), title: r.2.clone(), description: r.3.clone(), acceptance: r.4.clone(), kind: r.5.clone(),
                 module: r.6.clone(), position: r.7, assignee_name: name(&r.8)?, assignee_id: r.8.clone(), status: r.9.clone(), task_id: r.10.clone(),
-                proposed_by_name: name(&r.11)?, proposed_by: r.11.clone(), note: r.12.clone(), ready: r.9 == "planned" && waiting_for.is_empty(), deps: my_deps, waiting_for,
+                proposed_by_name: name(&r.11)?, proposed_by: r.11.clone(), note: r.12.clone(), ready: r.9 == "planned" && waiting_for.is_empty(), deps: my_deps, waiting_for, level: r.13,
             });
         }
         let total = items.len() - counts.cancelled - counts.proposed;

@@ -172,7 +172,10 @@ mod tests {
             let db = Db::open(d.path()).unwrap();
             for (n, r) in [("a", "全栈"), ("g", "guest"), ("b", "全栈"), ("c", "QA")] { db.add_employee(n, r, "p").unwrap(); }
             let conn = db.conn.lock().unwrap();
-            conn.execute("ALTER TABLE employees DROP COLUMN number", []).unwrap(); // 回到迁移 24 之前的结构
+            // 回到迁移 24 之前的结构
+            conn.execute("ALTER TABLE employees DROP COLUMN number", []).unwrap();
+            conn.execute("ALTER TABLE employees DROP COLUMN level_cap", []).unwrap();
+            conn.execute("ALTER TABLE plan_items DROP COLUMN level", []).unwrap();
             conn.pragma_update(None, "user_version", 23).unwrap();
         }
         let db = Db::open(d.path()).unwrap();

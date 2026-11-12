@@ -110,6 +110,7 @@ fn tools() -> Value {
             "type": "object", "required": ["title"], "properties": {
               "title": str_prop("条目标题，不超过 80 字"),
               "description": str_prop("要做什么、范围和注意事项，不超过 600 字"),
+              "level": {"type": "integer", "minimum": 1, "maximum": 5, "description": "等级 1–5：按完成它需要的推理、联想和记忆来定。1 机械改动（单文件、规格明确）· 2 简单（同模块少量改动）· 3 中等（多文件、要读懂现有代码）· 4 较难（跨模块、接口与数据流）· 5 最难（架构取舍、并发、迁移、疑难 bug）。拿不准就往高定"},
               "acceptance": str_prop("验收标准：做到什么算完成，最好能用命令验证，不超过 400 字"),
               "kind": {"type": "string", "enum": PLAN_KINDS, "description": "characterize=补特征测试；migrate=迁移/实现；cleanup=清理；other=其他，默认 migrate"},
               "module": str_prop("所属模块或目录，可选"),
@@ -351,7 +352,7 @@ impl McpServer {
         }
         let members = self.db.list_members(&self.ctx.project_id)?;
         // 先全部校验并解析，确保要么全部创建、要么一个都不创建
-        let mut parsed: Vec<(NewPlanItem, Vec<serde_json::Value>)> = Vec::new();
+        let mut parsed: Vec<(NewPlanItem, Vec<serde_json::Value>, i64)> = Vec::new();
         for (i, it) in raw.iter().enumerate() {
             let title = arg_str(it, "title").with_context(|| format!("第 {i} 个条目缺少 title"))?;
             let (desc, acc) = (arg_str(it, "description").unwrap_or(""), arg_str(it, "acceptance").unwrap_or(""));
@@ -373,12 +374,12 @@ impl McpServer {
                     _ => bail!("第 {i} 个条目的依赖 {d} 无效：用本次提交里排在前面的序号，或已有条目的 ID"),
                 }
             }
-            parsed.push((NewPlanItem { title: title.into(), description: desc.into(), acceptance: acc.into(), kind: kind.into(), module: module.into(), assignee_id, deps: vec![] }, deps));
+            parsed.push((NewPlanItem { title: title.into(), description: desc.into(), acceptance: acc.into(), kind: kind.into(), module: module.into(), assignee_id, deps: vec![] }, deps, crate::levels::parse_level(it)));
         }
         // 与已有的（未取消的）条目查重：重复的跳过，依赖它的条目改为依赖那个已有条目
         let mut ids: Vec<Option<String>> = Vec::new();
         let (mut created, mut skipped) = (0, Vec::new());
-        for (n, deps) in parsed {
+        for (n, deps, level) in parsed {
             let mut item = n;
             if let Some(dup) = existing.items.iter().find(|x| x.status != "cancelled" && similarity(&x.title, &item.title) >= PLAN_DUP_THRESHOLD) {
                 skipped.push(format!("《{}》与已有的《{}》重复", item.title, dup.title));
@@ -395,6 +396,7 @@ impl McpServer {
             item.deps.sort();
             item.deps.dedup();
             let id = self.db.create_plan_item(&self.ctx.project_id, &item, Some(&self.ctx.employee_id))?;
+            let _ = self.db.set_plan_item_level(&id, level);
             ids.push(Some(id));
             created += 1;
         }

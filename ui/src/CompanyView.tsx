@@ -18,8 +18,8 @@ export const COMPANY_TABS: [CompanyTab, string][] = [
 const ROLES = ["全栈工程师", "QA 测试工程师", "架构师 / CTO", "其他"];
 
 function EmployeeForm({ initial, onSubmit, onClose, onError }: {
-  initial?: { name: string; number?: number; role: string; persona: string; provider?: string; model?: string; endpointId?: string | null };
-  onSubmit: (name: string, role: string, persona: string, provider: string, model: string, endpointId: string) => Promise<void>;
+  initial?: { name: string; number?: number; levelCap?: number; effectiveCap?: number; role: string; persona: string; provider?: string; model?: string; endpointId?: string | null };
+  onSubmit: (name: string, role: string, persona: string, provider: string, model: string, endpointId: string, levelCap: number) => Promise<void>;
   onClose: () => void;
   onError: (m: string) => void;
 }) {
@@ -34,6 +34,7 @@ function EmployeeForm({ initial, onSubmit, onClose, onError }: {
   const [fetching, setFetching] = useState(false);
   const [fetchNote, setFetchNote] = useState("");
   const [other, setOther] = useState(false);
+  const [levelCap, setLevelCap] = useState(initial?.levelCap ?? 0);
   const [busy, setBusy] = useState(false);
   const [cat, setCat] = useState<ModelsOverview | null>(null);
   const [eps, setEps] = useState<Endpoint[]>([]);
@@ -101,6 +102,12 @@ function EmployeeForm({ initial, onSubmit, onClose, onError }: {
           )}
         </Field>
         <div className="hint" style={{ marginTop: -4 }}>TA 将通过 <b>{channelLabel}</b> 使用 <b>{model || (ep ? ep.models[0] : "") || "引擎默认模型"}</b>。</div>
+        <Field label="能力上限（任务等级）" hint="能做到几级的任务（1–5，见计划页的等级）。自动：按上面选的模型给默认值（本地模型 2、Haiku 3、Sonnet 4、Opus / Fable 5）。没明确指派时，自主推进把活派给「上限够用的最低档」的人；明确指派的不受限制，但会提示。">
+          <select value={levelCap} onChange={(e) => setLevelCap(Number(e.target.value))}>
+            <option value={0}>自动{initial?.effectiveCap ? `（现在是 ${initial.effectiveCap} 级）` : ""}</option>
+            {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n} 级</option>)}
+          </select>
+        </Field>
         <Field label="身份说明" hint="告诉 TA 是谁、怎么沟通、擅长什么。留空会使用默认说明。">
           <textarea rows={5} value={persona} onChange={(e) => setPersona(e.target.value)} />
         </Field>
@@ -110,7 +117,7 @@ function EmployeeForm({ initial, onSubmit, onClose, onError }: {
             try {
               // 选了清单之外的模型（手输或从服务器读到的）：先加进端点的模型清单，再保存员工
               if (ep && model && !ep.models.includes(model)) await api.updateEndpoint(ep.id, endpointToInput(ep, [...ep.models, model]));
-              await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`, provider, model, epId);
+              await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`, provider, model, epId, levelCap);
             } catch (e) { onError(String(e)); } finally { setBusy(false); }
           }}>{initial ? "保存" : "创建"}</button>
         </div>
@@ -173,7 +180,9 @@ export function CompanyView({
   onChanged: () => void;
   onError: (m: string) => void;
 }) {
+  const [caps, setCaps] = useState<Record<string, number>>({});
   const [modal, setModal] = useState<"new-emp" | "new-proj" | { edit: EmployeeCard } | { memory: EmployeeCard } | { log: EmployeeCard } | null>(null);
+  useEffect(() => { void api.employeeLevels().then((l) => setCaps(Object.fromEntries(l))).catch(() => setCaps({})); }, [modal, cards]);
   const [filter, setFilter] = useState("");
   const visible = filter.trim()
     ? cards.filter((c) => (c.employee.name + c.employee.role).toLowerCase().includes(filter.trim().toLowerCase()))
@@ -232,7 +241,7 @@ export function CompanyView({
             );
           })}
         </div>
-        {modal === "new-emp" && <EmployeeForm onError={onError} onClose={() => setModal(null)} onSubmit={async (n, r, p, pv, md, ep) => { if (await guard(async () => { const e = await api.addEmployee(n, r, p, pv, ep ? "" : md); if (ep) await api.setEmployeeEndpoint(e.id, ep, md); })) setModal(null); }} />}
+        {modal === "new-emp" && <EmployeeForm onError={onError} onClose={() => setModal(null)} onSubmit={async (n, r, p, pv, md, ep, lc) => { if (await guard(async () => { const e = await api.addEmployee(n, r, p, pv, ep ? "" : md); if (ep) await api.setEmployeeEndpoint(e.id, ep, md); if (lc) await api.setEmployeeLevelCap(e.id, lc); })) setModal(null); }} />}
         {modal && typeof modal === "object" && "log" in modal && (
           <EmployeeLog id={modal.log.employee.id} name={modal.log.employee.name} running={running.includes(modal.log.employee.name)} onClose={() => setModal(null)} />
         )}
@@ -243,9 +252,9 @@ export function CompanyView({
         )}
         {modal && typeof modal === "object" && "edit" in modal && (
           <EmployeeForm onError={onError}
-            initial={{ name: modal.edit.employee.name, number: modal.edit.employee.number, role: modal.edit.employee.role, persona: modal.edit.employee.persona, provider: modal.edit.employee.provider, model: modal.edit.employee.model, endpointId: modal.edit.employee.endpoint_id }}
+            initial={{ name: modal.edit.employee.name, number: modal.edit.employee.number, levelCap: modal.edit.employee.level_cap, effectiveCap: caps[modal.edit.employee.id], role: modal.edit.employee.role, persona: modal.edit.employee.persona, provider: modal.edit.employee.provider, model: modal.edit.employee.model, endpointId: modal.edit.employee.endpoint_id }}
             onClose={() => setModal(null)}
-            onSubmit={async (n, r, p, pv, md, ep) => {
+            onSubmit={async (n, r, p, pv, md, ep, lc) => {
               const emp = modal.edit.employee;
               if (await guard(async () => {
                 let persona = p;
@@ -256,6 +265,7 @@ export function CompanyView({
                   if (rep.warnings.length) onError(`已改名为 ${n}，但有提示：${rep.warnings.join("；")}`);
                 }
                 await api.updateEmployee(emp.id, r, persona, pv, md);
+                if (lc !== emp.level_cap) await api.setEmployeeLevelCap(emp.id, lc);
                 if (ep || emp.endpoint_id) await api.setEmployeeEndpoint(emp.id, ep || null, md);
               })) setModal(null);
             }}

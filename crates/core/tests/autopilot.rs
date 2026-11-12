@@ -759,3 +759,44 @@ async fn renaming_an_idle_employee_moves_the_worktree_and_updates_persona_and_ta
     assert_eq!(r2.status, "finished", "{r2:?}");
     assert_eq!(e.db.get_plan_item(&item).unwrap().unwrap().status, "done");
 }
+
+#[tokio::test]
+async fn unassigned_items_go_to_the_cheapest_employee_whose_cap_is_enough() {
+    let e = setup().await;
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    for id in &e.ids { e.db.set_plan_status(id, "cancelled", "测试").unwrap(); }
+    let who = |n: &str| e.db.employee_by_name(n).unwrap().unwrap().id;
+    e.db.set_employee_level_cap(&who("alice"), 5).unwrap();
+    e.db.set_employee_level_cap(&who("bob"), 2).unwrap();
+    e.db.set_employee_level_cap(&who("carol"), 3).unwrap();
+    let mk = |t: &str, lvl: i64| {
+        let id = e.db.create_plan_item(&e.pid, &NewPlanItem { title: t.into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: None, deps: vec![] }, None).unwrap();
+        e.db.set_plan_item_level(&id, lvl).unwrap();
+        id
+    };
+    let (x1, x4, x5) = (mk("X1 机械改动", 1), mk("X4 跨模块特性", 4), mk("X5 架构取舍", 5));
+    let r = run(&e, 300, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    let doer = |id: &str| {
+        let t = e.db.get_plan_item(id).unwrap().unwrap().task_id.unwrap();
+        e.db.employee_by_id(&e.db.get_task(&t).unwrap().unwrap().employee_id).unwrap().unwrap().name
+    };
+    assert_eq!(doer(&x1), "bob", "1 级：够用的最低档（上限 2），不占用 alice");
+    assert_eq!(doer(&x4), "alice", "4 级：只有 alice（上限 5）够格");
+    assert_eq!(doer(&x5), "alice", "5 级：同样只有 alice，等她空出来");
+}
+
+#[tokio::test]
+async fn when_nobody_is_capable_the_strongest_free_employee_tries_anyway() {
+    let e = setup().await;
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    for id in &e.ids { e.db.set_plan_status(id, "cancelled", "测试").unwrap(); }
+    for (n, c) in [("alice", 2), ("bob", 3), ("carol", 1)] { e.db.set_employee_level_cap(&e.db.employee_by_name(n).unwrap().unwrap().id, c).unwrap(); }
+    let id = e.db.create_plan_item(&e.pid, &NewPlanItem { title: "超出所有人能力的活".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: None, deps: vec![] }, None).unwrap();
+    e.db.set_plan_item_level(&id, 5).unwrap();
+    let r = run(&e, 300, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    let t = e.db.get_plan_item(&id).unwrap().unwrap().task_id.unwrap();
+    assert_eq!(e.db.employee_by_id(&e.db.get_task(&t).unwrap().unwrap().employee_id).unwrap().unwrap().name, "bob", "能力最高的 bob（3）试试");
+    assert!(count_events(&e, "autopilot_step", "项目里没有人的能力上限够") >= 1);
+}

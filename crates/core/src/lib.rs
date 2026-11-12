@@ -16,6 +16,7 @@ pub mod interventions;
 pub mod lead_actions;
 pub mod review_gate;
 pub mod rename;
+pub mod levels;
 pub mod lead_triage;
 pub mod mcp;
 pub mod meeting;

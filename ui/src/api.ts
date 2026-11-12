@@ -36,6 +36,8 @@ export const api = {
   setMemberRole: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("set_member_role", { projectId, employeeId, role }),
   removeMember: (projectId: string, employeeId: string) => invoke<[number, number]>("remove_member", { projectId, employeeId }),
   renameEmployee: (id: string, newName: string) => invoke<RenameReport>("rename_employee", { id, newName }),
+  setEmployeeLevelCap: (id: string, cap: number) => invoke<void>("set_employee_level_cap", { id, cap }),
+  employeeLevels: () => invoke<[string, number][]>("employee_levels"),
   memberPendingWork: (projectId: string, employeeId: string) => invoke<[number, number]>("member_pending_work", { projectId, employeeId }),
   // 成本与额度
   modelsOverview: () => invoke<ModelsOverview>("models_overview"),

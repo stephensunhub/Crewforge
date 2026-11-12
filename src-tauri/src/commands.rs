@@ -1348,6 +1348,9 @@ pub struct PlanItemInput {
     module: String,
     assignee_id: Option<String>,
     deps: Vec<String>,
+    /// 等级 1–5，0 或没写 = 未定级
+    #[serde(default)]
+    level: i64,
 }
 impl From<PlanItemInput> for NewPlanItem {
     fn from(i: PlanItemInput) -> Self {
@@ -1362,14 +1365,34 @@ pub fn plan_view(state: State<'_, AppState>, project_id: String) -> CmdResult<Pl
 
 #[tauri::command]
 pub fn create_plan_item(state: State<'_, AppState>, project_id: String, item: PlanItemInput) -> CmdResult<String> {
-    state.db.create_plan_item(&project_id, &item.into(), None).map_err(err)
+    let level = item.level;
+    let id = state.db.create_plan_item(&project_id, &item.into(), None).map_err(err)?;
+    state.db.set_plan_item_level(&id, level).map_err(err)?;
+    Ok(id)
 }
 
 #[tauri::command]
 pub fn update_plan_item(state: State<'_, AppState>, id: String, item: PlanItemInput) -> CmdResult<()> {
-    let deps = item.deps.clone();
+    let (deps, level) = (item.deps.clone(), item.level);
     state.db.update_plan_item(&id, &item.into()).map_err(err)?;
+    state.db.set_plan_item_level(&id, level).map_err(err)?;
     state.db.set_plan_deps(&id, &deps).map_err(err)
+}
+
+/// 手动设置员工的能力上限（1–5）；0 = 恢复按模型自动。
+#[tauri::command]
+pub fn set_employee_level_cap(state: State<'_, AppState>, id: String, cap: i64) -> CmdResult<()> {
+    state.db.set_employee_level_cap(&id, cap).map_err(err)
+}
+
+/// 每位员工此刻实际生效的能力上限（手动设置的，或按模型取的默认值）。
+#[tauri::command]
+pub fn employee_levels(state: State<'_, AppState>) -> CmdResult<Vec<(String, i64)>> {
+    let mut out = vec![];
+    for e in state.db.list_employees().map_err(err)? {
+        out.push((e.id.clone(), state.db.level_cap(&e).map_err(err)?));
+    }
+    Ok(out)
 }
 
 #[tauri::command]

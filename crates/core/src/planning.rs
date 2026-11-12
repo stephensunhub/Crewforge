@@ -41,6 +41,8 @@ pub struct DraftItem {
     pub depends_on: Vec<usize>,
     /// 预计会改的文件；改同一个文件的条目不会并行
     pub files: Vec<String>,
+    /// 等级 1–5，0 = 没写
+    pub level: i64,
 }
 
 fn json_slice(text: &str) -> Result<Value> {
@@ -84,7 +86,7 @@ pub fn parse_draft(text: &str, member_names: &[String]) -> Result<Vec<DraftItem>
                 deps.push(n);
             }
         }
-        out.push(DraftItem { title, description: text_of(it, "description"), acceptance: text_of(it, "acceptance"), assignee, depends_on: deps, files: parse_files(it) });
+        out.push(DraftItem { title, description: text_of(it, "description"), acceptance: text_of(it, "acceptance"), assignee, depends_on: deps, files: parse_files(it), level: crate::levels::parse_level(it) });
     }
     Ok(out)
 }
@@ -92,7 +94,7 @@ pub fn parse_draft(text: &str, member_names: &[String]) -> Result<Vec<DraftItem>
 /// 调整计划的一项改动。条目用计划里的编号 `#n` 指代。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
-    Add { title: String, description: String, acceptance: String, assignee: Option<String>, depends_on: Vec<String>, files: Vec<String>, reason: String },
+    Add { title: String, description: String, acceptance: String, assignee: Option<String>, depends_on: Vec<String>, files: Vec<String>, level: i64, reason: String },
     Cancel { item: usize, reason: String },
     Reassign { item: usize, assignee: String },
     Retry { item: usize, note: String },
@@ -119,7 +121,7 @@ pub fn parse_adjustment(text: &str) -> Result<Adjustment> {
                     bail!("追加条目必须写标题和原因");
                 }
                 let deps = c["depends_on"].as_array().into_iter().flatten().filter_map(|d| d.as_str().map(String::from)).collect();
-                Change::Add { title, description: text_of(c, "description"), acceptance: text_of(c, "acceptance"), assignee: Some(text_of(c, "assignee")).filter(|a| !a.is_empty() && a != "null"), depends_on: deps, files: parse_files(c), reason }
+                Change::Add { title, description: text_of(c, "description"), acceptance: text_of(c, "acceptance"), assignee: Some(text_of(c, "assignee")).filter(|a| !a.is_empty() && a != "null"), depends_on: deps, files: parse_files(c), level: crate::levels::parse_level(c), reason }
             }
             Some("cancel") => Change::Cancel { item: item.context("cancel 需要 item")?, reason: Some(text_of(c, "reason")).filter(|r| !r.is_empty()).context("取消必须写原因")? },
             Some("reassign") => Change::Reassign { item: item.context("reassign 需要 item")?, assignee: Some(text_of(c, "assignee")).filter(|a| !a.is_empty()).context("reassign 需要 assignee")? },
@@ -195,7 +197,7 @@ impl crate::db::Db {
 }
 
 pub(crate) fn plan_table(items: &[PlanItem]) -> String {
-    items.iter().enumerate().map(|(n, i)| format!("#{} [{}] {} → {}{}{}\n", n + 1, crate::plan::status_label(&i.status), i.title, i.assignee_name.clone().unwrap_or_else(|| "未指定".into()),
+    items.iter().enumerate().map(|(n, i)| format!("#{} [{}]{} {} → {}{}{}\n", n + 1, crate::plan::status_label(&i.status), if i.level > 0 { format!(" L{}", i.level) } else { String::new() }, i.title, i.assignee_name.clone().unwrap_or_else(|| "未指定".into()),
         if i.waiting_for.is_empty() { String::new() } else { format!("（依赖：{}）", i.waiting_for.join("、")) },
         if i.note.is_empty() { String::new() } else { format!("（备注：{}）", i.note.chars().take(120).collect::<String>()) })).collect()
 }
@@ -270,14 +272,15 @@ impl Orchestrator {
         }
         p.push_str("\n团队成员（负责人只能从这里选）：\n");
         for m in &members {
-            p.push_str(&format!("- {}（{}，项目角色 {}）\n", m.name, m.title, m.role));
+            p.push_str(&format!("- {}（{}，项目角色 {}{}）\n", m.name, m.title, m.role, self.db.cap_suffix(&m.employee_id)));
         }
+        p.push_str(&format!("\n{}\n", crate::levels::LEVEL_RUBRIC));
         if !existing.items.is_empty() {
             p.push_str(&format!("\n已有计划（不要重复，新条目要和它们衔接）：\n{}", plan_table(&existing.items)));
         }
         p.push_str(&format!("\n你可以只读地查看代码。要求：1 到 {MAX_DRAFT_ITEMS} 个条目，每个条目一名员工一次任务能做完；第一个条目通常是脚手架或建立可验证的基础；用 depends_on 标明先后依赖（只能依赖更靠前的条目的下标，从 0 开始），让能并行的尽量并行；每个条目用 files 列出它预计会修改的主要文件（相对仓库根目录），改同一个文件的条目会被自动排成先后、不能并行，所以尽量让不同条目改不同的文件（例如每个命令放一个模块），实在要改同一个文件的就合并成一个条目；\
 至少有一个条目交给 QA 角色的成员做测试或评审（如果有）；每个条目写清 description 和能用命令验证的 acceptance。\n"));
-        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"items\":[{\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名或 null\",\"depends_on\":[下标...],\"files\":[\"路径\"]}]}");
+        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"items\":[{\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名或 null\",\"depends_on\":[下标...],\"files\":[\"路径\"],\"level\":3}]}");
         let text = self.lead_turn(lead, project_id, &p, "起草计划", approver).await?;
         let names: Vec<String> = members.iter().map(|m| m.name.clone()).collect();
         let draft = parse_draft(&text, &names)?;
@@ -287,6 +290,7 @@ impl Orchestrator {
             let deps = d.depends_on.iter().map(|i| ids[*i].clone()).collect();
             let id = self.db.create_plan_item(project_id, &NewPlanItem { title: d.title.clone(), description: d.description.clone(), acceptance: d.acceptance.clone(), kind: "migrate".into(), module: String::new(), assignee_id: aid, deps }, Some(&lead.id))?;
             self.db.set_plan_item_files(&id, &d.files)?;
+            self.db.set_plan_item_level(&id, d.level)?;
             ids.push(id);
         }
         self.db.append_event_for(Some(project_id), "plan_drafted_by_lead", Some(&lead.id), None, &json!({"count": ids.len(), "text": format!("{} 起草了 {} 个计划条目，等你确认", lead.name, ids.len())}))?;
@@ -300,7 +304,8 @@ impl Orchestrator {
         let view = self.db.plan_view(project_id)?;
         let mut p = format!("[调整计划] 你是项目「{}」的负责人。\n\n项目目标与硬性约束：\n{}\n\n当前计划：\n{}", project.name, project.goal.trim(), plan_table(&view.items));
         p.push_str("\n团队成员：");
-        p.push_str(&members.iter().map(|m| format!("{}（{}）", m.name, m.role)).collect::<Vec<_>>().join("、"));
+        p.push_str(&members.iter().map(|m| format!("{}（{}{}）", m.name, m.role, self.db.cap_suffix(&m.employee_id))).collect::<Vec<_>>().join("、"));
+        p.push_str(&format!("\n\n{}", crate::levels::LEVEL_RUBRIC));
         let memory = self.memory_block(Some(project_id), lead, None, &format!("{} {}", project.name, failure), "planning", project_id);
         if !memory.is_empty() {
             p.push_str(&format!("\n\n{memory}"));
@@ -315,7 +320,7 @@ impl Orchestrator {
         }
         p.push_str(&format!("\n\n规则：每次最多追加 {MAX_ADDED_PER_ADJUST} 个条目，每条都要写原因；已开始和已完成的条目不能动；涉及项目目标、需求或范围变更时，不要自己改，用 escalate 交给人（写明原因）。\
 条目用 #编号 指代（见上面的计划）；追加的条目 depends_on 里写 \"#编号\"（已有条目）或 \"N1\"、\"N2\"（本次追加的第几个）。\n"));
-        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"changes\":[{\"op\":\"add\",\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"depends_on\":[\"#2\"],\"files\":[\"路径\"],\"reason\":\"...\"},{\"op\":\"cancel\",\"item\":3,\"reason\":\"...\"},{\"op\":\"reassign\",\"item\":4,\"assignee\":\"成员名\"},{\"op\":\"retry\",\"item\":5,\"note\":\"换成更清楚的说明\"}],\"escalate\":null,\"summary\":\"一句话说明做了什么调整\"}");
+        p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"changes\":[{\"op\":\"add\",\"title\":\"...\",\"description\":\"...\",\"acceptance\":\"...\",\"assignee\":\"成员名\",\"depends_on\":[\"#2\"],\"files\":[\"路径\"],\"level\":3,\"reason\":\"...\"},{\"op\":\"cancel\",\"item\":3,\"reason\":\"...\"},{\"op\":\"reassign\",\"item\":4,\"assignee\":\"成员名\"},{\"op\":\"retry\",\"item\":5,\"note\":\"换成更清楚的说明\"}],\"escalate\":null,\"summary\":\"一句话说明做了什么调整\"}");
         let text = self.lead_turn(lead, project_id, &p, "调整计划", approver).await?;
         let adj = parse_adjustment(&text)?;
         let mut out = Applied { escalate: adj.escalate.clone(), summary: adj.summary.clone(), ..Default::default() };
@@ -328,7 +333,7 @@ impl Orchestrator {
                 continue;
             }
             match ch {
-                Change::Add { title, description, acceptance, assignee, depends_on, files, reason } => {
+                Change::Add { title, description, acceptance, assignee, depends_on, files, level, reason } => {
                     if new_ids.len() >= MAX_ADDED_PER_ADJUST {
                         out.rejected.push(format!("追加《{title}》：超过每次 {MAX_ADDED_PER_ADJUST} 个的上限"));
                         continue;
@@ -348,6 +353,7 @@ impl Orchestrator {
                     match self.db.create_plan_item(project_id, &NewPlanItem { title: title.clone(), description, acceptance, kind: "migrate".into(), module: String::new(), assignee_id: aid, deps }, None) {
                         Ok(id) => {
                             let _ = self.db.set_plan_item_files(&id, &files);
+                            let _ = self.db.set_plan_item_level(&id, level);
                             let _ = self.db.set_plan_note(&id, &format!("负责人追加：{reason}"));
                             new_ids.push(id);
                             out.added.push(title);

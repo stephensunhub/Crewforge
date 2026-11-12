@@ -12,6 +12,7 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
   const [o, setO] = useState<ModelsOverview | null>(null);
   const [eps, setEps] = useState<Endpoint[]>([]);
   const [emps, setEmps] = useState<Employee[]>([]);
+  const [caps, setCaps] = useState<Record<string, number>>({});
   const [editing, setEditing] = useState<Endpoint | "new" | null>(null);
   const [sel, setSel] = useState<string>(() => { try { const k = localStorage.getItem("models.sel") ?? "claude"; return k === "endpoints" ? "claude" : k; } catch { return "claude"; } });
   const [busy, setBusy] = useState("");
@@ -22,7 +23,7 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
   const pick = (k: string) => { setSel(k); try { localStorage.setItem("models.sel", k); } catch { /* 忽略 */ } };
 
   const load = useCallback(async () => {
-    try { const v = await api.modelsOverview(); setEps(await api.listEndpoints()); setEmps((await api.employees()).filter((e) => !e.archived)); setO(v); setPath(v.providers.find((p) => p.provider === "copilot")?.program ?? ""); } catch (e) { onError(String(e)); }
+    try { const v = await api.modelsOverview(); setEps(await api.listEndpoints()); setEmps((await api.employees()).filter((e) => !e.archived)); setCaps(Object.fromEntries(await api.employeeLevels())); setO(v); setPath(v.providers.find((p) => p.provider === "copilot")?.program ?? ""); } catch (e) { onError(String(e)); }
   }, [onError]);
   useEffect(() => { void load(); }, [load]);
 
@@ -84,12 +85,12 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
               <div className="page-head"><div><h2>员工与模型对照</h2>
                 <div className="hint">每位员工通过哪个通道、实际用哪个模型。要改，到“公司 → 员工”里编辑员工（通道和模型在同一个窗口里选）。</div></div></div>
               <table className="cost-table">
-                <thead><tr><th>编号</th><th>员工</th><th>岗位</th><th>通道</th><th>模型</th></tr></thead>
+                <thead><tr><th>编号</th><th>员工</th><th>岗位</th><th>通道</th><th>模型</th><th>能力上限</th></tr></thead>
                 <tbody>{emps.map((e) => {
                   const ep = e.endpoint_id ? eps.find((x) => x.id === e.endpoint_id) : undefined;
                   const provider = ep ? `${ep.name}（自建端点）` : e.provider === "copilot" ? "GitHub Copilot" : "Claude 订阅";
                   const model = e.model || (ep ? `${ep.models[0] ?? ""}（端点默认）` : "引擎默认 / 按用途");
-                  return <tr key={e.id}><td className="hint">{e.number > 0 ? `#${e.number}` : ""}</td><td><b>{e.name}</b></td><td className="hint">{e.role}</td><td>{provider}{ep && !ep.enabled && <span className="badge" style={{ marginLeft: 6 }}>已停用</span>}</td><td><code>{model}</code></td></tr>;
+                  return <tr key={e.id}><td className="hint">{e.number > 0 ? `#${e.number}` : ""}</td><td><b>{e.name}</b></td><td className="hint">{e.role}</td><td>{provider}{ep && !ep.enabled && <span className="badge" style={{ marginLeft: 6 }}>已停用</span>}</td><td><code>{model}</code></td><td>{caps[e.id] ? `${caps[e.id]} 级` : ""}{e.level_cap > 0 && <span className="hint"> · 手动</span>}</td></tr>;
                 })}</tbody>
               </table>
             </>

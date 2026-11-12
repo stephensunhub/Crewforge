@@ -503,9 +503,45 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             }
         }
         let qa_like = item.kind == "characterize" || ["测试", "QA", "质检", "评审", "验收"].iter().any(|k| item.title.contains(k));
-        let mut order: Vec<&(Employee, String)> = ms.iter().filter(|(_, r)| (r == "qa") == qa_like).collect();
-        order.extend(ms.iter().filter(|(_, r)| (r == "qa") != qa_like));
+        let preferred: Vec<&(Employee, String)> = ms.iter().filter(|(_, r)| (r == "qa") == qa_like).collect();
+        let others: Vec<&(Employee, String)> = ms.iter().filter(|(_, r)| (r == "qa") != qa_like).collect();
+        let cap = |e: &Employee| self.db().level_cap(e).unwrap_or(3);
+        if item.level > 0 {
+            // 有等级：选「够用的最低档」的人（便宜的活给便宜的模型，贵的模型留给难的活），同档按原来的顺序；先在对口角色里找，再在其他人里找
+            for group in [&preferred, &others] {
+                let best = group.iter().filter(|(e, _)| !busy_for(e)).map(|(e, _)| (cap(e), e)).filter(|(c, _)| *c >= item.level).min_by_key(|(c, _)| *c);
+                if let Some((_, e)) = best { return Some(e.clone()); }
+            }
+            // 项目里没有任何人够格：宁可交给能力最高的空闲的人试试，也不让它永远卡着
+            let max_cap = ms.iter().map(|(e, _)| cap(e)).max().unwrap_or(0);
+            if max_cap < item.level {
+                let best = preferred.iter().chain(others.iter()).filter(|(e, _)| !busy_for(e)).map(|(e, _)| (cap(e), e)).max_by_key(|(c, _)| *c);
+                if let Some((c, e)) = best {
+                    self.say("autopilot_step", format!("《{}》是 {} 级，项目里没有人的能力上限够，交给能力最高的 {}（{} 级）试试", item.title, item.level, e.name, c));
+                    return Some(e.clone());
+                }
+            }
+            return None; // 够格的人都在忙：等
+        }
+        let order: Vec<&(Employee, String)> = preferred.into_iter().chain(others).collect();
         order.into_iter().find(|(e, _)| !busy_for(e)).map(|(e, _)| e.clone())
+    }
+
+    /// 条目因为做不好（验证、评审没过）连续失败两次：等级加一，指派的人能力不够了就清掉指派，放回待开始，由更强的人接。
+    /// 环境问题（CLI 没起来、名额、网络）不算做不好，不升级。返回是否已升级。
+    fn escalate_level_after_failure(&self, id: &str, err: &str, fails: &mut std::collections::HashMap<String, u32>) -> bool {
+        if !crate::levels::is_capability_failure(err) { return false; }
+        let n = fails.entry(id.to_string()).or_insert(0);
+        *n += 1;
+        if *n < 2 { return false; }
+        match self.db().escalate_plan_item_level(id) {
+            Ok(Some(e)) => {
+                fails.remove(id);
+                self.say("autopilot_step", format!("《{}》连续两次没做好，等级由 {} 升到 {}{}", e.title, e.old, e.new, if e.assignee_cleared { "，原指派的人能力不够，换更强的人接" } else { "" }));
+                true
+            }
+            _ => false,
+        }
     }
 
     fn is_merged(&self, task_id: &str) -> bool {
@@ -1006,6 +1042,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let mut handled_human: HashSet<String> = HashSet::new();
         let mut final_review_done = false;
         let mut replans = 0usize;
+        let mut level_fails: std::collections::HashMap<String, u32> = Default::default();
         let mut escalation: Option<String> = None;
         let (status, reason) = loop {
             if self.ctl.stop.load(Ordering::SeqCst) { break ("stopped", "你停止了推进".to_string()); }
@@ -1100,6 +1137,9 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                     Err(e) => {
                         let title = self.db().get_plan_item(&id).ok().flatten().map(|i| i.title).unwrap_or_default();
                         self.say("autopilot_step", format!("《{title}》没做成：{e}"));
+                        if self.escalate_level_after_failure(&id, &e.to_string(), &mut level_fails) {
+                            continue; // 已升级、放回待开始，下一轮由更强的人接，不算失败，也不用负责人再调整
+                        }
                         failed.insert(id);
                         // 负责人看一眼：拆小、补前置、取消、改派或换个说明重试（每批次最多 2 次）
                         if replans < 2 && !self.ctl.stop.load(Ordering::SeqCst) && self.over_budget().is_none() {
