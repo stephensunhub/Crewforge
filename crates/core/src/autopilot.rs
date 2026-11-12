@@ -624,12 +624,16 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         // 要不要评审：改动大的一律评审，其余由负责人判断；小改动不开会
         let reviewer = match reviewer {
             Some(rv) => {
-                let files = self.orch.ws.changed_files(std::path::Path::new(&task.worktree_path), &task.base_commit).await.unwrap_or_default();
-                let (need, why) = {
-                    let _p = self.permit_for(lead.as_ref()).await;
-                    let _busy = lead.as_ref().map(|l| self.busy_scope(&l.name));
-                    let cur = self.db().get_plan_item(&item_id)?.unwrap_or(item.clone());
-                    self.orch.decide_review(&self.project_id, lead.as_ref(), &emp, &cur, &files, &*self.approver).await
+                // 读不到改动统计（工作区没了、git 出错）时无从判断，按评审处理，不能当作“没有改动”交给负责人
+                let (need, why) = match self.orch.ws.changed_files(std::path::Path::new(&task.worktree_path), &task.base_commit).await {
+                    Err(e) => (true, format!("读不到改动统计（{e}），无法判断，按评审处理")),
+                    Ok(files) if files.is_empty() => (true, "没有读到任何改动，无法判断，按评审处理".to_string()),
+                    Ok(files) => {
+                        let _p = self.permit_for(lead.as_ref()).await;
+                        let _busy = lead.as_ref().map(|l| self.busy_scope(&l.name));
+                        let cur = self.db().get_plan_item(&item_id)?.unwrap_or(item.clone());
+                        self.orch.decide_review(&self.project_id, lead.as_ref(), &emp, &cur, &files, &*self.approver).await
+                    }
                 };
                 if need {
                     self.say("autopilot_step", format!("《{}》开评审会：{}", item.title, clip(&why, 160)));
