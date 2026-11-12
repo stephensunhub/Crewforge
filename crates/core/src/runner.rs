@@ -73,7 +73,8 @@ pub async fn run_turn<A: Approver, O: Observer>(
     let resolved = db.resolve_endpoint(employee)?;
     // 同一个端点同时最多 max_concurrency 个员工在用（本地模型通常只能串行）；等待期间会话仍是空闲。
     // 放在换会话之前：交接摘要也要调用这个端点
-    let _slot = match &resolved {
+    #[allow(unused_assignments)]
+    let mut slot = match &resolved {
         Some(r) => Some(crate::endpoint::acquire_slot_with(&r.endpoint, &employee.id, crate::endpoint::slot_priority(&cfg.purpose, &cfg.origin)).await),
         None => None,
     };
@@ -231,7 +232,16 @@ pub async fn run_turn<A: Approver, O: Observer>(
                         PolicyDecision::Ask(why) => {
                             db.append_event_for(pid, "approval_requested", eid, sid,
                                 &json!({"tool": req.tool_name, "input": req.input, "reason": why}))?;
-                            (approver.ask(&employee.name, req, &why).await, "human", why)
+                            // 等人批准时模型是闲的：先把端点名额让给排队的人，批准后再排队拿回来（否则本地模型串行时，
+                            // 一个人等审批会把其他人全部堵住）
+                            let held = slot.take().is_some();
+                            let d = approver.ask(&employee.name, req, &why).await;
+                            if held {
+                                if let Some(r) = &resolved {
+                                    slot = Some(crate::endpoint::acquire_slot_with(&r.endpoint, &employee.id, 0).await);
+                                }
+                            }
+                            (d, "human", why)
                         }
                     };
                     db.append_event_for(pid, "approval_decided", eid, sid, &json!({

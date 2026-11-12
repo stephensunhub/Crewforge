@@ -90,6 +90,8 @@ impl Policy {
                 .find_map(|k| input.get(*k).and_then(Value::as_str));
             return match path {
                 Some(p) if self.inside_workdir(p) => PolicyDecision::Allow("工作区内写入"),
+                // 写提交说明文件（git commit -F 用）：直接放在 .git 目录下的 .txt，不会改到代码、钩子或配置
+                Some(p) if is_git_dir_note(p) => PolicyDecision::Allow("提交说明文件"),
                 Some(p) => PolicyDecision::Ask(format!("写入工作区之外的路径: {p}")),
                 None => PolicyDecision::Ask("无法确定写入路径".into()),
             };
@@ -127,6 +129,14 @@ fn is_risky(cmd: &str) -> bool {
 
 fn is_safe_command(cmd: &str) -> bool {
     is_listed_command(cmd, SAFE_COMMANDS)
+}
+
+/// `<某处>/.git/<名字>.txt`：.git 目录正下方的文本文件（提交说明）。
+fn is_git_dir_note(p: &str) -> bool {
+    let path = normalize(Path::new(p));
+    path.is_absolute()
+        && path.extension().is_some_and(|e| e == "txt")
+        && path.parent().and_then(Path::file_name).is_some_and(|n| n == ".git")
 }
 
 fn is_listed_command(cmd: &str, list: &[&str]) -> bool {
@@ -201,6 +211,15 @@ mod tests {
         assert!(matches!(p.decide("Bash", &j_!({"command": "git -C \"/a b/c\" log --oneline -8"})), PolicyDecision::Allow(_)));
         assert!(matches!(p.decide("Bash", &j_!({"command": "git -C /a/b push"})), PolicyDecision::Deny(_)));
         assert!(matches!(p.decide("Bash", &j_!({"command": "git -C /a/b status; rm x"})), PolicyDecision::Deny(_)));
+    }
+
+    #[test]
+    fn commit_message_files_in_git_dir_are_allowed_but_hooks_are_not() {
+        let p = Policy::new("/work/wt");
+        assert!(matches!(p.decide("Write", &j_!({"file_path": "/repo/.git/crewforge-msg-1.txt", "content": "x"})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Write", &j_!({"file_path": "/repo/.git/hooks/pre-commit", "content": "x"})), PolicyDecision::Ask(_)));
+        assert!(matches!(p.decide("Write", &j_!({"file_path": "/repo/.git/config", "content": "x"})), PolicyDecision::Ask(_)));
+        assert!(matches!(p.decide("Write", &j_!({"file_path": "/repo/.git/../x.txt", "content": "x"})), PolicyDecision::Ask(_)));
     }
     use super::*;
     use serde_json::json;
