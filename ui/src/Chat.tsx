@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { Avatar, formatApprovalInput, hhmm, short } from "./common";
+import { Avatar, Md, formatApprovalInput, hhmm, short } from "./common";
 import type { ApprovalReq, EventRow, Member, Project, RepoStatus, TaskView } from "./types";
 import type { ProjectTab } from "./ProjectView";
 
@@ -141,7 +141,7 @@ export function Chat({
             <div className="msg" key={e.id}>
               <div>
                 <div className="who">{label} → @{name}{p.resume ? " · 续接会话" : ""}</div>
-                <div className="bubble">{p.prompt}</div>
+                <div className="bubble md-bubble"><Md text={String(p.prompt ?? "")} compact /></div>
               </div>
             </div>
           );
@@ -150,7 +150,7 @@ export function Chat({
           <div className="msg me" key={e.id}>
             <div>
               <div className="who" style={{ textAlign: "right" }}>你 → @{name}{p.resume ? " · 续接会话" : ""}</div>
-              <div className="bubble">{p.prompt}</div>
+              <div className="bubble md-bubble"><Md text={String(p.prompt ?? "")} compact /></div>
             </div>
           </div>
         );
@@ -177,7 +177,7 @@ export function Chat({
         return (
           <div className="msg" key={e.id}>
             <Avatar name={name} />
-            <div><div className="who">{name} · {hhmm(e.ts)}</div><div className="bubble">{p.text}</div></div>
+            <div><div className="who">{name} · {hhmm(e.ts)}</div><div className="bubble md-bubble"><Md text={String(p.text ?? "")} compact /></div></div>
           </div>
         );
       case "tool_use":
@@ -293,7 +293,7 @@ export function Chat({
         <div className="row">
           <textarea
             value={text}
-            placeholder="例如：@alice 给登录接口补上单元测试    （Enter 发送，Shift+Enter 换行）"
+            placeholder="例如：@alice 给登录接口补上单元测试    （Enter 发送，Shift+Enter 换行，支持 Markdown）"
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Tab" && mention && suggestions.length > 0) { e.preventDefault(); complete(suggestions[0]); return; }

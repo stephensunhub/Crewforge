@@ -445,3 +445,6 @@ button.u-cell:hover { background: var(--panel-2); }
 .projbar.slim .projbar-foot { margin-top: auto; border-top: none; }
 .projbar.slim .projbar-foot .scope { justify-content: center; padding: 8px 0; }
 .projbar:not(.slim) .projbar-foot { margin-top: 0; }
+.bubble.md-bubble { white-space: normal; }
+.md-bubble .md-code { margin: 4px 0; font-size: 12px; white-space: pre; }
+.md-table { border-collapse: collapse; margin: 6px 0; font-size: 13px; } .md-table th, .md-table td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; } .md-table th { background: var(--panel-2); font-weight: 600; }

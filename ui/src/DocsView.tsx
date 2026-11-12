@@ -1,34 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import type { DocFile } from "./types";
-
-/** 很小的 Markdown 渲染：标题、列表、代码块、引用、粗体和行内代码；不引入依赖，也不执行任何 HTML。 */
-function Md({ text }: { text: string }) {
-  const inline = (s: string) => s.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).map((p, i) => p.startsWith("`") && p.endsWith("`") && p.length > 2 ? <code key={i}>{p.slice(1, -1)}</code> : p.startsWith("**") && p.endsWith("**") && p.length > 4 ? <b key={i}>{p.slice(2, -2)}</b> : <span key={i}>{p}</span>);
-  const out: React.ReactElement[] = [];
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    if (l.startsWith("```")) {
-      const buf: string[] = [];
-      for (i++; i < lines.length && !lines[i].startsWith("```"); i++) buf.push(lines[i]);
-      out.push(<pre key={i} className="md-code">{buf.join("\n")}</pre>);
-    } else if (/^#{1,4} /.test(l)) {
-      const n = l.match(/^#+/)![0].length;
-      const Tag = (`h${Math.min(n + 1, 5)}`) as "h2";
-      out.push(<Tag key={i} style={{ margin: "14px 0 6px" }}>{inline(l.replace(/^#+ /, ""))}</Tag>);
-    } else if (/^\s*[-*] /.test(l)) {
-      out.push(<div key={i} style={{ paddingLeft: 16 + (l.match(/^\s*/)![0].length) * 4, textIndent: -12 }}>• {inline(l.replace(/^\s*[-*] /, ""))}</div>);
-    } else if (l.startsWith("> ")) {
-      out.push(<div key={i} className="hint" style={{ borderLeft: "3px solid var(--line)", paddingLeft: 10, margin: "6px 0" }}>{inline(l.slice(2))}</div>);
-    } else if (l.trim() === "") {
-      out.push(<div key={i} style={{ height: 6 }} />);
-    } else {
-      out.push(<div key={i}>{inline(l)}</div>);
-    }
-  }
-  return <div className="md">{out}</div>;
-}
+import { Md } from "./common";
 
 export function DocsView({ projectId, hasLead, onError }: { projectId: string; hasLead: boolean; onError: (m: string) => void }) {
   const [files, setFiles] = useState<DocFile[] | null>(null);

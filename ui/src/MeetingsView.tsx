@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { Avatar, Field, ISSUE_STATUS_LABEL, MEETING_KIND_LABEL, Modal, ReasonButton, focusAction, hhmm } from "./common";
+import { Avatar, Field, ISSUE_STATUS_LABEL, MEETING_KIND_LABEL, Md, Modal, ReasonButton, focusAction, hhmm } from "./common";
 import type { ActionItem, EventRow, IssueView, Meeting, MeetingDetail, MeetingKind, Member, TaskView } from "./types";
 
 export function MeetingsView({ projectId, meetings, members, issues, tasks, events, running, focusId, onFocused, onChanged, onError }: {
@@ -201,10 +201,10 @@ function MeetingRoom({ id, members, issues, tasks, events, running, onChanged, o
           if (x.author_kind === "human" || x.author_kind === "autopilot") {
             // 旧数据里自动发出的请求也记成了 human，按末尾的标记认出来
             const auto = x.author_kind === "autopilot" || x.content.includes("这条消息由负责人流程自动发出");
-            return <div className="msg me" key={x.id}><div><div className="who" style={{ textAlign: "right" }}>{auto ? "自主推进" : "你"} · {hhmm(x.created_at)}</div><div className="bubble">{x.content}</div></div></div>;
+            return <div className="msg me" key={x.id}><div><div className="who" style={{ textAlign: "right" }}>{auto ? "自主推进" : "你"} · {hhmm(x.created_at)}</div><div className="bubble md-bubble"><Md text={x.content} compact /></div></div></div>;
           }
           const n = nameOf(x.employee_id);
-          return <div className="msg" key={x.id}><Avatar name={n} /><div><div className="who">{n} · {hhmm(x.created_at)}</div><div className="bubble">{x.content}</div></div></div>;
+          return <div className="msg" key={x.id}><Avatar name={n} /><div><div className="who">{n} · {hhmm(x.created_at)}</div><div className="bubble md-bubble"><Md text={x.content} compact /></div></div></div>;
         })}
         {waiting.filter((n) => running.includes(n)).map((n) => <div className="line" key={n} style={{ paddingLeft: 0 }}><span>● {n} 正在回复…</span></div>)}
       </div>
@@ -245,7 +245,7 @@ function MeetingRoom({ id, members, issues, tasks, events, running, onChanged, o
             {capped && <span className="hint" style={{ color: "var(--warn)" }}>AI 发言已达上限，被 @ 的成员不会再回复</span>}
           </div>
           <div className="row">
-            <textarea value={text} placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" onChange={(e) => setText(e.target.value)}
+            <textarea value={text} placeholder="说点什么…（Enter 发送，Shift+Enter 换行，支持 Markdown）" onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Tab" && mention && sugg.length > 0) { e.preventDefault(); complete(sugg[0]); return; }
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); }
