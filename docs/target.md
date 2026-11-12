@@ -1562,7 +1562,7 @@ QA 的测试经验可以被全栈工程师检索。
 - **用途默认模型**（opus/sonnet 等别名）对端点员工不生效，用端点上的模型。
 - 数据库迁移 19：`llm_endpoints` 表 + `employees.endpoint_id`。
 - **macOS 本地网络权限**：访问局域网地址需要发起进程的宿主 App 获得“本地网络”授权，否则 Node/Claude Code 报 `EHOSTUNREACH`，而系统自带的 `curl` 不受限。已加 `Info.plist` 的 `NSLocalNetworkUsageDescription`；“测试连接”先由应用进程自己连一次 TCP，避免“测试通过、员工连不上”。
-- 已验证：核心单元测试、假 CLI 集成测试（注入范围、模型、窗口换会话）、curl 请求方式（用本地假服务）、`192.168.8.102` 的 `/v1/messages` 直连（qwen3.8:27b 返回正常，含 thinking 块）、真实 claude 带这些环境变量时不再走订阅。
+- 已验证：核心单元测试、假 CLI 集成测试（注入范围、模型、窗口换会话）、curl 请求方式（用本地假服务）、局域网 Ollama 的 `/v1/messages` 直连（qwen3.8:27b 返回正常，含 thinking 块）、真实 claude 带这些环境变量时不再走订阅。
 - **未验证**：真实 Claude Code 通过 Crewforge 连到 Ollama 完成一次带工具调用的任务（开发环境的终端没有本地网络权限，被系统拦截）；27B 在 Claude Code 长系统提示下的首轮延迟；MCP 团队工具在该模型上的调用成功率。
 
 ### 20.55 应用重启后自动恢复自主推进

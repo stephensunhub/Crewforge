@@ -43,7 +43,7 @@ npm run tauri dev                                    # 开发运行（beforeDevC
 
 ## 约定
 
-- 数据库迁移：各模块导出 `MIGRATION_N` 常量，在 `db.rs` 的 `MIGRATIONS` 数组里按顺序登记（现在到 20）。只追加，不改已有的。
+- 数据库迁移：各模块导出 `MIGRATION_N` 常量，在 `db.rs` 的 `MIGRATIONS` 数组里按顺序登记（现在到 25）。只追加，不改已有的。
 - 测试用 shell 脚本当假 CLI（输出 stream-json），见 `crates/core/tests/` 里的 `fake_cli` 等；审批用 `Deny` 之类的假 `Approver`。检查点、合并等用真实 git 仓库（`tempfile`）。靠时间判断的测试要给足余量，机器忙时会偶发失败。
 - 默认数据目录 `~/Library/Application Support/Crewforge`，环境变量 `CREWFORGE_HOME` 可改。调试时先复制 `crewforge.db`（连同 `-wal`、`-shm`）再用 `sqlite3 -readonly` 查。
 - 提交信息用中文，结尾加 `Co-Authored-By` 署名行；一个提交一件事。

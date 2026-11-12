@@ -3,7 +3,7 @@
 //!
 //! 运行（默认忽略，会消耗大量真实额度）：
 //!   cargo test -p crewforge-cli --test snake_run -- --ignored --nocapture
-//! 环境变量：SNAKE_DIR（项目目录，默认 /Users/stephen/Documents/workspace/snake）、CREWFORGE_HOME（数据目录，默认真实目录）、
+//! 环境变量：SNAKE_DIR（项目目录，默认 $HOME/Documents/workspace/snake）、CREWFORGE_HOME（数据目录，默认真实目录）、
 //!   SNAKE_PROGRAM（替换 claude，用于空跑）、SNAKE_DRYRUN=1（空跑：用假 CLI 和固定计划走通驱动自身的流程）、SNAKE_MCP_EXE。
 //!
 //! CTO 的决策规则（写死、可审计）：验证没通过不合并；评审里“合并前”的行动项交给负责人修，其余写明原因驳回；
@@ -309,7 +309,7 @@ fn parity_commands() -> Vec<BaselineCommand> {
 #[tokio::test]
 #[ignore]
 async fn refactor_python_to_rust_with_a_real_team() {
-    let dir = PathBuf::from(std::env::var("REFACTOR_DIR").unwrap_or_else(|_| "/Users/stephen/Documents/workspace/refactor-demo/ledger".into())).canonicalize().unwrap();
+    let dir = PathBuf::from(std::env::var("REFACTOR_DIR").unwrap_or_else(|_| format!("{}/Documents/workspace/refactor-demo/ledger", std::env::var("HOME").unwrap_or_default()))).canonicalize().unwrap();
     let hidden = std::env::var("REFACTOR_HIDDEN").ok().map(PathBuf::from);
     let data = std::env::var("CREWFORGE_HOME").map(PathBuf::from).unwrap_or_else(|_| crewforge_core::db::default_data_dir());
     let db = Arc::new(Db::open(&data).unwrap());

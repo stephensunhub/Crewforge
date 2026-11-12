@@ -3,7 +3,7 @@
 //!
 //! 运行（默认忽略，会消耗大量真实额度）：
 //!   cargo test -p crewforge-cli --test snake_run -- --ignored --nocapture
-//! 环境变量：SNAKE_DIR（项目目录，默认 /Users/stephen/Documents/workspace/snake）、CREWFORGE_HOME（数据目录，默认真实目录）、
+//! 环境变量：SNAKE_DIR（项目目录，默认 $HOME/Documents/workspace/snake）、CREWFORGE_HOME（数据目录，默认真实目录）、
 //!   SNAKE_PROGRAM（替换 claude，用于空跑）、SNAKE_DRYRUN=1（空跑：用假 CLI 和固定计划走通驱动自身的流程）、SNAKE_MCP_EXE。
 //!
 //! CTO 的决策规则（写死、可审计）：验证没通过不合并；评审里“合并前”的行动项交给负责人修，其余写明原因驳回；
@@ -283,7 +283,7 @@ async fn build_snake_with_a_real_team() {
     let dry = std::env::var("SNAKE_DRYRUN").is_ok();
     // 续跑模式：项目已经存在，读取已有项目，从 SNAKE_FOLLOWUP 指定的 JSON 文件里追加条目，走同样的流水线
     let resume = std::env::var("SNAKE_RESUME").is_ok();
-    let dir = PathBuf::from(std::env::var("SNAKE_DIR").unwrap_or_else(|_| "/Users/stephen/Documents/workspace/snake".into()));
+    let dir = PathBuf::from(std::env::var("SNAKE_DIR").unwrap_or_else(|_| format!("{}/Documents/workspace/snake", std::env::var("HOME").unwrap_or_default())));
     if !resume && dir.exists() && std::fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
         panic!("{} 已存在且不为空，请先处理（本演练只在全新的目录里创建项目）", dir.display());
     }

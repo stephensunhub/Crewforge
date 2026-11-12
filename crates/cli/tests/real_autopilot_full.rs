@@ -32,7 +32,7 @@ const GOAL: &str = "做一个命令行待办清单工具 todo.py：只用 Python
 #[tokio::test]
 #[ignore]
 async fn full_autopilot_run_on_a_real_small_project() {
-    let dir = PathBuf::from(std::env::var("AUTOPILOT_DIR").unwrap_or_else(|_| "/Users/stephen/Documents/workspace/autopilot-demo/todo-cli".into()));
+    let dir = PathBuf::from(std::env::var("AUTOPILOT_DIR").unwrap_or_else(|_| format!("{}/Documents/workspace/autopilot-demo/todo-cli", std::env::var("HOME").unwrap_or_default())));
     assert!(!dir.exists() || std::fs::read_dir(&dir).map(|mut d| d.next().is_none()).unwrap_or(true), "{} 已存在且不为空", dir.display());
     std::fs::create_dir_all(dir.join("tests")).unwrap();
     std::fs::write(dir.join("README.md"), "# todo-cli\n\n（等待负责人和团队完善）\n").unwrap();
