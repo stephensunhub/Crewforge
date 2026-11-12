@@ -355,6 +355,12 @@ impl Drop for BusyScope {
     }
 }
 
+/// 后台整理结束（含 panic、被中止）时复位 `housekeeping` 标记。
+struct HousekeepingGuard<A: Approver + Send + Sync + 'static>(Arc<Autopilot<A>>);
+impl<A: Approver + Send + Sync + 'static> Drop for HousekeepingGuard<A> {
+    fn drop(&mut self) { self.0.housekeeping.store(false, Ordering::SeqCst); }
+}
+
 impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     /// 开始前的检查：项目要有 AI 负责人；此时点“开始”就是人对计划的最后确认——提议的条目一并批准。
     pub fn prepare(orch: &Arc<Orchestrator>, project_id: &str, max_calls: i64, max_minutes: i64) -> Result<AutopilotRun> {
@@ -1057,7 +1063,12 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                         // 整理记忆和行动项都是负责人在慢模型上做的（十几分钟），放到后台，不挡着派下一个条目；同一时间只留一个在跑
                         if !self.housekeeping.swap(true, Ordering::SeqCst) {
                             let me = self.clone();
-                            let h = tokio::spawn(async move { me.maybe_curate(false).await; me.maybe_triage(false).await; me.housekeeping.store(false, Ordering::SeqCst); });
+                            let h = tokio::spawn(async move {
+                                // 守卫：整理任务 panic 或被中止时也复位标记，否则本批次之后再也不整理
+                                let _reset = HousekeepingGuard(me.clone());
+                                me.maybe_curate(false).await;
+                                me.maybe_triage(false).await;
+                            });
                             let mut v = self.bg_standups.lock().unwrap();
                             v.retain(|h| !h.is_finished());
                             v.push(h);

@@ -45,7 +45,7 @@ export function DocsView({ projectId, hasLead, onError }: { projectId: string; h
 
   return (
     <div className="split">
-      <aside className="split-side" style={{ width: 260 }}>
+      <aside className="split-side" style={{ width: "clamp(200px, 24vw, 260px)" }}>
         <div className="split-head"><b>项目文档</b>{files && <span className="hint">{files.length} 份</span>}</div>
         <div className="split-list">
           {files && files.length === 0 && <div className="hint" style={{ padding: 12 }}>主分支的 docs/ 里还没有 Markdown 文档。{hasLead ? "可以让负责人生成。" : ""}</div>}

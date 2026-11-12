@@ -77,7 +77,10 @@ impl Policy {
                     return PolicyDecision::Allow("只读命令");
                 }
             }
-            return PolicyDecision::Deny(format!("会议中为只读模式，不允许使用 {tool}"));
+            if tool == "Bash" {
+                return PolicyDecision::Deny("会议是只读模式：只能执行单条查看类命令（ls、cat、head、tail、wc、grep、rg、git status/diff/log/show），不能用 ; & | 等串联，不能构建、测试或运行程序。没法验证的事请在发言里写“未验证：原因”，不要再重试命令。".to_string());
+            }
+            return PolicyDecision::Deny(format!("会议中为只读模式，不允许使用 {tool}（只能读文件、查 git 记录）；没法验证的事请写“未验证：原因”"));
         }
         if WRITE_TOOLS.contains(&tool) {
             let path = ["file_path", "notebook_path", "path"]
@@ -165,6 +168,17 @@ fn normalize(p: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json as j_;
+
+    #[test]
+    fn meeting_bash_denial_explains_what_is_allowed_so_models_stop_retrying() {
+        let p = Policy::read_only("/w");
+        match p.decide("Bash", &j_!({"command": "echo a; go test ./..."})) {
+            PolicyDecision::Deny(m) => assert!(m.contains("单条查看类命令") && m.contains("未验证：原因"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(p.decide("Bash", &j_!({"command": "git log --oneline"})), PolicyDecision::Allow(_)));
+    }
     use super::*;
     use serde_json::json;
 

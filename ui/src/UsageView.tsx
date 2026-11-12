@@ -355,6 +355,7 @@ function SessionsTable({ refreshKey, onError }: { refreshKey: number; onError: (
         {v.limit > 0 ? `上下文超过 ${fmtTok(v.limit)} 后，该员工的下一次任务会换成新会话（设置项 context_limit，0 为不限）。` : "未设置上下文上限（context_limit = 0）。"}
         上下文越大，每一步越贵。
       </div>
+      <div style={{ overflowX: "auto" }}>
       <table className="cost-table u-table">
         <thead><tr><th>员工</th><th>目录</th><th>状态</th><th>当前上下文</th><th>占上限</th><th>最近活动</th><th>已换新</th></tr></thead>
         <tbody>{v.sessions.map((x) => {
@@ -373,6 +374,7 @@ function SessionsTable({ refreshKey, onError }: { refreshKey: number; onError: (
           );
         })}</tbody>
       </table>
+      </div>
     </div>
   );
 }

@@ -61,6 +61,9 @@ pub fn format_messages(msgs: &[MeetingMessage], name_of: &dyn Fn(Option<&str>) -
     out
 }
 
+/// 会议里能做什么、不能做什么，写在每场会议的提示词里，免得员工反复试被拒绝的命令（本地模型上每次试错都是几分钟）。
+const MEETING_TOOLS_NOTE: &str = "可以读文件、用 grep/rg 搜索、用 git log/diff/show 看记录（每次只执行一条命令，不要用 ; & | 串联）；不能构建、测试或运行程序，也不能联网查资料。没法验证的事，在发言里写“未验证：原因”，由负责人安排，不要反复尝试被拒绝的命令。";
+
 impl Orchestrator {
     fn name_of(&self, id: Option<&str>) -> String {
         id.and_then(|i| self.db.employee_by_id(i).ok().flatten()).map(|e| e.name).unwrap_or_else(|| "未知".into())
@@ -158,11 +161,11 @@ impl Orchestrator {
         p.push_str(&format!("\n{}：\n{}\n", if first { "目前的讨论" } else { "自你上次发言以来的新消息" }, if transcript.is_empty() { "（暂无）".into() } else { transcript }));
         if meeting.kind == "standup" {
             let fmt = if crate::protocol::enabled(&self.db) { crate::protocol::STANDUP_FORMAT } else { "按固定四项报告——做完了什么 / 在做什么 / 被什么卡住 / 依赖别人的什么（含你对接口、文件归属、先后顺序的假设）。" };
-            p.push_str(&format!("\n这是对齐会：只读，不要修改任何文件。{fmt} "));
+            p.push_str(&format!("\n这是对齐会：只读，不要修改任何文件。{MEETING_TOOLS_NOTE}{fmt} "));
             p.push_str("以上面“系统记录的现状”为准，有出入就指出；对照前面已发言的人，如果你们对同一个接口、文件或顺序的理解不一致，或你依赖的东西别人没提到，明确指出。不要做决策，不要展开讨论方案。150 字以内。");
             return Ok(p);
         }
-        p.push_str("\n要求：你是这场会议的参与者，处于只读模式，不要修改任何文件。请直接回应上面的讨论，");
+        p.push_str(&format!("\n要求：你是这场会议的参与者，处于只读模式，不要修改任何文件。{MEETING_TOOLS_NOTE}请直接回应上面的讨论，"));
         p.push_str("控制在 200 字以内：同意或反对都要给出理由；有不确定的地方就提问；不要重复别人已经说过的话。");
         if meeting.kind == "code_review" {
             let fmt = if crate::protocol::enabled(&self.db) { crate::protocol::REVIEW_FORMAT } else { "指出具体的文件和问题。" };
