@@ -254,6 +254,7 @@ mod tests {
         let h = 3_600_000;
         assert_eq!(db.align_due(&p, now_ms() + 5 * h).unwrap(), None, "间隔内不开");
         assert_eq!(db.align_due(&p, now_ms() + 13 * h).unwrap(), None, "过了间隔但没有变化：不开，不花额度");
+        std::thread::sleep(std::time::Duration::from_millis(5)); // 事件按毫秒时间戳比较，同一毫秒会被当成“会议之前的事”
         db.append_event_for(Some(&p), "task_merged", None, None, &serde_json::json!({})).unwrap();
         assert!(db.align_due(&p, now_ms() + 13 * h).unwrap().unwrap().contains("1 项变化"));
     }

@@ -44,6 +44,47 @@ pub fn forced_review_reason(files: &[FileChange]) -> Option<String> {
     }
 }
 
+/// 小到不值得调用负责人的改动：总改动 ≤ TRIVIAL_MAX_LINES 行，且（全是文档文件，或改动的每一行都是注释/空行）。
+/// 负责人带着几万字上下文判断一个 3 行的注释订正，实测要 3.9 分钟，比看一眼 diff 还慢。
+pub const TRIVIAL_MAX_LINES: u32 = 10;
+
+fn is_comment_line(t: &str) -> bool {
+    let t = t.trim();
+    if t.is_empty() { return true; }
+    if t.starts_with("//") || t.starts_with("/*") || t.starts_with("*/") || t.starts_with("<!--") { return true; }
+    // # 开头：脚本、YAML、Python 的注释；但 Rust 属性 #[..]、shebang、C 预处理指令是代码
+    if let Some(rest) = t.strip_prefix('#') {
+        return !(rest.starts_with('[') || rest.starts_with('!') || ["include", "define", "if", "else", "elif", "endif", "pragma", "undef", "error"].iter().any(|k| rest.trim_start().starts_with(k)));
+    }
+    false
+}
+
+/// 改动（diff 里以 + 或 - 开头的行）是不是全是注释和空行，且至少有一行。
+pub fn comment_only_diff(diff: &str) -> bool {
+    let mut n = 0;
+    for l in diff.lines() {
+        if l.starts_with("+++") || l.starts_with("---") { continue; }
+        if let Some(body) = l.strip_prefix('+').or_else(|| l.strip_prefix('-')) {
+            if !is_comment_line(body) { return false; }
+            n += 1;
+        }
+    }
+    n > 0
+}
+
+/// 不必问负责人、直接不评审的小改动；返回原因。
+pub fn trivial_skip_reason(files: &[FileChange], diff: &str) -> Option<String> {
+    let (lines, _) = change_size(files);
+    if files.is_empty() || files.iter().any(|f| f.untracked) || lines > TRIVIAL_MAX_LINES { return None; }
+    if files.iter().all(|f| [".md", ".rst", ".adoc"].iter().any(|e| f.path.to_lowercase().ends_with(e))) {
+        return Some(format!("只改了文档（{lines} 行），不开评审会"));
+    }
+    if comment_only_diff(diff) {
+        return Some(format!("只改了注释（{lines} 行），不开评审会"));
+    }
+    None
+}
+
 pub fn parse_review_decision(text: &str) -> Result<ReviewDecision> {
     let (a, b) = (text.find('{').context("输出里没有 JSON")?, text.rfind('}').context("输出里没有 JSON")?);
     if b <= a {
@@ -70,10 +111,16 @@ fn stat_table(files: &[FileChange]) -> String {
 impl Orchestrator {
     /// 决定这个条目要不要评审。返回（是否评审，原因）。从不失败：出错一律按评审处理。
     pub async fn decide_review<A: Approver>(
-        &self, project_id: &str, lead: Option<&Employee>, developer: &Employee, item: &PlanItem, files: &[FileChange], approver: &A,
+        &self, project_id: &str, lead: Option<&Employee>, developer: &Employee, item: &PlanItem, files: &[FileChange], diff: &str, approver: &A,
     ) -> (bool, String) {
         if let Some(why) = forced_review_reason(files) {
             return (true, why);
+        }
+        if let Some(why) = trivial_skip_reason(files, diff) {
+            let _ = self.db.append_event_for(Some(project_id), "review_decided", None, None, &json!({
+                "item": item.title, "review": false, "reason": why, "lines": change_size(files).0, "files": files.len(), "by": "rule",
+                "text": format!("《{}》{}", item.title, why)}));
+            return (false, why);
         }
         let Some(lead) = lead else {
             return (true, "项目没有 AI 负责人，按默认流程评审".into());
@@ -114,6 +161,31 @@ mod tests {
         let many: Vec<_> = (0..8).map(|i| fc(&format!("f{i}"), 1, 0)).collect();
         assert!(forced_review_reason(&many).is_some());
         assert!(forced_review_reason(&many[..7]).is_none());
+    }
+
+    #[test]
+    fn comment_only_changes_are_recognised_and_code_is_not() {
+        let d = |body: &str| format!("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n ctx\n{body}\n");
+        assert!(comment_only_diff(&d("-# 旧注释\n+# 新注释")));
+        assert!(comment_only_diff(&d("-  // old\n+  // new\n+")));
+        assert!(!comment_only_diff(&d("-# 旧注释\n+x := 1")));
+        assert!(!comment_only_diff(&d("+#[derive(Debug)]")), "Rust 属性是代码");
+        assert!(!comment_only_diff(&d("+#!/bin/sh")), "shebang 是代码");
+        assert!(!comment_only_diff(&d("+#include <x.h>")));
+        assert!(!comment_only_diff("diff --git a/x b/x\n--- a/x\n+++ b/x\n"), "没有改动行不算");
+    }
+
+    #[test]
+    fn trivial_rule_needs_few_lines_tracked_files_and_docs_or_comments() {
+        let md = FileChange { path: "docs/usage.md".into(), insertions: Some(3), deletions: Some(1), untracked: false };
+        assert!(trivial_skip_reason(&[md.clone()], "").is_some());
+        let big_md = FileChange { insertions: Some(20), ..md.clone() };
+        assert!(trivial_skip_reason(&[big_md], "").is_none(), "超过 10 行不走快速规则");
+        let sh = FileChange { path: "test/smoke.sh".into(), insertions: Some(2), deletions: Some(1), untracked: false };
+        assert!(trivial_skip_reason(&[sh.clone()], "+++ b/x\n+# note\n-# old\n").is_some());
+        assert!(trivial_skip_reason(&[sh], "+++ b/x\n+echo hi\n").is_none(), "代码改动交给负责人");
+        let new = FileChange { path: "NEW.md".into(), insertions: None, deletions: None, untracked: true };
+        assert!(trivial_skip_reason(&[new], "").is_none(), "未跟踪的新文件看不到行数，不走快速规则");
     }
 
     #[test]

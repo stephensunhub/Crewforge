@@ -641,10 +641,13 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                     Err(e) => (true, format!("读不到改动统计（{e}），无法判断，按评审处理")),
                     Ok(files) if files.is_empty() => (true, "没有读到任何改动，无法判断，按评审处理".to_string()),
                     Ok(files) => {
-                        let _p = self.permit_for(lead.as_ref()).await;
-                        let _busy = lead.as_ref().map(|l| self.busy_scope(&l.name));
+                        let diff = self.orch.ws.diff(std::path::Path::new(&task.worktree_path), &task.base_commit, 30_000).await.unwrap_or_default();
+                        // 改动很大（必须评审）或很小（直接不评审）都不调用模型，也不占调度许可、不计预算
+                        let by_rule = crate::review_gate::forced_review_reason(&files).is_some() || crate::review_gate::trivial_skip_reason(&files, &diff).is_some();
+                        let _p = if by_rule { None } else { Some(self.permit_for(lead.as_ref()).await) };
+                        let _busy = if by_rule { None } else { lead.as_ref().map(|l| self.busy_scope(&l.name)) };
                         let cur = self.db().get_plan_item(&item_id)?.unwrap_or(item.clone());
-                        self.orch.decide_review(&self.project_id, lead.as_ref(), &emp, &cur, &files, &*self.approver).await
+                        self.orch.decide_review(&self.project_id, lead.as_ref(), &emp, &cur, &files, &diff, &*self.approver).await
                     }
                 };
                 if need {

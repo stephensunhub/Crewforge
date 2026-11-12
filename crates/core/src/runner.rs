@@ -52,6 +52,12 @@ pub struct TurnConfig {
     pub origin: String,
 }
 
+/// 每个（员工, 项目路径）一把锁，保护换会话的那一段。
+fn rotation_lock(employee_id: &str, project: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static L: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> = std::sync::OnceLock::new();
+    L.get_or_init(Default::default).lock().unwrap().entry(format!("{employee_id}|{project}")).or_default().clone()
+}
+
 pub async fn run_turn<A: Approver, O: Observer>(
     db: &Db,
     employee: &Employee,
@@ -75,6 +81,10 @@ pub async fn run_turn<A: Approver, O: Observer>(
     let mut rotated_from: Option<u64> = None;
     let mut handoff: Option<String> = None;
     let limit = rotation_limit(db, employee);
+    // 同一个员工的会话同一时间只允许一个调用做“判断是否超限 → 写摘要 → 换会话”：并发名额大于 1 时，
+    // 同一员工的两个调用会同时看到超限，各写一份摘要（本地模型上各要几分钟）、各换一次会话
+    let _rotation = rotation_lock(&employee.id, &project).lock_owned().await;
+    session = db.get_or_create_session(&employee.id, &project)?; // 等锁期间别的调用可能已经换过了，重新读
     if limit > 0 && session.started && session.status != "running" {
         if let Some(ctx) = db.session_context_tokens(&session.id)? {
             if ctx > limit {
@@ -97,6 +107,7 @@ pub async fn run_turn<A: Approver, O: Observer>(
             }
         }
     }
+    drop(_rotation); // 只保护换会话这一段，不把同一员工的调用整个串行化
     let (eid, sid) = (Some(employee.id.as_str()), Some(session.id.as_str()));
     let pid = cfg.project_id.as_deref();
 

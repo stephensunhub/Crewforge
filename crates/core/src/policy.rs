@@ -30,6 +30,8 @@ pub struct Policy {
 const READ_ONLY_COMMANDS: &[&str] = &[
     "ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg",
     "git status", "git diff", "git log", "git show",
+    // 模型常写成 git --no-pager ...（避免分页器卡住）
+    "git --no-pager status", "git --no-pager diff", "git --no-pager log", "git --no-pager show",
 ];
 
 const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "NotebookRead", "TodoWrite"];
@@ -178,6 +180,9 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(matches!(p.decide("Bash", &j_!({"command": "git log --oneline"})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Bash", &j_!({"command": "git --no-pager diff"})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Bash", &j_!({"command": "git --no-pager log --oneline -6"})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Bash", &j_!({"command": "git --no-pager push"})), PolicyDecision::Deny(_)), "只放行查看类的 git 子命令");
     }
     use super::*;
     use serde_json::json;
