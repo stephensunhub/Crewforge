@@ -74,7 +74,7 @@ export const api = {
   removeEndpoint: (id: string) => invoke<void>("remove_endpoint", { id }),
   setEmployeeEndpoint: (id: string, endpointId: string | null, model: string) => invoke<void>("set_employee_endpoint", { id, endpointId, model }),
   testEndpoint: (baseUrl: string, model: string, token: string | null, id: string | null) => invoke<EndpointTest>("test_endpoint", { baseUrl, model, token, id }),
-  discoverEndpointModels: (baseUrl: string) => invoke<string[]>("discover_endpoint_models", { baseUrl }),
+  discoverEndpointModels: (baseUrl: string, token: string | null = null, id: string | null = null) => invoke<string[]>("discover_endpoint_models", { baseUrl, token, id }),
   installCopilot: () => invoke<string>("install_copilot"),
   setCopilotProgram: (path: string) => invoke<void>("set_copilot_program", { path }),
   usageOverview: (filter: UsageFilter) => invoke<UsageOverview>("usage_overview", { filter, tzOffsetMinutes: -new Date().getTimezoneOffset() }),

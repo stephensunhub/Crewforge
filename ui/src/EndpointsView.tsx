@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { api } from "./api";
 import { Field, Modal } from "./common";
-import type { Endpoint, EndpointInput, EndpointTest } from "./types";
+import { endpointToInput } from "./llm";
+import type { Employee, Endpoint, EndpointInput, EndpointTest } from "./types";
 
 const envToText = (e: Record<string, string>) => Object.entries(e).map(([k, v]) => `${k}=${v}`).join("\n");
 const textToEnv = (t: string) => {
@@ -11,38 +12,92 @@ const textToEnv = (t: string) => {
 };
 const splitModels = (t: string) => t.split(/[\n,]/).map((m) => m.trim()).filter(Boolean);
 
-/** 系统级 LLM 端点：员工背后连哪个大模型服务。默认（不选端点）就是本机 Claude 订阅。 */
-export function EndpointsPanel({ endpoints, reload, onError }: { endpoints: Endpoint[]; reload: () => Promise<void>; onError: (m: string) => void }) {
-  const [editing, setEditing] = useState<Endpoint | "new" | null>(null);
-  const run = async (f: () => Promise<unknown>) => { try { await f(); await reload(); } catch (e) { onError(String(e)); } };
+/** 一个自建 LLM 端点的详情：连接信息、可勾选启用的模型清单、正在用它的员工。 */
+export function EndpointDetail({ ep, users, reload, onError, onEdit, onRemoved }: {
+  ep: Endpoint; users: Employee[]; reload: () => Promise<void>; onError: (m: string) => void; onEdit: () => void; onRemoved: () => void;
+}) {
+  const [fetched, setFetched] = useState<string[]>([]);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState("");
+  const [newModel, setNewModel] = useState("");
+  const [test, setTest] = useState<EndpointTest | null>(null);
+  const act = async (k: string, f: () => Promise<void>) => { setBusy(k); try { await f(); await reload(); } catch (e) { onError(String(e)); } finally { setBusy(""); } };
+  const save = (models: string[]) => act("save", async () => { await api.updateEndpoint(ep.id, endpointToInput(ep, models)); });
+  const rows = [...ep.models, ...fetched.filter((m) => !ep.models.includes(m))];
+  const usedBy = (m: string) => users.filter((u) => u.model === m);
   return (
     <>
       <div className="page-head">
-        <div><h2>LLM 端点</h2>
-          <div className="hint">员工背后连哪个大模型服务。不选端点就是本机 Claude 订阅（负责人建议用这个）；选了端点（例如另一台电脑上的 Ollama），只有该员工的进程会收到连接设置，不影响本机的 Claude 登录和其他项目。</div></div>
-        <button className="btn primary" onClick={() => setEditing("new")}>添加端点</button>
+        <div><h2>{ep.name} {!ep.enabled && <span className="badge">已停用</span>}</h2>
+          <div className="hint">自建的大模型服务。只有选了它的员工，进程才会收到这里的连接设置，不影响本机的 Claude 登录和其他员工。</div></div>
+        <div style={{ display: "flex", gap: 8, flex: "none", alignItems: "center" }}>
+          <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={ep.enabled} onChange={(e) => void act("en", async () => { await api.setEndpointEnabled(ep.id, e.target.checked); })} /> 启用</label>
+          <button className="btn" onClick={onEdit}>编辑连接</button>
+          <button className="btn danger" disabled={users.length > 0} title={users.length > 0 ? "还有员工在用，先给他们换别的提供方" : ""} onClick={() => void act("rm", async () => { if (await api.confirm(`删除端点 ${ep.name}？`, "删除")) { await api.removeEndpoint(ep.id); onRemoved(); } })}>删除</button>
+        </div>
       </div>
-      {endpoints.length === 0 && <div className="hint">还没有端点。添加后，在员工的“编辑”里选择它。</div>}
-      {endpoints.map((ep) => (
-        <section key={ep.id} className="panel-box">
-          <div className="page-head" style={{ marginBottom: 6 }}>
-            <div><h4 className="group-title" style={{ margin: 0 }}>{ep.name} {!ep.enabled && <span className="badge">已停用</span>}</h4>
-              <div className="hint"><code>{ep.base_url}</code> · 模型 {ep.models.join("、")} · 同时最多 {ep.max_concurrency} 位员工用{ep.context_tokens > 0 ? ` · 上下文 ${Math.round(ep.context_tokens / 1000)}K` : ""} · {ep.limit_budget ? "限制批次预算" : "不限制批次预算（只统计）"} · {ep.employees} 位员工在用</div></div>
-            <div style={{ display: "flex", gap: 8, flex: "none" }}>
-              <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={ep.enabled} onChange={(e) => void run(() => api.setEndpointEnabled(ep.id, e.target.checked))} /> 启用</label>
-              <button className="btn" onClick={() => setEditing(ep)}>编辑</button>
-              <button className="btn danger" onClick={() => void run(async () => { if (await api.confirm(`删除端点 ${ep.name}？`, "删除")) await api.removeEndpoint(ep.id); })}>删除</button>
-            </div>
-          </div>
-        </section>
-      ))}
-      <div className="hint" style={{ marginTop: 8 }}>本地模型的工具调用能力通常比 Claude 弱，建议只给它做范围明确的开发任务；一台 Ollama 同时只能处理少数请求，所以默认同时只让一位员工用。</div>
-      {editing && <EndpointForm initial={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await reload(); }} onError={onError} />}
+
+      <section className="panel-box">
+        <h4 className="group-title">连接</h4>
+        <table className="cost-table"><tbody>
+          <tr><td><b>地址</b></td><td><code>{ep.base_url}</code></td></tr>
+          <tr><td><b>同时最多</b></td><td>{ep.max_concurrency} 位员工用{ep.max_concurrency > 1 && <span className="hint">（本地模型通常一次只处理一个，其余会在这里排队；大于 1 不一定更快）</span>}</td></tr>
+          <tr><td><b>上下文窗口</b></td><td>{ep.context_tokens > 0 ? `${Math.round(ep.context_tokens / 1000)}K（会话用到七成就换新会话）` : "不限"}</td></tr>
+          <tr><td><b>批次预算</b></td><td>{ep.limit_budget ? "计入自主推进的调用预算" : "只统计，不计入预算"}</td></tr>
+          <tr><td><b>令牌</b></td><td>{ep.has_token ? "已保存在钥匙串" : "无"}</td></tr>
+          <tr><td><b>测试</b></td><td>
+            <button className="btn" disabled={busy === "test" || ep.models.length === 0} title="发一个最小请求，检查网络、模型名和接口是否兼容。第一次要把模型载入显存，可能要等一会儿"
+              onClick={() => void act("test", async () => setTest(await api.testEndpoint(ep.base_url, ep.models[0], null, ep.id)))}>{busy === "test" ? "测试中…" : "测试连接"}</button>
+            {test && <span className={`hint ${test.ok ? "" : "bad"}`} style={{ marginLeft: 8 }}>{test.ok ? "连接正常" : "连接失败"}（{(test.millis / 1000).toFixed(1)} 秒）：{test.detail}</span>}
+          </td></tr>
+        </tbody></table>
+      </section>
+
+      <section className="panel-box">
+        <div className="page-head" style={{ marginBottom: 6 }}>
+          <h4 className="group-title" style={{ margin: 0 }}>模型（已启用 {ep.models.length}）</h4>
+          <button className="btn" disabled={busy === "disc"} title="读取服务器上现有的全部模型（Ollama 的 /api/tags，或 /v1/models）"
+            onClick={() => void act("disc", async () => { const m = await api.discoverEndpointModels(ep.base_url, null, ep.id); setFetched(m); setNote(`服务器上共 ${m.length} 个模型，其中 ${m.filter((x) => !ep.models.includes(x)).length} 个还没启用，勾选即可启用`); })}>{busy === "disc" ? "读取中…" : "从服务器读取"}</button>
+        </div>
+        {note && <div className="hint" style={{ marginBottom: 6 }}>{note}</div>}
+        <table className="cost-table">
+          <thead><tr><th>模型</th><th>状态</th><th>启用</th><th></th></tr></thead>
+          <tbody>{rows.map((m) => {
+            const on = ep.models.includes(m);
+            const u = usedBy(m);
+            const isDefault = on && ep.models[0] === m;
+            return (
+              <tr key={m}>
+                <td><code>{m}</code></td>
+                <td className="hint">{isDefault && <span className="badge" title="员工没单独指定模型时用第一个">默认</span>} {u.length > 0 ? `${u.map((x) => x.name).join("、")} 在用` : on ? "" : "服务器上有，未启用"}</td>
+                <td><input type="checkbox" checked={on} disabled={busy === "save" || (on && (u.length > 0 || ep.models.length === 1))}
+                  title={on && u.length > 0 ? "有员工指定了这个模型，先给他们换别的" : on && ep.models.length === 1 ? "至少要留一个模型" : ""}
+                  onChange={(e) => void save(e.target.checked ? [...ep.models, m] : ep.models.filter((x) => x !== m))} /></td>
+                <td>{on && !isDefault && <button className="link" title="排到第一位，作为没单独指定模型的员工的默认" onClick={() => void save([m, ...ep.models.filter((x) => x !== m)])}>设为默认</button>}</td>
+              </tr>
+            );
+          })}</tbody>
+        </table>
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <input style={{ flex: 1 }} value={newModel} placeholder="手动添加模型名（用 ollama list 看实际标签）" onChange={(e) => setNewModel(e.target.value.trim())} />
+          <button className="btn primary" disabled={!newModel || ep.models.includes(newModel) || busy === "save"} onClick={() => void save([...ep.models, newModel]).then(() => setNewModel(""))}>添加</button>
+        </div>
+        <div className="hint" style={{ marginTop: 6 }}>名字写错时，用它的员工下次执行会报错，改回即可。本地模型的工具调用能力通常比 Claude 弱，建议只给它做范围明确的开发任务。</div>
+      </section>
+
+      <section className="panel-box">
+        <h4 className="group-title">正在用它的员工（{users.length}）</h4>
+        {users.length === 0 ? <div className="hint">还没有员工选这个端点。到“公司 → 员工”里编辑员工，在“LLM 提供方”里选它。</div> : (
+          <table className="cost-table"><tbody>{users.map((u) => (
+            <tr key={u.id}><td><b>{u.name}</b></td><td className="hint">{u.role}</td><td><code>{u.model || `${ep.models[0] ?? ""}（默认）`}</code></td></tr>
+          ))}</tbody></table>
+        )}
+      </section>
     </>
   );
 }
 
-function EndpointForm({ initial, onClose, onSaved, onError }: { initial: Endpoint | null; onClose: () => void; onSaved: () => Promise<void>; onError: (m: string) => void }) {
+export function EndpointForm({ initial, onClose, onSaved, onError }: { initial: Endpoint | null; onClose: () => void; onSaved: () => Promise<void>; onError: (m: string) => void }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [url, setUrl] = useState(initial?.base_url ?? "http://");
   const [models, setModels] = useState((initial?.models ?? []).join("\n"));
@@ -64,7 +119,7 @@ function EndpointForm({ initial, onClose, onSaved, onError }: { initial: Endpoin
           <Field label="地址" hint="对方电脑上的 Ollama 要设 OLLAMA_HOST=0.0.0.0 并放行端口；只在局域网或 Tailscale 里用，Ollama 本身没有认证。"><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.1.20:11434" /></Field>
           <Field label="模型（每行一个，第一个是默认）">
             <textarea rows={3} value={models} onChange={(e) => setModels(e.target.value)} placeholder="用 ollama list 看实际标签" />
-            <div><button className="btn" disabled={busy === "disc" || url.length < 9} onClick={() => void act("disc", async () => { const m = await api.discoverEndpointModels(url); if (m.length) setModels(m.join("\n")); else onError("服务器上没有模型"); })}>{busy === "disc" ? "读取中…" : "从 Ollama 读取模型"}</button></div></Field>
+            <div><button className="btn" disabled={busy === "disc" || url.length < 9} onClick={() => void act("disc", async () => { const m = await api.discoverEndpointModels(url, token || null, initial?.id ?? null); if (m.length) setModels(m.join("\n")); else onError("服务器上没有模型"); })}>{busy === "disc" ? "读取中…" : "从 Ollama 读取模型"}</button></div></Field>
           <div style={{ display: "flex", gap: 12 }}>
             <div style={{ flex: 1 }}><Field label="同时最多几位员工用"><input type="number" min={1} max={16} value={conc} onChange={(e) => setConc(Number(e.target.value))} /></Field></div>
             <div style={{ flex: 1 }}><Field label="上下文窗口（token，0 不限）"><input type="number" min={0} step={1024} value={ctx} onChange={(e) => setCtx(Number(e.target.value))} /></Field></div>

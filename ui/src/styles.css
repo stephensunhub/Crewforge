@@ -424,3 +424,5 @@ button.u-cell:hover { background: var(--panel-2); }
 /* 长的中文/英文串（路径、哈希、模型输出）不撑破卡片和行：允许在任意位置换行，也让 flex 子项能收缩 */
 .page, .tasks-body, .modal, .card, .duty-item, .plan-row, .mem-body, .report-body, .card-persona { overflow-wrap: anywhere; }
 .u-table td, .u-table th { overflow-wrap: normal; }
+
+.mitem-group { padding: 10px 10px 2px; color: var(--muted); font-size: 11px; letter-spacing: .06em; }

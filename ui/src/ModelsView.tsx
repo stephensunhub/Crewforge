@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
-import { EndpointsPanel } from "./EndpointsView";
-import type { Endpoint, ModelsOverview, ProviderStatus } from "./types";
+import { EndpointDetail, EndpointForm } from "./EndpointsView";
+import type { Employee, Endpoint, ModelsOverview, ProviderStatus } from "./types";
 
 const PROVIDER_HINT: Record<string, string> = {
   claude: "用你本机已登录的 Claude Code 账号，按订阅额度（5 小时 / 7 天窗口）计量，可以边做边向你请求权限。",
@@ -11,7 +11,9 @@ const PROVIDER_HINT: Record<string, string> = {
 export function ModelsView({ onError }: { onError: (m: string) => void }) {
   const [o, setO] = useState<ModelsOverview | null>(null);
   const [eps, setEps] = useState<Endpoint[]>([]);
-  const [sel, setSel] = useState<string>(() => { try { return localStorage.getItem("models.sel") ?? "claude"; } catch { return "claude"; } });
+  const [emps, setEmps] = useState<Employee[]>([]);
+  const [editing, setEditing] = useState<Endpoint | "new" | null>(null);
+  const [sel, setSel] = useState<string>(() => { try { const k = localStorage.getItem("models.sel") ?? "claude"; return k === "endpoints" ? "claude" : k; } catch { return "claude"; } });
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState("");
   const [newId, setNewId] = useState("");
@@ -20,7 +22,7 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
   const pick = (k: string) => { setSel(k); try { localStorage.setItem("models.sel", k); } catch { /* 忽略 */ } };
 
   const load = useCallback(async () => {
-    try { const v = await api.modelsOverview(); setEps(await api.listEndpoints()); setO(v); setPath(v.providers.find((p) => p.provider === "copilot")?.program ?? ""); } catch (e) { onError(String(e)); }
+    try { const v = await api.modelsOverview(); setEps(await api.listEndpoints()); setEmps((await api.employees()).filter((e) => !e.archived)); setO(v); setPath(v.providers.find((p) => p.provider === "copilot")?.program ?? ""); } catch (e) { onError(String(e)); }
   }, [onError]);
   useEffect(() => { void load(); }, [load]);
 
@@ -31,6 +33,7 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
 
   if (!o) return <div className="hint" style={{ padding: 20 }}>加载中…</div>;
   const prov = o.providers.find((p) => p.provider === sel);
+  const selEp = sel.startsWith("ep:") ? eps.find((x) => x.id === sel.slice(3)) : undefined;
   const modelsOf = (p: string) => o.models.filter((m) => m.provider === p);
 
   return (
@@ -44,9 +47,21 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
               <div className="hint">{!p.enabled ? "已停用" : p.installed ? `已就绪 · ${p.employees} 名员工` : "未检测到"}</div>
             </button>
           ))}
-          <button className={`mitem ${sel === "endpoints" ? "on" : ""}`} onClick={() => pick("endpoints")}>
-            <div className="mitem-title">LLM 端点</div>
-            <div className="hint">{eps.length ? `${eps.length} 个，如另一台电脑上的 Ollama` : "接本地或自建模型服务"}</div>
+          <div className="mitem-group">自建端点{eps.length ? `（${eps.length}）` : ""}</div>
+          {eps.map((x) => (
+            <button key={x.id} className={`mitem ${sel === `ep:${x.id}` ? "on" : ""}`} onClick={() => pick(`ep:${x.id}`)}>
+              <div className="mitem-title">{x.name}</div>
+              <div className="hint">{!x.enabled ? "已停用" : `${x.models.length} 个模型 · ${emps.filter((e) => e.endpoint_id === x.id).length} 名员工`}</div>
+            </button>
+          ))}
+          <button className="mitem" onClick={() => setEditing("new")}>
+            <div className="mitem-title">＋ 添加 LLM 端点</div>
+            <div className="hint">另一台电脑上的 Ollama 或其他兼容服务</div>
+          </button>
+          <div className="mitem-group">总览</div>
+          <button className={`mitem ${sel === "who" ? "on" : ""}`} onClick={() => pick("who")}>
+            <div className="mitem-title">员工与模型对照</div>
+            <div className="hint">谁在通过哪个提供方用哪个模型</div>
           </button>
           <button className={`mitem ${sel === "purposes" ? "on" : ""}`} onClick={() => pick("purposes")}>
             <div className="mitem-title">按用途的默认模型</div>
@@ -58,10 +73,27 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
       <div className="split-main" style={{ overflow: "auto" }}>
         <div className="page wide">
           {note && <div className="note" style={{ marginBottom: 10 }}>{note}</div>}
-          {prov && <ProviderPanel p={prov} models={modelsOf(prov.provider)} busy={busy} path={path} setPath={setPath}
+          {prov && <ProviderPanel p={prov} users={emps.filter((e) => e.provider === prov.provider && !e.endpoint_id)} models={modelsOf(prov.provider)} busy={busy} path={path} setPath={setPath}
             newId={newId} setNewId={setNewId} newLabel={newLabel} setNewLabel={setNewLabel} act={act} />}
 
-          {sel === "endpoints" && <EndpointsPanel endpoints={eps} reload={load} onError={onError} />}
+          {selEp && <EndpointDetail key={selEp.id} ep={selEp} users={emps.filter((e) => e.endpoint_id === selEp.id)} reload={load} onError={onError} onEdit={() => setEditing(selEp)} onRemoved={() => pick("claude")} />}
+          {sel === "endpoints" && eps.length === 0 && <div className="hint">还没有自建端点。点左侧的“＋ 添加 LLM 端点”。</div>}
+
+          {sel === "who" && (
+            <>
+              <div className="page-head"><div><h2>员工与模型对照</h2>
+                <div className="hint">每位员工通过哪个提供方、实际用哪个模型。要改，到“公司 → 员工”里编辑员工（提供方和模型在同一个窗口里选）。</div></div></div>
+              <table className="cost-table">
+                <thead><tr><th>员工</th><th>岗位</th><th>提供方</th><th>模型</th></tr></thead>
+                <tbody>{emps.map((e) => {
+                  const ep = e.endpoint_id ? eps.find((x) => x.id === e.endpoint_id) : undefined;
+                  const provider = ep ? `${ep.name}（自建端点）` : e.provider === "copilot" ? "GitHub Copilot" : "Claude 订阅";
+                  const model = e.model || (ep ? `${ep.models[0] ?? ""}（端点默认）` : "引擎默认 / 按用途");
+                  return <tr key={e.id}><td><b>{e.name}</b></td><td className="hint">{e.role}</td><td>{provider}{ep && !ep.enabled && <span className="badge" style={{ marginLeft: 6 }}>已停用</span>}</td><td><code>{model}</code></td></tr>;
+                })}</tbody>
+              </table>
+            </>
+          )}
 
           {sel === "purposes" && (
             <>
@@ -99,12 +131,13 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
           )}
         </div>
       </div>
+      {editing && <EndpointForm initial={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await load(); }} onError={onError} />}
     </div>
   );
 }
 
-function ProviderPanel({ p, models, busy, path, setPath, newId, setNewId, newLabel, setNewLabel, act }: {
-  p: ProviderStatus; models: ModelsOverview["models"]; busy: string; path: string; setPath: (v: string) => void;
+function ProviderPanel({ p, users, models, busy, path, setPath, newId, setNewId, newLabel, setNewLabel, act }: {
+  p: ProviderStatus; users: Employee[]; models: ModelsOverview["models"]; busy: string; path: string; setPath: (v: string) => void;
   newId: string; setNewId: (v: string) => void; newLabel: string; setNewLabel: (v: string) => void;
   act: (key: string, f: () => Promise<unknown>, ok?: string) => Promise<void>;
 }) {
@@ -131,7 +164,7 @@ function ProviderPanel({ p, models, busy, path, setPath, newId, setNewId, newLab
               </div>
             ) : <code>{p.program}</code>}
           </td></tr>
-          <tr><td><b>员工</b></td><td>{p.employees} 名员工使用这个引擎</td></tr>
+          <tr><td><b>员工</b></td><td>{users.length === 0 ? "还没有员工用它" : users.map((u) => `${u.name}${u.model ? `（${u.model}）` : ""}`).join("、")}</td></tr>
           {!p.enabled && <tr><td colSpan={2}><span className="bad">已停用：不能新建员工或切换到它；用它的员工执行任务时会被拒绝并提示原因。</span></td></tr>}
         </tbody></table>
       </section>

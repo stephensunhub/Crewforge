@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import { ActivityLine, Avatar, Field, Modal, Placeholder, basename } from "./common";
 import { MemoryView } from "./MemoryView";
+import { endpointOfSrc, endpointToInput, providerOfSrc, srcOf } from "./llm";
 import { EmployeeLog } from "./EmployeeLog";
 import { InterventionsView } from "./InterventionsView";
 import type { ProjectTab } from "./ProjectView";
@@ -16,22 +17,27 @@ export const COMPANY_TABS: [CompanyTab, string][] = [
 
 const ROLES = ["全栈工程师", "QA 测试工程师", "架构师 / CTO", "其他"];
 
-function EmployeeForm({ initial, onSubmit, onClose }: {
+function EmployeeForm({ initial, onSubmit, onClose, onError }: {
   initial?: { name: string; role: string; persona: string; provider?: string; model?: string; endpointId?: string | null };
   onSubmit: (name: string, role: string, persona: string, provider: string, model: string, endpointId: string) => Promise<void>;
   onClose: () => void;
+  onError: (m: string) => void;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [role, setRole] = useState(initial?.role ?? ROLES[0]);
   const [persona, setPersona] = useState(initial?.persona ?? "");
-  const [provider, setProvider] = useState(initial?.provider ?? "claude");
+  const [src, setSrc] = useState(srcOf(initial?.provider ?? "claude", initial?.endpointId));
+  const provider = providerOfSrc(src);
+  const epId = endpointOfSrc(src);
   const [model, setModel] = useState(initial?.model ?? "");
+  const [fetched, setFetched] = useState<string[]>([]);
+  const [fetching, setFetching] = useState(false);
+  const [fetchNote, setFetchNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [cat, setCat] = useState<ModelsOverview | null>(null);
   const [eps, setEps] = useState<Endpoint[]>([]);
-  const [epId, setEpId] = useState(initial?.endpointId ?? "");
   useEffect(() => { void api.modelsOverview().then(setCat).catch(() => setCat(null)); void api.listEndpoints().then(setEps).catch(() => setEps([])); }, []);
-  const ep = provider === "claude" ? eps.find((x) => x.id === epId) : undefined;
+  const ep = epId ? eps.find((x) => x.id === epId) : undefined;
   const enabledProv = (p: string) => !cat || (cat.providers.find((x) => x.provider === p)?.enabled ?? true) || initial?.provider === p;
   const valid = name.trim() !== "" && !/[\s@]/.test(name);
   return (
@@ -45,41 +51,53 @@ function EmployeeForm({ initial, onSubmit, onClose }: {
             {[...new Set([role, ...ROLES])].map((r) => <option key={r}>{r}</option>)}
           </select>
         </Field>
-        <Field label="执行引擎" hint={initial
-          ? (provider !== initial.provider ? "⚠ 切换后 TA 之前的对话上下文不会带过去（任务分支、工作区、历史记录和记忆都保留）；TA 正在工作时不能切换。" : "可以随时切换，下次执行时生效。")
-          : "Claude：可以边做边向你请求权限，按订阅额度计量。Copilot：权限在启动时一次定好（没有列入的命令会被直接拒绝，不会来问你），按 Copilot 高级请求计量。"}>
-          <select value={provider} onChange={(e) => { setProvider(e.target.value); setModel(""); if (e.target.value !== "claude") setEpId(""); }}>
-            <option value="claude" disabled={!enabledProv("claude")}>Claude Code{enabledProv("claude") ? "" : "（已停用）"}</option><option value="copilot" disabled={!enabledProv("copilot")}>GitHub Copilot CLI{enabledProv("copilot") ? "" : "（已停用）"}</option>
+        <Field label="LLM 提供方" hint={initial
+          ? (provider !== initial.provider ? "⚠ 切换引擎后 TA 之前的对话上下文不会带过去（任务分支、工作区、历史记录和记忆都保留）；TA 正在工作时不能切换。" : "可以随时切换，下次执行时生效；换提供方会清掉 TA 的旧会话。")
+          : "订阅：用本机已登录的账号（Claude 可以边做边向你请求权限；Copilot 的权限在启动时一次定好）。自建端点：只有 TA 的进程连到那个服务（如另一台电脑上的 Ollama），不影响本机登录。要添加端点，到“模型”页。"}>
+          <select value={src} onChange={(e) => { setSrc(e.target.value); setModel(""); setFetched([]); setFetchNote(""); }}>
+            <optgroup label="订阅（本机登录的账号）">
+              <option value="claude" disabled={!enabledProv("claude")}>Claude Code{enabledProv("claude") ? "" : "（已停用）"}</option>
+              <option value="copilot" disabled={!enabledProv("copilot")}>GitHub Copilot CLI{enabledProv("copilot") ? "" : "（已停用）"}</option>
+            </optgroup>
+            {eps.length > 0 && (
+              <optgroup label="自建端点">
+                {eps.map((x) => <option key={x.id} value={`ep:${x.id}`} disabled={!x.enabled && x.id !== initial?.endpointId}>{x.name}{x.enabled ? "" : "（已停用）"}</option>)}
+              </optgroup>
+            )}
           </select>
         </Field>
-        {provider === "claude" && (
-          <Field label="LLM" hint={eps.length === 0 ? "默认用本机 Claude 订阅。要接其他模型（如另一台电脑上的 Ollama），先到“模型 → LLM 端点”添加。" : "默认用本机 Claude 订阅；选端点后，只有 TA 的进程连到那个服务，不影响本机。换 LLM 会清掉 TA 的旧会话。"}>
-            <select value={epId} onChange={(e) => { setEpId(e.target.value); setModel(""); }}>
-              <option value="">Claude 订阅（本机登录）</option>
-              {eps.map((x) => <option key={x.id} value={x.id} disabled={!x.enabled && x.id !== initial?.endpointId}>{x.name}{x.enabled ? "" : "（已停用）"}</option>)}
-            </select>
-          </Field>
-        )}
-        {ep ? (
-          <Field label="模型" hint="只能选这个端点上配置的模型；留空用第一个。本地模型的工具调用较弱，更适合做范围明确的开发任务，不建议当负责人。">
-            <select value={model} onChange={(e) => setModel(e.target.value)}>
-              <option value="">{ep.models[0]}（默认）</option>
-              {ep.models.slice(1).map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
-          </Field>
-        ) : (
-        <Field label="模型" hint="留空使用引擎默认。可填别名或完整模型名；名称不对时 TA 会在下次执行时报错，改回即可。">
-          <input list={`models-${provider}`} value={model} placeholder="默认（可在“模型”页按用途设置默认模型）" onChange={(e) => setModel(e.target.value.trim())} />
-          <datalist id={`models-${provider}`}>{(cat?.models ?? []).filter((m) => m.provider === provider && m.enabled).map((m) => <option key={m.model_id} value={m.model_id}>{m.label}</option>)}</datalist>
+        <Field label="模型" hint={ep
+          ? "从下拉里选，也可以直接输入端点上的任意模型名（保存时会自动加进这个端点的模型清单）；留空用清单里的第一个。本地模型的工具调用较弱，更适合做范围明确的开发任务，不建议当负责人。"
+          : "留空使用引擎默认。从下拉里选，或输入别名 / 完整模型名；名称不对时 TA 会在下次执行时报错，改回即可。"}>
+          <input list="emp-models" value={model} placeholder={ep ? `${ep.models[0] ?? ""}（默认）` : "默认（可在“模型”页按用途设置默认模型）"} onChange={(e) => setModel(e.target.value.trim())} />
+          <datalist id="emp-models">
+            {ep
+              ? [...ep.models, ...fetched.filter((m) => !ep.models.includes(m))].map((m) => <option key={m} value={m}>{ep.models.includes(m) ? "" : "服务器上有，未启用（选它会自动启用）"}</option>)
+              : (cat?.models ?? []).filter((m) => m.provider === provider && m.enabled).map((m) => <option key={m.model_id} value={m.model_id}>{m.label}</option>)}
+          </datalist>
+          {ep && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
+              <button className="btn" disabled={fetching} onClick={async () => {
+                setFetching(true); setFetchNote("");
+                try { const m = await api.discoverEndpointModels(ep.base_url, null, ep.id); setFetched(m); setFetchNote(`服务器上共 ${m.length} 个模型，其中 ${m.filter((x) => !ep.models.includes(x)).length} 个还没启用`); }
+                catch (e) { setFetchNote(String(e)); } finally { setFetching(false); }
+              }}>{fetching ? "读取中…" : "从服务器读取更多模型"}</button>
+              <span className="hint">{fetchNote}</span>
+            </div>
+          )}
         </Field>
-        )}
+        <div className="hint" style={{ marginTop: -4 }}>TA 将通过 <b>{ep ? ep.name : provider === "copilot" ? "GitHub Copilot" : "Claude 订阅"}</b> 使用 <b>{model || (ep ? ep.models[0] : "引擎默认模型") || "引擎默认模型"}</b>。</div>
         <Field label="身份说明" hint="告诉 TA 是谁、怎么沟通、擅长什么。留空会使用默认说明。">
           <textarea rows={5} value={persona} onChange={(e) => setPersona(e.target.value)} />
         </Field>
         <div className="form-btns">
           <button className="btn primary" disabled={!valid || busy} onClick={async () => {
             setBusy(true);
-            try { await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`, provider, model, provider === "claude" ? epId : ""); } finally { setBusy(false); }
+            try {
+              // 选了清单之外的模型（手输或从服务器读到的）：先加进端点的模型清单，再保存员工
+              if (ep && model && !ep.models.includes(model)) await api.updateEndpoint(ep.id, endpointToInput(ep, [...ep.models, model]));
+              await onSubmit(name.trim(), role, persona.trim() || `你是 ${name.trim()}，一名${role}。`, provider, model, epId);
+            } catch (e) { onError(String(e)); } finally { setBusy(false); }
           }}>{initial ? "保存" : "创建"}</button>
         </div>
       </div>
@@ -200,7 +218,7 @@ export function CompanyView({
             );
           })}
         </div>
-        {modal === "new-emp" && <EmployeeForm onClose={() => setModal(null)} onSubmit={async (n, r, p, pv, md, ep) => { if (await guard(async () => { const e = await api.addEmployee(n, r, p, pv, ep ? "" : md); if (ep) await api.setEmployeeEndpoint(e.id, ep, md); })) setModal(null); }} />}
+        {modal === "new-emp" && <EmployeeForm onError={onError} onClose={() => setModal(null)} onSubmit={async (n, r, p, pv, md, ep) => { if (await guard(async () => { const e = await api.addEmployee(n, r, p, pv, ep ? "" : md); if (ep) await api.setEmployeeEndpoint(e.id, ep, md); })) setModal(null); }} />}
         {modal && typeof modal === "object" && "log" in modal && (
           <EmployeeLog id={modal.log.employee.id} name={modal.log.employee.name} running={running.includes(modal.log.employee.name)} onClose={() => setModal(null)} />
         )}
@@ -210,7 +228,7 @@ export function CompanyView({
           </Modal>
         )}
         {modal && typeof modal === "object" && "edit" in modal && (
-          <EmployeeForm
+          <EmployeeForm onError={onError}
             initial={{ name: modal.edit.employee.name, role: modal.edit.employee.role, persona: modal.edit.employee.persona, provider: modal.edit.employee.provider, model: modal.edit.employee.model, endpointId: modal.edit.employee.endpoint_id }}
             onClose={() => setModal(null)}
             onSubmit={async (_n, r, p, pv, md, ep) => {

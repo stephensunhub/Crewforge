@@ -1538,17 +1538,39 @@ pub async fn test_endpoint(state: State<'_, AppState>, base_url: String, model: 
     Ok(EndpointTest { ok: false, millis, detail: format!("HTTP {code}：{msg}{hint}") })
 }
 
-/// 从 Ollama 读出服务器上已有的模型（/api/tags），方便填清单。
+/// 读出服务器上已有的模型，方便勾选启用：先试 Ollama 的 /api/tags，不通再试 OpenAI/Anthropic 风格的 /v1/models
+/// （vLLM、LiteLLM、OpenRouter 等）。需要令牌的服务：填了就用填的，没填但给了端点 id 就用钥匙串里存的。
 #[tauri::command]
-pub async fn discover_endpoint_models(base_url: String) -> CmdResult<Vec<String>> {
+pub async fn discover_endpoint_models(state: State<'_, AppState>, base_url: String, token: Option<String>, id: Option<String>) -> CmdResult<Vec<String>> {
     let base = crewforge_core::endpoint::normalize_base_url(&base_url).map_err(err)?;
     precheck_reachable(&base).await?;
-    let (code, text) = curl_json(&format!("{base}/api/tags"), None, None, 15).await?;
-    if code != 200 {
-        return Err(format!("读取模型清单失败（HTTP {code}）。不是 Ollama 的话请手动填写模型名。"));
+    let token = token.filter(|t| !t.trim().is_empty()).or_else(|| id.as_deref().and_then(|i| state.db.endpoint_token(i)));
+    let mut names: Vec<String> = vec![];
+    let mut last = String::new();
+    let (code, text) = curl_json(&format!("{base}/api/tags"), token.as_deref(), None, 15).await?;
+    if code == 200 {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            names = v["models"].as_array().map(|a| a.iter().filter_map(|m| m["name"].as_str().map(String::from)).collect()).unwrap_or_default();
+        }
+    } else {
+        last = format!("/api/tags 返回 HTTP {code}");
     }
-    let v: serde_json::Value = serde_json::from_str(&text).map_err(|_| "返回的不是 Ollama 的模型清单")?;
-    Ok(v["models"].as_array().map(|a| a.iter().filter_map(|m| m["name"].as_str().map(String::from)).collect()).unwrap_or_default())
+    if names.is_empty() {
+        let (code, text) = curl_json(&format!("{base}/v1/models"), token.as_deref(), None, 15).await?;
+        if code == 200 {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                names = v["data"].as_array().map(|a| a.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect()).unwrap_or_default();
+            }
+        } else {
+            last = format!("{last}；/v1/models 返回 HTTP {code}");
+        }
+    }
+    if names.is_empty() {
+        return Err(format!("没有读到模型清单（{}）。服务不支持列出模型的话，请手动填写模型名。", if last.is_empty() { "返回为空".to_string() } else { last }));
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
 }
 
 // ---------- 沙箱网络白名单（全局设置）与卡住的员工 ----------
