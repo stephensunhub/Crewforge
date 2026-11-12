@@ -893,9 +893,15 @@ async fn handing_over_the_lead_role_summarises_first_then_moves_the_role_and_giv
     // 给 alice 名下留一个没开始的条目
     let mine = e.db.create_plan_item(&e.pid, &NewPlanItem { title: "alice 的后续活".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: Some(alice.id.clone()), deps: vec![] }, None).unwrap();
 
+    // alice 手上还有一个进行中的任务：交接不会被它拦住，而是自动放弃，并写进给新人的说明
+    e.orch.assign(&alice, &e.repo, "做点还没做完的事", &Deny, &crewforge_core::runner::NoopObserver).await.unwrap();
+    let active = e.db.active_task(&alice.id, e.repo.to_str().unwrap()).unwrap().expect("alice 有进行中的任务");
+
     // 1) 准备：快照 + 原员工自己写的摘要
     let prep = e.orch.handover_prepare(&e.pid, &alice.id, &newlead.id, "lead", true).await.unwrap();
     assert!(prep.snapshot.contains("交出的角色：负责人") && prep.snapshot.contains("alice 的后续活"), "{}", prep.snapshot);
+    assert!(prep.snapshot.contains("进行中的任务（交接时会自动放弃）") && prep.snapshot.contains(&active.branch), "{}", prep.snapshot);
+    assert!(prep.warnings.iter().any(|w| w.contains("交接时会自动放弃")), "{:?}", prep.warnings);
     assert!(prep.model_summary.as_deref().unwrap_or("").contains("正在推进脚手架"), "{prep:?}");
     // 没有要摘要时只有快照
     let prep2 = e.orch.handover_prepare(&e.pid, &alice.id, &newlead.id, "lead", false).await.unwrap();
@@ -903,8 +909,13 @@ async fn handing_over_the_lead_role_summarises_first_then_moves_the_role_and_giv
 
     // 2) 执行：newlead 不在项目里，直接加入并接任；alice 保留为开发；名下没开始的活一起交过去
     let text = format!("{}\n\n{}", prep.snapshot, prep.model_summary.unwrap());
-    let rep = e.orch.handover_execute(&e.pid, &alice.id, &newlead.id, "lead", &text, "keep", true).unwrap();
+    let rep = e.orch.handover_execute(&e.pid, &alice.id, &newlead.id, "lead", &text, "keep", true).await.unwrap();
     assert_eq!((rep.moved_plan_items, rep.from.as_str(), rep.to.as_str()), (1, "alice", "newlead"));
+    assert_eq!(rep.abandoned.len(), 1, "{:?}", rep.abandoned);
+    assert_eq!(e.db.get_task(&active.id).unwrap().unwrap().status, "abandoned");
+    assert!(e.db.active_task(&alice.id, e.repo.to_str().unwrap()).unwrap().is_none());
+    let branch_exists = Command::new("git").arg("-C").arg(&e.repo).args(["rev-parse", "--verify", &active.branch]).status().unwrap().success();
+    assert!(branch_exists, "分支保留，WIP 提交在上面");
     let members = e.db.list_members(&e.pid).unwrap();
     let role = |id: &str| members.iter().find(|m| m.employee_id == id).map(|m| m.role.clone());
     assert_eq!((role(&newlead.id).as_deref(), role(&alice.id).as_deref(), role(&bob.id).as_deref()), (Some("lead"), Some("developer"), Some("developer")));
@@ -921,12 +932,34 @@ async fn handing_over_the_lead_role_summarises_first_then_moves_the_role_and_giv
     assert_eq!(r2.status, "finished", "{r2:?}");
     let line = std::fs::read_to_string(&seen).expect("新负责人的某次调用带着交接说明");
     assert!(line.contains("alice 把这个项目的「负责人」交接给了你") && line.contains("正在推进脚手架"), "{line}");
+    assert!(line.contains("交接时放弃的进行中任务") && line.contains(&active.branch), "新人的说明里有放弃的任务和分支：{line}");
     assert!(e.db.take_handover_note(&e.pid, &newlead.id).is_none(), "已经被取走了");
 
     // 4) 再交接一次，这回原员工移出项目：他名下没开始的条目改回未指定（没选一起交接）
     let extra = e.db.create_plan_item(&e.pid, &NewPlanItem { title: "bob 的后续活".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: Some(bob.id.clone()), deps: vec![] }, None).unwrap();
-    let rep2 = e.orch.handover_execute(&e.pid, &bob.id, &alice.id, "developer", "bob 交接给 alice", "remove", false).unwrap();
+    let rep2 = e.orch.handover_execute(&e.pid, &bob.id, &alice.id, "developer", "bob 交接给 alice", "remove", false).await.unwrap();
     assert_eq!(rep2.moved_plan_items, 0);
     assert!(!e.db.is_member(&e.pid, &bob.id).unwrap());
     assert!(e.db.get_plan_item(&extra).unwrap().unwrap().assignee_id.is_none(), "没一起交接的，移出时改回未指定");
+}
+
+#[tokio::test]
+async fn handing_over_abandons_a_plan_linked_task_and_the_item_goes_back_to_the_new_owner_with_a_note() {
+    let e = setup().await;
+    let who = |n: &str| e.db.employee_by_name(n).unwrap().unwrap();
+    let (bob, alice) = (who("bob"), who("alice"));
+    // A 指派给 bob：派给他做，做完第一轮但还没合并（进行中）
+    e.orch.dispatch_plan_item(&e.ids[0], Some(&bob.id), &Deny, &crewforge_core::runner::NoopObserver).await.unwrap();
+    let a = e.db.get_plan_item(&e.ids[0]).unwrap().unwrap();
+    assert_eq!(a.status, "in_progress");
+    let task = e.db.get_task(a.task_id.as_deref().unwrap()).unwrap().unwrap();
+
+    // bob 的开发角色交给 alice，bob 移出项目，名下没开始的活一起交过去
+    let rep = e.orch.handover_execute(&e.pid, &bob.id, &alice.id, "developer", "bob 交接给 alice", "remove", true).await.unwrap();
+    assert_eq!(rep.abandoned.len(), 1);
+    assert_eq!(e.db.get_task(&task.id).unwrap().unwrap().status, "abandoned");
+    let a = e.db.get_plan_item(&e.ids[0]).unwrap().unwrap();
+    assert_eq!((a.status.as_str(), a.assignee_id.as_deref()), ("planned", Some(alice.id.as_str())), "条目回到待开始，归新人");
+    assert!(a.note.contains("原由 bob 做到一半") && a.note.contains(&task.branch), "{}", a.note);
+    assert!(!e.db.is_member(&e.pid, &bob.id).unwrap());
 }

@@ -8,7 +8,9 @@
 //!    原员工负责的议题、进行中的会议的主持人转给新人；摘要存成一次性说明，新人下一次被调用时放在提示词最前面（用完即清），
 //!    同时记一条项目记忆和一条事件留档。
 //!
-//! 有进行中的任务时不能交接（先合并或放弃）；项目的自主推进在运行时由命令层拦住（先暂停或停止）。
+//! 原员工在这个项目里有进行中的任务时不拦着：交接时自动放弃它（改动保存为 WIP 提交、分支保留，对应的计划条目回到待开始），
+//! 并把任务、分支和改动了哪些文件写进给新人的说明，新人可以从那个分支的 WIP 提交接着做。
+//! 项目的自主推进在运行时由命令层拦住（先暂停或停止）。
 
 use crate::db::{Db, Employee, PROJECT_ROLES, now_ms};
 use crate::memory::{MemoryFilter, NewMemory};
@@ -46,6 +48,8 @@ pub struct HandoverReport {
     pub moved_actions: usize,
     pub moved_issues: usize,
     pub moved_meetings: usize,
+    /// 交接时自动放弃的进行中任务（任务、分支）
+    pub abandoned: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -71,7 +75,6 @@ impl Db {
         if to.archived || to.role == "guest" { bail!("{} 已归档或是顾问，不能接任角色", to.name); }
         let held = self.list_members(project_id)?.into_iter().find(|m| m.employee_id == from_id).map(|m| m.role);
         if held.as_deref() != Some(role) { bail!("{} 在这个项目里不是「{}」", from.name, role_label(role)); }
-        if self.active_task(from_id, &project.path)?.is_some() { bail!("{} 在这个项目里有进行中的任务，请先合并或放弃，再交接", from.name); }
         Ok((from, to))
     }
 
@@ -128,11 +131,27 @@ impl Db {
 }
 
 impl Orchestrator {
+    /// 原员工在这个项目里进行中的任务的说明（任务、分支、改了哪些文件）；没有返回 None。
+    async fn active_work_note(&self, project_id: &str, from_id: &str) -> Result<Option<String>> {
+        let project = self.db.get_project(project_id)?.context("项目不存在")?;
+        let Some(t) = self.db.active_task(from_id, &project.path)? else { return Ok(None) };
+        let files = self.ws.changed_files(std::path::Path::new(&t.worktree_path), &t.base_commit).await.unwrap_or_default();
+        let stat = if files.is_empty() { "还没有改动".to_string() } else {
+            let list = files.iter().take(8).map(|f| f.path.clone()).collect::<Vec<_>>().join("、");
+            format!("改动了 {} 个文件：{}{}", files.len(), list, if files.len() > 8 { " 等" } else { "" })
+        };
+        Ok(Some(format!("《{}》，分支 {}，{}", t.title, t.branch, stat)))
+    }
+
     /// 准备交接：状态快照，加上（可选）让原员工自己写一份摘要。可能要几分钟，调用方负责在界面上说明。
     pub async fn handover_prepare(&self, project_id: &str, from_id: &str, to_id: &str, role: &str, ask_summary: bool) -> Result<HandoverPrep> {
         let (from, to) = self.db.check_handover(project_id, from_id, to_id, role)?;
         let project = self.db.get_project(project_id)?.context("项目不存在")?;
         let mut prep = HandoverPrep { snapshot: self.db.handover_snapshot(project_id, from_id, role)?, ..Default::default() };
+        if let Some(w) = self.active_work_note(project_id, from_id).await? {
+            prep.snapshot.push_str(&format!("\n【{} 手上进行中的任务（交接时会自动放弃）】\n{w}\n", from.name));
+            prep.warnings.push(format!("{} 手上有进行中的任务 {w}：交接时会自动放弃（改动保存为 WIP 提交，分支保留），对应的计划条目回到「待开始」，新人可以从那个分支接着做", from.name));
+        }
         // 提醒
         let (cf, ct) = (self.db.level_cap(&from)?, self.db.level_cap(&to)?);
         if ct < cf { prep.warnings.push(format!("{} 的能力上限是 {ct} 级，比 {} 的 {cf} 级低：交接后计划里高等级的活可能没人够格", to.name, from.name)); }
@@ -170,10 +189,24 @@ impl Orchestrator {
 
     /// 执行交接。`summary` 是要留给新人的全部说明（快照 + 摘要，人可能改过）；`after` 是原员工之后的去向：`keep`（保留为开发）或 `remove`（移出项目）；
     /// `move_work` 为 true 时，原员工名下还没开始的条目和行动项一并交给新人。
-    pub fn handover_execute(&self, project_id: &str, from_id: &str, to_id: &str, role: &str, summary: &str, after: &str, move_work: bool) -> Result<HandoverReport> {
+    pub async fn handover_execute(&self, project_id: &str, from_id: &str, to_id: &str, role: &str, summary: &str, after: &str, move_work: bool) -> Result<HandoverReport> {
         if !matches!(after, "keep" | "remove") { bail!("原员工之后的去向只能是 keep 或 remove"); }
         let (from, to) = self.db.check_handover(project_id, from_id, to_id, role)?;
         let mut rep = HandoverReport { from: from.name.clone(), to: to.name.clone(), role: role.into(), ..Default::default() };
+        // 0. 原员工进行中的任务：先放弃（改动存成 WIP 提交，分支保留，计划条目回到待开始），放弃失败就不交接
+        let project = self.db.get_project(project_id)?.context("项目不存在")?;
+        let mut summary = summary.trim().to_string();
+        if let Some(t) = self.db.active_task(from_id, &project.path)? {
+            let desc = self.active_work_note(project_id, from_id).await?.unwrap_or_else(|| format!("《{}》，分支 {}", t.title, t.branch));
+            let item_id: Option<String> = self.db.conn.lock().unwrap().query_row("SELECT id FROM plan_items WHERE task_id = ?1", [&t.id], |r| r.get(0)).ok();
+            self.abandon_task(&t.id).await.context("放弃进行中的任务失败，没有交接")?;
+            if let Some(id) = item_id {
+                let _ = self.db.set_plan_note(&id, &format!("原由 {} 做到一半，改动保存在分支 {} 的 WIP 提交里，可以从那里接着做", from.name, t.branch));
+            }
+            summary.push_str(&format!("\n\n【交接时放弃的进行中任务】\n{desc}\n改动已保存为该分支上的 WIP 提交，分支保留；对应的计划条目已回到「待开始」。要接着做，可以从这个分支的 WIP 提交继续，也可以重新开始。"));
+            rep.abandoned.push(desc);
+        }
+        let summary = summary.as_str();
         // 1. 新人接任（不在项目里就加入）
         if self.db.is_member(project_id, to_id)? { self.db.set_member_role(project_id, to_id, role)?; } else { self.db.add_member(project_id, to_id, role)?; }
         // 2. 原员工的去向
@@ -200,8 +233,10 @@ impl Orchestrator {
             layer: "project".into(), project_id: Some(project_id.into()), kind: "decision".into(), title: format!("交接：{} → {}（{}）", from.name, to.name, role_label(role)),
             content: summary.trim().chars().take(3500).collect(), scope: "角色交接".into(), source_kind: "handover".into(), created_by: from.name.clone(), status: "verified".into(), ..Default::default()
         });
-        let text = format!("{} 把「{}」交接给了 {}{}", from.name, role_label(role), to.name, if rep.moved_plan_items + rep.moved_actions > 0 { format!("；一并交过去 {} 个计划条目、{} 条行动项", rep.moved_plan_items, rep.moved_actions) } else { String::new() });
-        self.db.append_event_for(Some(project_id), "role_handover", Some(to_id), None, &json!({"from": from.name, "to": to.name, "role": role, "after": after, "moved_plan_items": rep.moved_plan_items, "moved_actions": rep.moved_actions, "moved_issues": rep.moved_issues, "moved_meetings": rep.moved_meetings, "text": text}))?;
+        let text = format!("{} 把「{}」交接给了 {}{}{}", from.name, role_label(role), to.name,
+            if rep.moved_plan_items + rep.moved_actions > 0 { format!("；一并交过去 {} 个计划条目、{} 条行动项", rep.moved_plan_items, rep.moved_actions) } else { String::new() },
+            if rep.abandoned.is_empty() { String::new() } else { format!("；放弃了 {} 手上进行中的任务（WIP 已保留在分支上）", from.name) });
+        self.db.append_event_for(Some(project_id), "role_handover", Some(to_id), None, &json!({"from": from.name, "to": to.name, "role": role, "after": after, "moved_plan_items": rep.moved_plan_items, "moved_actions": rep.moved_actions, "moved_issues": rep.moved_issues, "moved_meetings": rep.moved_meetings, "abandoned": rep.abandoned, "text": text}))?;
         Ok(rep)
     }
 }

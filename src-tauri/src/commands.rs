@@ -135,9 +135,9 @@ pub async fn handover_prepare(state: State<'_, AppState>, project_id: String, fr
 
 /// 执行交接。`summary` 是留给新人的全部说明；`after` 是 keep（原员工保留为开发）或 remove（移出项目）。
 #[tauri::command]
-pub fn handover_execute(state: State<'_, AppState>, project_id: String, from_id: String, to_id: String, role: String, summary: String, after: String, move_work: bool) -> CmdResult<crewforge_core::handover::HandoverReport> {
+pub async fn handover_execute(state: State<'_, AppState>, project_id: String, from_id: String, to_id: String, role: String, summary: String, after: String, move_work: bool) -> CmdResult<crewforge_core::handover::HandoverReport> {
     guard_handover(&state, &project_id, &from_id, &to_id)?;
-    state.orch.handover_execute(&project_id, &from_id, &to_id, &role, &summary, &after, move_work).map_err(err)
+    state.orch.handover_execute(&project_id, &from_id, &to_id, &role, &summary, &after, move_work).await.map_err(err)
 }
 
 #[tauri::command]

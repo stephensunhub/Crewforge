@@ -65,7 +65,7 @@ export function HandoverModal({ projectId, from, members, employees, onClose, on
             </Field>
             <label className="tog" style={{ alignItems: "flex-start" }}>
               <input type="checkbox" checked={moveWork} onChange={(e) => setMoveWork(e.target.checked)} />
-              <span>同时把 {from.name} 名下还没开始的计划条目和行动项交给新人<span className="hint" style={{ display: "block" }}>不勾选：保留在 TA 名下（保留为开发时继续做；移出项目时改回「未指定」，由负责人按角色重新分配）。进行中的任务要先合并或放弃，否则不能交接。</span></span>
+              <span>同时把 {from.name} 名下还没开始的计划条目和行动项交给新人<span className="hint" style={{ display: "block" }}>不勾选：保留在 TA 名下（保留为开发时继续做；移出项目时改回「未指定」，由负责人按角色重新分配）。TA 手上进行中的任务会在交接时自动放弃（改动保存为 WIP 提交、分支保留，条目回到待开始），并写进交接说明。</span></span>
             </label>
             <label className="tog" style={{ alignItems: "flex-start" }}>
               <input type="checkbox" checked={ask} onChange={(e) => setAsk(e.target.checked)} />
