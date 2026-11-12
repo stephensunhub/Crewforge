@@ -16,6 +16,21 @@ Crewforge 是一个 macOS 本地桌面应用。你创建项目和 AI 员工，�
 - **一切可观察：** 工作日志、群聊、会议、议题板、计划页、用量统计都由同一条事件流汇总出来。
 - **本地优先：** 数据在本机 SQLite 和 git 仓库里，没有云端服务和账号体系。
 
+## 和其他工具比
+
+Crewforge 不是 Claude Code 的替代品：它的员工**就是** Claude Code（或 Copilot CLI）的子进程，它在 CLI 之上加了一层团队管理。
+
+| | 只用 Claude Code / Codex | Crewforge | Kiro | Copilot Projects |
+|---|---|---|---|---|
+| 一句话 | 一个 Agent（或几个并行会话）在终端里干活 | 长期运转的 AI 团队：角色、计划、评审、合并 | 规格驱动的 AI IDE | 给目标，由 Copilot 协调多个 Agent |
+| 擅长 | 单个任务、交互式开发、快 | 有明确目标的中大型项目，少打扰地推进 | 先写规格再实现 | 已在 GitHub 的跨仓库工作 |
+| 排活 | 你自己 | 负责人按依赖和等级派活 | 规格拆任务 | Copilot 协调 |
+| 模型 | 各自官方模型 | 混用订阅和本地模型 | 以 Claude 为主 | 文档未写明 |
+| 数据位置 | 本机 / 云端按产品 | 全部在本机 | 本机 IDE | 文档未写明 |
+| 代价 | 轻量 | 有调度开销，仅 macOS，早期版本 | 付费档定价有争议 | 公开预览 |
+
+小任务直接用 CLI 更快更省；任务多、有依赖、想长时间无人值守时，Crewforge 才划算。完整对比、取舍和信息来源见 [和其他工具的对比](docs/comparison.md)。
+
 ## 快速开始
 
 前置条件：macOS、Rust（支持 edition 2024，即 1.85 以上）、较新的 Node.js、已安装并登录的 [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI。
@@ -35,6 +50,7 @@ npm run tauri dev          # 开发运行
 | 文档 | 内容 |
 |---|---|
 | [快速开始](docs/getting-started.md) | 安装、首次配置、跑通第一个项目 |
+| [和其他工具的对比](docs/comparison.md) | 对比 Claude Code / Codex、Kiro、Copilot Projects |
 | [核心概念](docs/concepts.md) | 员工、角色、项目、任务、计划、自主推进、等级、记忆、端点 |
 | [使用指南](docs/user-guide.md) | 每个页面怎么用，常见操作 |
 | [连接本地模型（Ollama）](docs/endpoints.md) | 自建端点的配置、并发和排错 |
