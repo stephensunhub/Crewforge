@@ -8,7 +8,10 @@ export interface Employee {
   provider: "claude" | "copilot";
   model: string;
   endpoint_id: string | null;
+  /** 员工编号（显示用，按创建顺序递增、不复用）；顾问为 0 */
+  number: number;
 }
+export interface RenameReport { from: string; to: string; moved: string[]; warnings: string[]; persona_changed: boolean }
 export interface Company {
   name: string;
   description: string;

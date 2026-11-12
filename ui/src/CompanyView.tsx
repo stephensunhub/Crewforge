@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import { ActivityLine, Avatar, Field, Modal, Placeholder, basename } from "./common";
 import { MemoryView } from "./MemoryView";
-import { endpointOfSrc, endpointToInput, providerOfSrc, srcOf } from "./llm";
+import { endpointOfSrc, endpointToInput, providerOfSrc, replaceName, srcOf } from "./llm";
 import { EmployeeLog } from "./EmployeeLog";
 import { InterventionsView } from "./InterventionsView";
 import type { ProjectTab } from "./ProjectView";
@@ -18,7 +18,7 @@ export const COMPANY_TABS: [CompanyTab, string][] = [
 const ROLES = ["全栈工程师", "QA 测试工程师", "架构师 / CTO", "其他"];
 
 function EmployeeForm({ initial, onSubmit, onClose, onError }: {
-  initial?: { name: string; role: string; persona: string; provider?: string; model?: string; endpointId?: string | null };
+  initial?: { name: string; number?: number; role: string; persona: string; provider?: string; model?: string; endpointId?: string | null };
   onSubmit: (name: string, role: string, persona: string, provider: string, model: string, endpointId: string) => Promise<void>;
   onClose: () => void;
   onError: (m: string) => void;
@@ -53,10 +53,12 @@ function EmployeeForm({ initial, onSubmit, onClose, onError }: {
   ];
   const valid = name.trim() !== "" && !/[\s@]/.test(name);
   return (
-    <Modal title={initial ? `编辑 ${initial.name}` : "新员工"} onClose={onClose}>
+    <Modal title={initial ? `编辑 ${initial.name}${initial.number ? `（#${initial.number}）` : ""}` : "新员工"} onClose={onClose}>
       <div className="form">
-        <Field label="名称" hint={initial ? "名称不可修改（它决定工作区目录和分支名）" : "不含空格和 @，创建后不可修改"}>
-          <input value={name} disabled={!!initial} onChange={(e) => setName(e.target.value)} autoFocus={!initial} />
+        <Field label="名称" hint={initial
+          ? (name.trim() !== initial.name ? "改名要求 TA 空闲、所在项目的自主推进没在运行。会把 TA 的工作区目录一起搬到新名字下、身份说明里的旧名字换成新名字；历史记录（聊天、纪要、记忆）里的旧名字不改，旧消息里的 @旧名 以后不再指向 TA。" : `编号 #${initial.number}（按创建顺序，不会变）。名字可以修改，改名时会有提示。`)
+          : "不含空格和 @。创建后可以改名，但要求 TA 空闲。"}>
+          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus={!initial} />
         </Field>
         <Field label="岗位">
           <select value={role} onChange={(e) => setRole(e.target.value)}>
@@ -203,7 +205,7 @@ export function CompanyView({
                 <div className="card-top">
                   <Avatar name={c.employee.name} size={38} />
                   <div style={{ minWidth: 0 }}>
-                    <b>{c.employee.name}</b>
+                    <b>{c.employee.name}</b>{c.employee.number > 0 && <span className="hint" style={{ marginLeft: 6 }} title="员工编号：按创建顺序，不会变">#{c.employee.number}</span>}
                     <div className="hint">{c.employee.role}{c.employee.provider === "copilot" && <span className="badge" style={{ marginLeft: 6 }}>Copilot</span>}{c.employee.endpoint_id && <span className="badge" style={{ marginLeft: 6 }} title="连的是自定义 LLM 端点，不是本机 Claude 订阅">本地模型</span>}{c.employee.model && <span className="badge" style={{ marginLeft: 6 }}>{c.employee.model}</span>}</div>
                   </div>
                   <span className={`status ${busy ? "run" : ""}`}>{busy ? "● 工作中" : "○ 空闲"}</span>
@@ -241,12 +243,19 @@ export function CompanyView({
         )}
         {modal && typeof modal === "object" && "edit" in modal && (
           <EmployeeForm onError={onError}
-            initial={{ name: modal.edit.employee.name, role: modal.edit.employee.role, persona: modal.edit.employee.persona, provider: modal.edit.employee.provider, model: modal.edit.employee.model, endpointId: modal.edit.employee.endpoint_id }}
+            initial={{ name: modal.edit.employee.name, number: modal.edit.employee.number, role: modal.edit.employee.role, persona: modal.edit.employee.persona, provider: modal.edit.employee.provider, model: modal.edit.employee.model, endpointId: modal.edit.employee.endpoint_id }}
             onClose={() => setModal(null)}
-            onSubmit={async (_n, r, p, pv, md, ep) => {
+            onSubmit={async (n, r, p, pv, md, ep) => {
               const emp = modal.edit.employee;
               if (await guard(async () => {
-                await api.updateEmployee(emp.id, r, p, pv, md);
+                let persona = p;
+                if (n !== emp.name) {
+                  // 先改名（后端会搬工作区、换身份说明里的名字）；表单里的说明也同步换，免得保存时把旧名字写回去
+                  const rep = await api.renameEmployee(emp.id, n);
+                  persona = replaceName(p, emp.name, n);
+                  if (rep.warnings.length) onError(`已改名为 ${n}，但有提示：${rep.warnings.join("；")}`);
+                }
+                await api.updateEmployee(emp.id, r, persona, pv, md);
                 if (ep || emp.endpoint_id) await api.setEmployeeEndpoint(emp.id, ep || null, md);
               })) setModal(null);
             }}

@@ -92,6 +92,21 @@ pub fn archive_employee(state: State<'_, AppState>, id: String) -> CmdResult<()>
     state.db.set_employee_archived(&id, true).map_err(err)
 }
 
+/// 改员工的名字：员工必须空闲（没在执行、没有进行中的任务），所在项目没有正在运行的自主推进批次。
+#[tauri::command]
+pub async fn rename_employee(state: State<'_, AppState>, id: String, new_name: String) -> CmdResult<crewforge_core::rename::RenameReport> {
+    let emp = state.db.employee_by_id(&id).map_err(err)?.ok_or("员工不存在")?;
+    if state.running.lock().unwrap().contains(&emp.name) || state.busy.lock().unwrap().contains(&emp.name) {
+        return Err("该员工正在工作，请等 TA 做完再改名".into());
+    }
+    for (pid, pname) in state.db.employee_projects(&id).map_err(err)? {
+        if state.autopilots.lock().unwrap().contains_key(&pid) {
+            return Err(format!("项目「{pname}」的自主推进正在运行，请先暂停或停止，再改名"));
+        }
+    }
+    state.orch.rename_employee(&id, &new_name).await.map_err(err)
+}
+
 #[tauri::command]
 pub fn list_projects(state: State<'_, AppState>) -> CmdResult<Vec<ProjectSummary>> {
     state.db.project_summaries().map_err(err)

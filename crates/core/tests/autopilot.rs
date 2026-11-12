@@ -716,3 +716,46 @@ async fn removing_a_member_returns_their_unstarted_work_to_unassigned_and_the_le
     assert_eq!(r2.status, "finished", "{r2:?}");
     assert_eq!(e2.db.get_plan_item(&e2.ids[2]).unwrap().unwrap().status, "done");
 }
+
+#[tokio::test]
+async fn renaming_an_idle_employee_moves_the_worktree_and_updates_persona_and_task_paths() {
+    let e = setup().await;
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    let bob = e.db.employee_by_name("bob").unwrap().unwrap();
+    e.db.update_employee_full(&bob.id, "全栈", "你是 bob，一名全栈工程师。bobby 不是 bob。", "claude", "").unwrap();
+    let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    let conn = rusqlite::Connection::open(e._d.path().join("home").join("crewforge.db")).unwrap();
+    let old_paths: Vec<String> = conn.prepare("SELECT DISTINCT worktree_path FROM tasks WHERE employee_id = ?1").unwrap().query_map([&bob.id], |r| r.get(0)).unwrap().flatten().collect();
+    assert!(!old_paths.is_empty() && old_paths.iter().all(|p| p.ends_with("/bob") && std::path::Path::new(p).exists()), "{old_paths:?}");
+
+    // 重名、非法名字被拒绝
+    assert!(e.orch.rename_employee(&bob.id, "alice").await.unwrap_err().to_string().contains("已经有叫 alice"));
+    assert!(e.orch.rename_employee(&bob.id, "a b").await.is_err());
+
+    let rep = e.orch.rename_employee(&bob.id, "robert").await.unwrap();
+    assert_eq!((rep.from.as_str(), rep.to.as_str()), ("bob", "robert"));
+    assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+    assert_eq!(rep.moved.len(), old_paths.len());
+    for p in &old_paths {
+        assert!(!std::path::Path::new(p).exists(), "旧目录应已搬走：{p}");
+        assert!(std::path::Path::new(&p.replace("/bob", "/robert")).exists());
+    }
+    let now: Vec<String> = conn.prepare("SELECT DISTINCT worktree_path FROM tasks WHERE employee_id = ?1").unwrap().query_map([&bob.id], |r| r.get(0)).unwrap().flatten().collect();
+    assert!(now.iter().all(|p| p.ends_with("/robert")), "任务表里的路径同步更新：{now:?}");
+    let after = e.db.employee_by_id(&bob.id).unwrap().unwrap();
+    assert_eq!(after.name, "robert");
+    assert_eq!(after.number, bob.number, "编号不变");
+    assert_eq!(after.persona, "你是 robert，一名全栈工程师。bobby 不是 robert。", "只换整词");
+    assert!(rep.persona_changed);
+    assert!(e.db.employee_by_name("bob").unwrap().is_none());
+    // git 登记的工作区也是新路径
+    let list = String::from_utf8(Command::new("git").arg("-C").arg(&e.repo).args(["worktree", "list"]).output().unwrap().stdout).unwrap();
+    assert!(list.contains("/robert") && !list.contains("/bob "), "{list}");
+    assert!(e.db.recent_events(500).unwrap().iter().any(|x| x.kind == "employee_renamed" && x.payload["to"] == "robert"));
+    // 改名后还能接着干活：再来一批新条目，由 robert 做
+    let item = e.db.create_plan_item(&e.pid, &NewPlanItem { title: "改名后的新条目".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: Some(bob.id.clone()), deps: vec![] }, None).unwrap();
+    let r2 = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r2.status, "finished", "{r2:?}");
+    assert_eq!(e.db.get_plan_item(&item).unwrap().unwrap().status, "done");
+}

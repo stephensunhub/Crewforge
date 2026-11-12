@@ -322,6 +322,14 @@ impl WorkspaceManager {
         Ok(Some(Checkpoint { commit, files, insertions: ins, deletions: del }))
     }
 
+    /// 把工作区目录搬到新位置（`git worktree move`，未提交的改动随目录一起走）。改员工名字时用。
+    pub async fn move_worktree(&self, repo: &Path, old: &Path, new: &Path) -> Result<()> {
+        let lock = self.lock_for(repo);
+        let _g = lock.lock().await;
+        git(repo, &["worktree", "move", &old.to_string_lossy(), &new.to_string_lossy()]).await?;
+        Ok(())
+    }
+
     /// 相对基础提交的改动文件（含已提交、未提交与未跟踪）。
     pub async fn changed_files(&self, worktree: &Path, base_commit: &str) -> Result<Vec<FileChange>> {
         let mut out: Vec<FileChange> = git(worktree, &["diff", "--numstat", "--no-renames", base_commit])

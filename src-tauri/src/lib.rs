@@ -192,6 +192,7 @@ pub fn run() {
             commands::employee_cards,
             commands::update_employee,
             commands::archive_employee,
+            commands::rename_employee,
             commands::list_projects,
             commands::create_project,
             commands::update_project,

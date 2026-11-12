@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
+  RenameReport,
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
   ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Activity, SandboxDomains, DomainCheck, StuckItem, BlockedMerge, AutopilotConfig, InterventionReport, LogRun, Endpoint, EndpointInput, EndpointTest,
 } from "./types";
@@ -34,6 +35,7 @@ export const api = {
   addMember: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("add_member", { projectId, employeeId, role }),
   setMemberRole: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("set_member_role", { projectId, employeeId, role }),
   removeMember: (projectId: string, employeeId: string) => invoke<[number, number]>("remove_member", { projectId, employeeId }),
+  renameEmployee: (id: string, newName: string) => invoke<RenameReport>("rename_employee", { id, newName }),
   memberPendingWork: (projectId: string, employeeId: string) => invoke<[number, number]>("member_pending_work", { projectId, employeeId }),
   // 成本与额度
   modelsOverview: () => invoke<ModelsOverview>("models_overview"),
