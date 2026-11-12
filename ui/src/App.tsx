@@ -48,6 +48,10 @@ export default function App() {
   const [sched, setSched] = useState<SchedStatus | null>(null);
   const concurrency = sched?.user_limit ?? 3;
   const [scope, setScope] = useState<Scope>(loadScope);
+  // 左侧项目栏：项目多了纵向滚动，可搜索、可收起（记住上次的选择）
+  const [sideOpen, setSideOpen] = useState<boolean>(() => { try { return localStorage.getItem("crewforge.side") !== "0"; } catch { return true; } });
+  const [projQuery, setProjQuery] = useState("");
+  useEffect(() => { try { localStorage.setItem("crewforge.side", sideOpen ? "1" : "0"); } catch { /* 忽略 */ } }, [sideOpen]);
   const [companyTab, setCompanyTab] = useState<CompanyTab>("employees");
   const [projectTab, setProjectTab] = useState<ProjectTab>("chat");
   const [error, setError] = useState("");
@@ -231,15 +235,8 @@ export default function App() {
         <div className="navbtns">
           <button className="icon-btn" disabled={!nav.canBack} onClick={nav.back} title="后退（鼠标后退键 / Cmd+[）">‹</button>
           <button className="icon-btn" disabled={!nav.canForward} onClick={nav.forward} title="前进（鼠标前进键 / Cmd+]）">›</button>
+          <button className={`icon-btn ${sideOpen ? "on" : ""}`} onClick={() => setSideOpen((v) => !v)} title={sideOpen ? "收起项目栏" : "展开项目栏"}>☰</button>
         </div>
-        <nav className="scopes">
-          <button className={`scope ${scope.kind === "company" ? "on" : ""}`} onClick={() => setScope({ kind: "company" })}>{company?.name ?? "公司"}</button>
-          {projects.map((p) => (
-            <button key={p.project.id} className={`scope ${scope.kind === "project" && scope.id === p.project.id ? "on" : ""}`} onClick={() => openProject(p.project.id)}>
-              {p.project.name}{p.active_tasks > 0 && <i className="pip" title={`${p.active_tasks} 个进行中任务`} />}
-            </button>
-          ))}
-        </nav>
         <div className="top-right">
           {sched && <SchedChip s={sched} onSettings={() => setScope({ kind: "settings" })} onAction={schedAction} />}
           {quota && (
@@ -358,6 +355,24 @@ export default function App() {
         )}
       </header>
 
+      <div className="shell">
+      {sideOpen && (
+        <aside className="projbar">
+          <button className={`scope ${scope.kind === "company" ? "on" : ""}`} onClick={() => setScope({ kind: "company" })} title={company?.name ?? "公司"}><span className="scope-name">{company?.name ?? "公司"}</span></button>
+          <div className="projbar-head"><span>项目 · {projects.length}</span></div>
+          {projects.length > 6 && <input className="projbar-search" placeholder="搜索项目" value={projQuery} onChange={(e) => setProjQuery(e.target.value)} />}
+          <div className="projbar-list">
+            {projects.filter((p) => !projQuery.trim() || p.project.name.toLowerCase().includes(projQuery.trim().toLowerCase())).map((p) => (
+              <button key={p.project.id} className={`scope ${scope.kind === "project" && scope.id === p.project.id ? "on" : ""}`} onClick={() => openProject(p.project.id)} title={p.project.name}>
+                <span className="scope-name">{p.project.name}</span>{p.active_tasks > 0 && <i className="pip" title={`${p.active_tasks} 个进行中任务`} />}
+              </button>
+            ))}
+            {projects.length > 0 && projQuery.trim() && !projects.some((p) => p.project.name.toLowerCase().includes(projQuery.trim().toLowerCase())) && <div className="hint" style={{ padding: "6px 10px" }}>没有匹配的项目</div>}
+            {projects.length === 0 && <div className="hint" style={{ padding: "6px 10px" }}>还没有项目</div>}
+          </div>
+        </aside>
+      )}
+      <div className="shell-main">
       {tabs && (
         <div className="tabbar">
           {tabs.map(([k, label]) => (
@@ -385,6 +400,8 @@ export default function App() {
         {scope.kind === "models" && <ModelsView onError={setError} />}
         {scope.kind === "settings" && <SettingsView sched={sched} onConcurrency={(n) => void changeConcurrency(n)} onAction={schedAction} />}
       </main>
+      </div>
+      </div>
     </div>
   );
 }
