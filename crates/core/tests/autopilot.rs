@@ -675,3 +675,16 @@ async fn lead_cancels_duplicate_items_at_batch_start_and_may_only_cancel() {
     assert_eq!(count_events(&e, "autopilot_step", "清理重复条目时只能取消"), 1);
     assert_eq!(count_events(&e, "autopilot_plan_changed", "取消 《A》"), 1);
 }
+
+#[tokio::test]
+async fn background_housekeeping_is_deferred_while_ready_items_are_waiting() {
+    let e = setup().await;
+    // 四个互不依赖的条目，同时只允许 1 个并行，所以前面的合并时后面的一定还在等着派
+    for t in ["D1", "D2", "D3"] {
+        e.db.create_plan_item(&e.pid, &NewPlanItem { title: t.into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: None, deps: vec![] }, None).unwrap();
+    }
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    let r = run(&e, 300, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    assert!(count_events(&e, "autopilot_step", "后台整理（记忆、行动项）先推迟") >= 1, "前面的条目合并时后面还有就绪的，应当推迟整理");
+}

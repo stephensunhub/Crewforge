@@ -294,6 +294,8 @@ pub struct Autopilot<A: Approver + Send + Sync + 'static> {
     bg_standups: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// 后台整理（记忆、行动项）是否在跑，同一时间只开一个
     housekeeping: AtomicBool,
+    /// 上一次启动后台整理时已合并的条目数（还有就绪条目等着派时，最多推迟到再合并 HOUSEKEEPING_MAX_DEFER 个）
+    housekeeping_at_merged: AtomicUsize,
     merged: AtomicUsize,
     last_standup_at_merged: AtomicUsize,
     last_curated_at_merged: AtomicUsize,
@@ -314,6 +316,10 @@ pub const MAX_ACTIONS_PER_TASK: usize = 3;
 pub const SOFT_BUDGET_RATIO: f64 = 0.8;
 /// 给收尾（整理记忆、更新文档）留的调用数：开始新条目前先扣掉，保证预算用尽时收尾也能做。
 pub const WRAP_UP_RESERVE: usize = 4;
+/// 还有就绪的条目等着派时，后台整理最多推迟到再合并这么多个条目（整理是负责人做的，开始后负责人被标为忙，
+/// 它自己名下的条目就派不出去；模型名额也会被占）。
+const HOUSEKEEPING_MAX_DEFER: usize = 4;
+
 /// 批次开始时，“之后再说”的行动项积压到这么多才先整理（整理是串行的，会让其他人等）。
 pub const START_TRIAGE_BACKLOG: usize = 12;
 
@@ -420,7 +426,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let orch = { let mut o = (*orch).clone(); o.origin = "autopilot".into(); Arc::new(o) };
         Ok(Arc::new(Self {
             orch, sched, approver, ctl, project_id: run.project_id.clone(), run_id: run.id.clone(), repo: std::path::PathBuf::from(project.path),
-            calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()), bg_standups: Default::default(), housekeeping: AtomicBool::new(false),
+            calls: AtomicUsize::new(0), started: Instant::now(), max_calls: run.max_calls as usize, max_minutes: run.max_minutes as u64, merge_lock: tokio::sync::Mutex::new(()), standup_lock: tokio::sync::Mutex::new(()), bg_standups: Default::default(), housekeeping: AtomicBool::new(false), housekeeping_at_merged: AtomicUsize::new(0),
             merged: AtomicUsize::new(0), last_standup_at_merged: AtomicUsize::new(0), last_curated_at_merged: AtomicUsize::new(0), last_triaged_at_merged: AtomicUsize::new(0), uncounted: AtomicUsize::new(0), standups: AtomicUsize::new(0),
             handled_actions: std::sync::Mutex::new(Vec::new()), busy, on_busy_change,
         }))
@@ -1061,7 +1067,14 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                     Ok(()) => {
                         self.ensure_baseline().await;
                         // 整理记忆和行动项都是负责人在慢模型上做的（十几分钟），放到后台，不挡着派下一个条目；同一时间只留一个在跑
-                        if !self.housekeeping.swap(true, Ordering::SeqCst) {
+                        // 还有就绪的条目等着派，就先不整理：先把开发做完，整理等没有活可派时再做（推迟有上限，免得积压越来越多）
+                        let merged_now = self.merged.load(Ordering::SeqCst);
+                        let ready_waiting = self.db().plan_view(&self.project_id).map(|v| v.items.iter().any(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id))).unwrap_or(false);
+                        let defer = ready_waiting && merged_now < self.housekeeping_at_merged.load(Ordering::SeqCst) + HOUSEKEEPING_MAX_DEFER;
+                        if defer {
+                            self.say("autopilot_step", "还有可以开始的条目，后台整理（记忆、行动项）先推迟，等没有活可派或再合并几个条目后再做");
+                        } else if !self.housekeeping.swap(true, Ordering::SeqCst) {
+                            self.housekeeping_at_merged.store(merged_now, Ordering::SeqCst);
                             let me = self.clone();
                             let h = tokio::spawn(async move {
                                 // 守卫：整理任务 panic 或被中止时也复位标记，否则本批次之后再也不整理

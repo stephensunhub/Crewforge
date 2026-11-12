@@ -13,7 +13,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::oneshot;
 
 pub const MIGRATION_19: &str = r#"
 CREATE TABLE llm_endpoints (
@@ -131,9 +131,49 @@ pub struct Resolved {
 }
 
 // ---------- 并发控制 ----------
-fn semaphores() -> &'static Mutex<HashMap<String, (i64, Arc<Semaphore>)>> {
-    static S: OnceLock<Mutex<HashMap<String, (i64, Arc<Semaphore>)>>> = OnceLock::new();
-    S.get_or_init(Default::default)
+/// 端点上的名额：同时最多 `max` 个员工在用；等的人按优先级排队（数字小的先），同级先到先得，
+/// 等得久的会逐步提高优先级（每 20 分钟提高一级），免得后台杂务永远轮不到。
+struct Waiter { prio: u8, seq: u64, since: i64, tx: oneshot::Sender<()> }
+#[derive(Default)]
+struct Gate { running: usize, max: usize, next_seq: u64, waiters: Vec<Waiter> }
+
+fn gates() -> &'static Mutex<HashMap<String, Gate>> {
+    static G: OnceLock<Mutex<HashMap<String, Gate>>> = OnceLock::new();
+    G.get_or_init(Default::default)
+}
+
+/// 等待时间折算的优先级提升（每 20 分钟一级）。
+const AGING_MS: i64 = 20 * 60 * 1000;
+
+fn effective_prio(w: &Waiter, now: i64) -> i64 { w.prio as i64 - ((now - w.since).max(0) / AGING_MS) }
+
+/// 有空位就把名额交给优先级最高的等待者；等待者已经放弃（future 被丢弃）的跳过。
+fn pump(g: &mut Gate) {
+    while g.running < g.max && !g.waiters.is_empty() {
+        let now = now_ms();
+        let i = (0..g.waiters.len()).min_by_key(|&i| (effective_prio(&g.waiters[i], now), g.waiters[i].seq)).unwrap();
+        let w = g.waiters.remove(i);
+        if w.tx.send(()).is_ok() { g.running += 1; }
+    }
+}
+
+fn release_gate(endpoint_id: &str) {
+    let mut m = gates().lock().unwrap();
+    if let Some(g) = m.get_mut(endpoint_id) {
+        g.running = g.running.saturating_sub(1);
+        pump(g);
+    }
+}
+
+/// 某次调用在名额队列里的优先级：0 开发任务和人发起的 · 1 裁决、评审判断（卡着别的事）· 2 会议、计划调整 · 3 纪要、整理、文档等后台杂务。
+pub fn slot_priority(purpose: &str, origin: &str) -> u8 {
+    if origin.is_empty() { return 0; }
+    match purpose {
+        "task" => 0,
+        "ruling" | "review_gate" => 1,
+        "meeting" | "planning" => 2,
+        _ => 3,
+    }
 }
 
 /// 谁在占用、谁在等某个端点的名额（只在内存里，供界面和卡住检测说明“在等什么”）。
@@ -162,47 +202,70 @@ pub struct QueueInfo {
 }
 
 /// 名额的持有凭证：放手即归还名额，并从“正在用”里去掉。
-pub struct Slot { _permit: OwnedSemaphorePermit, endpoint_id: String, employee_id: String }
+pub struct Slot { endpoint_id: String, employee_id: String }
 
 impl Drop for Slot {
     fn drop(&mut self) {
         if let Some(q) = queues().lock().unwrap().get_mut(&self.endpoint_id) {
             if let Some(i) = q.running.iter().position(|e| *e == self.employee_id) { q.running.remove(i); }
         }
+        release_gate(&self.endpoint_id);
     }
 }
 
-/// 等一个名额：同一个端点同时最多 `max_concurrency` 个员工在用。返回的凭证放手即归还。
-/// 等待期间会记在排队表里，界面据此显示“在等模型名额”。
+/// 等一个名额（优先级最高）。见 `acquire_slot_with`。
 pub async fn acquire_slot(ep: &Endpoint, employee_id: &str) -> Slot {
-    let sem = {
-        let mut m = semaphores().lock().unwrap();
-        let entry = m.entry(ep.id.clone()).or_insert_with(|| (ep.max_concurrency, Arc::new(Semaphore::new(ep.max_concurrency.max(1) as usize))));
-        if entry.0 != ep.max_concurrency {
-            *entry = (ep.max_concurrency, Arc::new(Semaphore::new(ep.max_concurrency.max(1) as usize)));
+    acquire_slot_with(ep, employee_id, 0).await
+}
+
+/// 等一个名额：同一个端点同时最多 `max_concurrency` 个员工在用，空出来时优先级高的先拿（见 `slot_priority`）。
+/// 返回的凭证放手即归还。等待期间会记在排队表里，界面据此显示“在等模型名额”。
+pub async fn acquire_slot_with(ep: &Endpoint, employee_id: &str, priority: u8) -> Slot {
+    let rx = {
+        let mut m = gates().lock().unwrap();
+        let g = m.entry(ep.id.clone()).or_default();
+        g.max = ep.max_concurrency.max(1) as usize; // 并发数改了立即生效
+        if g.running < g.max && g.waiters.is_empty() {
+            g.running += 1;
+            None
+        } else {
+            let (tx, rx) = oneshot::channel();
+            g.next_seq += 1;
+            let seq = g.next_seq;
+            g.waiters.push(Waiter { prio: priority, seq, since: now_ms(), tx });
+            pump(g); // 并发数调大后，有空位就立刻放人
+            Some(rx)
         }
-        entry.1.clone()
+    };
+    let Some(rx) = rx else {
+        queues().lock().unwrap().entry(ep.id.clone()).or_default().running.push(employee_id.to_string());
+        return Slot { endpoint_id: ep.id.clone(), employee_id: employee_id.to_string() };
     };
     queues().lock().unwrap().entry(ep.id.clone()).or_default().waiting.push((employee_id.to_string(), now_ms()));
-    // 取消（任务被丢弃）时也要从等待表里去掉
-    struct Waiting<'a> { ep: &'a str, emp: &'a str }
+    // 等待中被取消（任务被丢弃）：从等待表里去掉；名额已经交给我们但还没取走的，要还回去
+    struct Waiting<'a> { ep: &'a str, emp: &'a str, rx: Option<oneshot::Receiver<()>> }
     impl Drop for Waiting<'_> {
         fn drop(&mut self) {
             if let Some(q) = queues().lock().unwrap().get_mut(self.ep) {
                 if let Some(i) = q.waiting.iter().position(|(e, _)| e == self.emp) { q.waiting.remove(i); }
             }
+            if let Some(mut rx) = self.rx.take() {
+                rx.close();
+                if rx.try_recv().is_ok() { release_gate(self.ep); }
+            }
         }
     }
-    let waiting = Waiting { ep: &ep.id, emp: employee_id };
-    let permit = sem.acquire_owned().await.expect("semaphore never closed");
+    let mut waiting = Waiting { ep: &ep.id, emp: employee_id, rx: Some(rx) };
+    let got = waiting.rx.as_mut().unwrap().await;
+    waiting.rx = None; // 已经取走，Drop 时不要再还
+    got.expect("名额队列不会提前关闭");
     {
         let mut m = queues().lock().unwrap();
         let q = m.entry(ep.id.clone()).or_default();
         if let Some(i) = q.waiting.iter().position(|(e, _)| e == employee_id) { q.waiting.remove(i); }
         q.running.push(employee_id.to_string());
     }
-    drop(waiting);
-    Slot { _permit: permit, endpoint_id: ep.id.clone(), employee_id: employee_id.to_string() }
+    Slot { endpoint_id: ep.id.clone(), employee_id: employee_id.to_string() }
 }
 
 /// 这位员工此刻在某个端点上的排队情况；他没连端点（订阅员工）就是 None。
@@ -474,6 +537,49 @@ mod tests {
         let cp = db.add_employee_with("cp", "工程师", "p", "copilot").unwrap();
         let ep2 = db.add_endpoint(&input("另一个")).unwrap();
         assert!(db.set_employee_endpoint(&cp.id, Some(&ep2.id), "").is_err(), "Copilot 不能连自定义端点");
+    }
+
+    #[test]
+    fn slot_priority_puts_development_before_background_chores() {
+        assert_eq!(slot_priority("task", "autopilot"), 0);
+        assert_eq!(slot_priority("minutes", ""), 0, "人发起的永远最优先");
+        assert!(slot_priority("ruling", "system") < slot_priority("meeting", "system"));
+        assert!(slot_priority("meeting", "system") < slot_priority("curation", "system"));
+        assert_eq!(slot_priority("minutes", "system"), slot_priority("docs", "system"));
+    }
+
+    #[tokio::test]
+    async fn waiters_get_the_slot_by_priority_then_arrival_and_cancelled_waiters_do_not_leak_it() {
+        let db = Db::open_memory().unwrap();
+        let ep = db.add_endpoint(&input("优先级")).unwrap();
+        let holder = acquire_slot(&ep, "holder").await;
+        let order = Arc::new(Mutex::new(Vec::<String>::new()));
+        let spawn_waiter = |name: &'static str, prio: u8| {
+            let (ep, order) = (ep.clone(), order.clone());
+            tokio::spawn(async move {
+                let s = acquire_slot_with(&ep, name, prio).await;
+                order.lock().unwrap().push(name.to_string());
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                drop(s);
+            })
+        };
+        // 先到的是低优先级的杂务，后到的是开发和会议
+        let chore = spawn_waiter("chore", 3);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let meeting = spawn_waiter("meeting", 2);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let dev = spawn_waiter("dev", 0);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // 一个中途放弃的等待者不能把名额带走
+        let quitter = tokio::spawn({ let ep = ep.clone(); async move { acquire_slot_with(&ep, "quitter", 0).await } });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        quitter.abort();
+        drop(holder);
+        for h in [chore, meeting, dev] { tokio::time::timeout(std::time::Duration::from_secs(5), h).await.unwrap().unwrap(); }
+        assert_eq!(*order.lock().unwrap(), vec!["dev", "meeting", "chore"]);
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), acquire_slot(&ep, "after")).await.is_ok(), "名额没有被放弃的等待者带走");
+        let q = queue_info(&ep, "x");
+        assert_eq!(q.waiting, 0);
     }
 
     #[tokio::test]
