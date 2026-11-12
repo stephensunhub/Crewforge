@@ -262,7 +262,7 @@ impl Db {
                     }
                     if let (Some(a), Some(name)) = (&it.assignee_id, &it.assignee_name) {
                         if !members.contains(a) {
-                            why.push(format!("指派给 {name}，但 TA 不是本项目成员，派不出去：请改派"));
+                            why.push(format!("指派给 {name}，但 TA 已不在本项目：自主推进会当作未指定、按角色重新分配；手动派发请先改派"));
                         } else if let Some(d) = doing.get(a.as_str()) {
                             why.push(format!("{name} 正在做《{}》，做完才轮到", d.title));
                         } else if busy.contains(name) {
@@ -702,14 +702,17 @@ mod waiting_tests {
         let b = mk("B 存储", Some(&dev.id), vec![a.clone()]);
         db.add_member(&p, &outsider.id, "developer").unwrap();
         let c = mk("C 外人的活", Some(&outsider.id), vec![]);
-        db.remove_member(&p, &outsider.id).unwrap(); // 指派之后 TA 被移出了项目
+        db.remove_member(&p, &outsider.id).unwrap(); // 指派之后 TA 被移出了项目：移出时已经改回未指定
+        assert!(db.get_plan_item(&c).unwrap().unwrap().assignee_id.is_none(), "移出时名下没开始的条目改回未指定");
+        // 旧数据（移出时没清指派）：直接写回去，检查等待原因
+        db.conn.lock().unwrap().execute("UPDATE plan_items SET assignee_id = ?2 WHERE id = ?1", [&c, &outsider.id]).unwrap();
         let d = mk("D 无人认领", None, vec![]);
         db.conn.lock().unwrap().execute("UPDATE plan_items SET status = 'in_progress' WHERE id = ?1", [&a]).unwrap();
 
         let w = db.plan_waiting(&p, &HashSet::new(), false).unwrap();
         assert!(w[&b].iter().any(|x| x.contains("等前置完成") && x.contains("A 脚手架")), "{:?}", w[&b]);
         assert!(w[&b].iter().any(|x| x.contains("dev 正在做《A 脚手架》")), "{:?}", w[&b]);
-        assert!(w[&c].iter().any(|x| x.contains("不是本项目成员")), "{:?}", w[&c]);
+        assert!(w[&c].iter().any(|x| x.contains("已不在本项目") && x.contains("按角色重新分配")), "{:?}", w[&c]);
         assert!(w[&d].iter().any(|x| x.contains("需要你手动")), "没人拦着、自主推进没开：提示手动派发 {:?}", w[&d]);
         let live = db.plan_waiting(&p, &HashSet::new(), true).unwrap();
         assert!(live[&d].iter().any(|x| x.contains("马上会被自主推进派出")));
