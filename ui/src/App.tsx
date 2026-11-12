@@ -250,7 +250,6 @@ export default function App() {
           <button ref={bellRef} className={`icon-btn ${inbox ? "on" : ""}`} onClick={() => setInbox((v) => !v)} title="待你处理">
             🔔{inboxTotal > 0 && <span className="count">{inboxTotal}</span>}
           </button>
-          <button className={`icon-btn text ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })}>用量</button>
         </div>
         {inbox && (
           <div className="inbox" ref={inboxRef}>
@@ -369,6 +368,7 @@ export default function App() {
           </div>
         <div className="projbar-foot">
           <button className={`scope ${scope.kind === "models" ? "on" : ""}`} onClick={() => setScope({ kind: "models" })} title="模型：LLM 通道、端点和每个通道里的模型"><span className="foot-ico">◈</span><span className="scope-name foot-label">模型</span></button>
+          <button className={`scope ${scope.kind === "cost" ? "on" : ""}`} onClick={() => setScope({ kind: "cost" })} title="用量：调用次数、耗时、费用和每个会话的上下文"><span className="foot-ico">▤</span><span className="scope-name foot-label">用量</span></button>
           <button className={`scope ${scope.kind === "settings" ? "on" : ""}`} onClick={() => setScope({ kind: "settings" })} title="设置"><span className="foot-ico">⚙</span><span className="scope-name foot-label">设置</span></button>
         </div>
       </aside>
