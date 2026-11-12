@@ -27,26 +27,39 @@ pub const PURPOSES: &[(&str, &str)] = &[("task", "开发任务"), ("meeting", "�
 /// Claude Code 各用途的推荐模型：难判断、次数少的用强模型，日常开发和讨论用中档，纯整理用小模型。
 /// 只是建议，由用户点“应用推荐”才会写入，而且只填还没设置的用途。
 pub const RECOMMENDED_CLAUDE: &[(&str, &str, &str)] = &[
-    ("task", "sonnet", "日常开发、写测试、修常规 bug，量最大，用中档"),
-    ("meeting", "sonnet", "讨论要有判断力，但每次发言很短"),
-    ("minutes", "haiku", "把已有的讨论整理成纪要，轻量"),
-    ("ruling", "opus", "技术裁决影响后续方向，次数少，值得用强模型"),
-    ("planning", "opus", "起草和调整计划决定整个批次的走向，次数少"),
-    ("docs", "sonnet", "读代码写概览，要准确但不需要最强"),
-    ("curation", "sonnet", "核实记忆是否与代码一致，需要读代码"),
-    ("onboarding", "sonnet", "导入评估读大量代码，中档够用"),
+    ("task", "claude-sonnet-5-5", "日常开发、写测试、修常规 bug，量最大，用中档"),
+    ("meeting", "claude-sonnet-5-5", "讨论要有判断力，但每次发言很短"),
+    ("minutes", "claude-haiku-5-5", "把已有的讨论整理成纪要，轻量"),
+    ("ruling", "claude-opus-5-5", "技术裁决影响后续方向，次数少，值得用强模型"),
+    ("planning", "claude-opus-5-5", "起草和调整计划决定整个批次的走向，次数少"),
+    ("docs", "claude-sonnet-5-5", "读代码写概览，要准确但不需要最强"),
+    ("curation", "claude-sonnet-5-5", "核实记忆是否与代码一致，需要读代码"),
+    ("onboarding", "claude-sonnet-5-5", "导入评估读大量代码，中档够用"),
 ];
 
-/// Claude Code 内置可选项：别名（CLI 解析为最新版本）与完整模型名。
+/// Claude Code 内置可选项：厂商的完整模型名（不用 opus / sonnet / haiku 这类别名，别名会随 CLI 升级悄悄换成别的版本）。
 const CLAUDE_SEED: &[(&str, &str, &str)] = &[
-    ("opus", "Opus（别名）", "最强，适合难任务；用量大时很贵"),
-    ("sonnet", "Sonnet（别名）", "均衡，日常开发"),
-    ("haiku", "Haiku（别名）", "最便宜最快，适合会议发言、纪要等轻量活"),
-    ("claude-opus-5-5", "Claude Opus 5.5", ""),
-    ("claude-sonnet-5-5", "Claude Sonnet 5.5", ""),
-    ("claude-haiku-5-5", "Claude Haiku 5.5", ""),
+    ("claude-opus-5-5", "Claude Opus 5.5", "最强，适合难任务；用量大时很贵"),
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5", "均衡，日常开发"),
+    ("claude-haiku-5-5", "Claude Haiku 5.5", "最便宜最快，适合会议发言、纪要等轻量活"),
+    ("claude-fable-5-2", "Claude Fable 5.2", ""),
     ("claude-fable-5-1", "Claude Fable 5.1", ""),
 ];
+
+/// 迁移 23：模型别名改回厂商原名。已有数据里的 opus / sonnet / haiku 换成完整模型名（按用途的默认模型、
+/// 连订阅的员工自己指定的模型；连自建端点的员工的模型名是端点上的，不动），内置目录里的别名条目删掉、补上完整名。
+pub const MIGRATION_23: &str = r#"
+INSERT OR IGNORE INTO models (provider, model_id, label, note, enabled, builtin, created_at) VALUES
+  ('claude','claude-opus-5-5','Claude Opus 5.5','最强，适合难任务；用量大时很贵',1,1,strftime('%s','now')*1000),
+  ('claude','claude-sonnet-5-5','Claude Sonnet 5.5','均衡，日常开发',1,1,strftime('%s','now')*1000),
+  ('claude','claude-haiku-5-5','Claude Haiku 5.5','最便宜最快，适合会议发言、纪要等轻量活',1,1,strftime('%s','now')*1000),
+  ('claude','claude-fable-5-2','Claude Fable 5.2','',1,1,strftime('%s','now')*1000);
+DELETE FROM models WHERE provider = 'claude' AND builtin = 1 AND model_id IN ('opus','sonnet','haiku');
+UPDATE settings SET value = CASE value WHEN 'opus' THEN 'claude-opus-5-5' WHEN 'sonnet' THEN 'claude-sonnet-5-5' ELSE 'claude-haiku-5-5' END
+  WHERE key LIKE 'model.claude.%' AND value IN ('opus','sonnet','haiku');
+UPDATE employees SET model = CASE model WHEN 'opus' THEN 'claude-opus-5-5' WHEN 'sonnet' THEN 'claude-sonnet-5-5' ELSE 'claude-haiku-5-5' END
+  WHERE provider = 'claude' AND endpoint_id IS NULL AND model IN ('opus','sonnet','haiku');
+"#;
 
 /// Copilot 的备用清单（`copilot help config` 里没解析到时使用；正常以“发现模型”的结果为准）。
 const COPILOT_SEED: &[&str] = &["auto", "claude-sonnet-5.5", "claude-opus-5.5", "claude-haiku-5.5", "gpt-6.1-sol", "gemini-3.8-flash", "grok-4.7"];
@@ -209,16 +222,46 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn migration_23_turns_aliases_into_vendor_names_but_leaves_endpoint_models_alone() {
+        let d = tempfile::tempdir().unwrap();
+        {
+            let db = Db::open(d.path()).unwrap();
+            let a = db.add_employee("a", "全栈", "p").unwrap();
+            let b = db.add_employee("b", "全栈", "p").unwrap();
+            db.update_employee_full(&a.id, "全栈", "p", "claude", "sonnet").unwrap();
+            db.update_employee_full(&b.id, "全栈", "p", "claude", "qwen3:27b").unwrap();
+            let ep = db.add_endpoint(&crate::endpoint::EndpointInput { name: "x".into(), base_url: "http://192.168.1.2:11434".into(), models: vec!["qwen3:27b".into()], extra_env: Default::default(), max_concurrency: 1, context_tokens: 0, limit_budget: true, token: None }).unwrap();
+            db.set_employee_endpoint(&b.id, Some(&ep.id), "qwen3:27b").unwrap();
+            db.set_setting("model.claude.task", "sonnet").unwrap();
+            db.set_setting("model.claude.ruling", "opus").unwrap();
+            db.set_setting("model.claude.minutes", "my-own").unwrap();
+            db.list_models(Some("claude")).unwrap(); // 写入内置清单
+            let conn = db.conn.lock().unwrap();
+            conn.execute("INSERT OR IGNORE INTO models (provider, model_id, label, builtin, created_at) VALUES ('claude','sonnet','Sonnet（别名）',1,1)", []).unwrap();
+            conn.pragma_update(None, "user_version", 22).unwrap();
+        }
+        let db = Db::open(d.path()).unwrap();
+        assert_eq!(db.purpose_model("claude", "task").unwrap(), "claude-sonnet-5-5");
+        assert_eq!(db.purpose_model("claude", "ruling").unwrap(), "claude-opus-5-5");
+        assert_eq!(db.purpose_model("claude", "minutes").unwrap(), "my-own", "不认识的不动");
+        let emps = db.list_employees().unwrap();
+        assert_eq!(emps.iter().find(|e| e.name == "a").unwrap().model, "claude-sonnet-5-5");
+        assert_eq!(emps.iter().find(|e| e.name == "b").unwrap().model, "qwen3:27b", "连自建端点的员工不动");
+        let ids: Vec<String> = db.list_models(Some("claude")).unwrap().into_iter().map(|m| m.model_id).collect();
+        assert!(!ids.iter().any(|i| i == "sonnet") && ids.iter().any(|i| i == "claude-sonnet-5-5") && ids.iter().any(|i| i == "claude-fable-5-2"), "{ids:?}");
+    }
     use super::*;
 
     #[test]
     fn applying_recommended_models_only_fills_blanks() {
         let db = Db::open_memory().unwrap();
-        db.set_purpose_model("claude", "task", "opus").unwrap();
+        db.set_purpose_model("claude", "task", "claude-opus-5-5").unwrap();
         assert_eq!(db.apply_recommended_models().unwrap(), RECOMMENDED_CLAUDE.len() - 1);
-        assert_eq!(db.purpose_model("claude", "task").unwrap(), "opus", "已设置的不覆盖");
-        assert_eq!(db.purpose_model("claude", "ruling").unwrap(), "opus");
-        assert_eq!(db.purpose_model("claude", "minutes").unwrap(), "haiku");
+        assert_eq!(db.purpose_model("claude", "task").unwrap(), "claude-opus-5-5", "已设置的不覆盖");
+        assert_eq!(db.purpose_model("claude", "ruling").unwrap(), "claude-opus-5-5");
+        assert_eq!(db.purpose_model("claude", "minutes").unwrap(), "claude-haiku-5-5");
         assert_eq!(db.purpose_model("copilot", "minutes").unwrap(), "", "Copilot 不动");
         assert_eq!(db.apply_recommended_models().unwrap(), 0);
         assert!(RECOMMENDED_CLAUDE.iter().all(|(p, _, _)| PURPOSES.iter().any(|(k, _)| k == p)));
@@ -235,16 +278,18 @@ mod tests {
     fn catalog_seed_custom_models_enable_disable_and_discovery() {
         let db = Db::open_memory().unwrap();
         let claude = db.list_models(Some("claude")).unwrap();
-        assert!(claude.iter().any(|m| m.model_id == "haiku") && claude.iter().all(|m| m.enabled && m.builtin));
+        assert!(claude.iter().any(|m| m.model_id == "claude-haiku-5-5") && claude.iter().all(|m| m.enabled && m.builtin));
+        assert!(!claude.iter().any(|m| ["opus", "sonnet", "haiku"].contains(&m.model_id.as_str())), "不再内置别名");
+        assert!(RECOMMENDED_CLAUDE.iter().all(|(_, m, _)| claude.iter().any(|c| &c.model_id == m)), "推荐的模型都在目录里");
         db.add_model("claude", "my-model", "").unwrap();
         assert!(db.add_model("claude", "my-model", "").is_err(), "重复");
         assert!(db.add_model("claude", "a b", "").is_err() && db.add_model("gemini", "x", "").is_err());
-        db.set_model_enabled("claude", "opus", false).unwrap();
-        assert!(!db.list_models(Some("claude")).unwrap().iter().find(|m| m.model_id == "opus").unwrap().enabled);
-        assert!(db.remove_model("claude", "haiku").is_err(), "内置的只能停用");
+        db.set_model_enabled("claude", "claude-opus-5-5", false).unwrap();
+        assert!(!db.list_models(Some("claude")).unwrap().iter().find(|m| m.model_id == "claude-opus-5-5").unwrap().enabled);
+        assert!(db.remove_model("claude", "claude-haiku-5-5").is_err(), "内置的只能停用");
         db.remove_model("claude", "my-model").unwrap();
         // 用户的启停不会被重复播种覆盖
-        assert!(!db.list_models(Some("claude")).unwrap().iter().find(|m| m.model_id == "opus").unwrap().enabled);
+        assert!(!db.list_models(Some("claude")).unwrap().iter().find(|m| m.model_id == "claude-opus-5-5").unwrap().enabled);
         // 发现的模型并入，已有的不重复
         let added = db.merge_discovered_models("copilot", &["grok-4.7".into(), "kimi-k3".into()]).unwrap();
         assert_eq!(added, 1, "grok-4.7 已在清单里");
