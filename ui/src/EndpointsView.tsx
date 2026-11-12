@@ -33,7 +33,7 @@ export function EndpointDetail({ ep, users, reload, onError, onEdit, onRemoved }
         <div style={{ display: "flex", gap: 8, flex: "none", alignItems: "center" }}>
           <label className="hint" style={{ display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={ep.enabled} onChange={(e) => void act("en", async () => { await api.setEndpointEnabled(ep.id, e.target.checked); })} /> 启用</label>
           <button className="btn" onClick={onEdit}>编辑连接</button>
-          <button className="btn danger" disabled={users.length > 0} title={users.length > 0 ? "还有员工在用，先给他们换别的提供方" : ""} onClick={() => void act("rm", async () => { if (await api.confirm(`删除端点 ${ep.name}？`, "删除")) { await api.removeEndpoint(ep.id); onRemoved(); } })}>删除</button>
+          <button className="btn danger" disabled={users.length > 0} title={users.length > 0 ? "还有员工在用，先给他们换别的通道" : ""} onClick={() => void act("rm", async () => { if (await api.confirm(`删除端点 ${ep.name}？`, "删除")) { await api.removeEndpoint(ep.id); onRemoved(); } })}>删除</button>
         </div>
       </div>
 
@@ -87,7 +87,7 @@ export function EndpointDetail({ ep, users, reload, onError, onEdit, onRemoved }
 
       <section className="panel-box">
         <h4 className="group-title">正在用它的员工（{users.length}）</h4>
-        {users.length === 0 ? <div className="hint">还没有员工选这个端点。到“公司 → 员工”里编辑员工，在“LLM 提供方”里选它。</div> : (
+        {users.length === 0 ? <div className="hint">还没有员工选这个端点。到“公司 → 员工”里编辑员工，在“LLM 通道”里选它。</div> : (
           <table className="cost-table"><tbody>{users.map((u) => (
             <tr key={u.id}><td><b>{u.name}</b></td><td className="hint">{u.role}</td><td><code>{u.model || `${ep.models[0] ?? ""}（默认）`}</code></td></tr>
           ))}</tbody></table>

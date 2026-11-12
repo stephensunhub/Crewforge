@@ -61,7 +61,7 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
           <div className="mitem-group">总览</div>
           <button className={`mitem ${sel === "who" ? "on" : ""}`} onClick={() => pick("who")}>
             <div className="mitem-title">员工与模型对照</div>
-            <div className="hint">谁在通过哪个提供方用哪个模型</div>
+            <div className="hint">谁在通过哪个通道用哪个模型</div>
           </button>
           <button className={`mitem ${sel === "purposes" ? "on" : ""}`} onClick={() => pick("purposes")}>
             <div className="mitem-title">按用途的默认模型</div>
@@ -82,9 +82,9 @@ export function ModelsView({ onError }: { onError: (m: string) => void }) {
           {sel === "who" && (
             <>
               <div className="page-head"><div><h2>员工与模型对照</h2>
-                <div className="hint">每位员工通过哪个提供方、实际用哪个模型。要改，到“公司 → 员工”里编辑员工（提供方和模型在同一个窗口里选）。</div></div></div>
+                <div className="hint">每位员工通过哪个通道、实际用哪个模型。要改，到“公司 → 员工”里编辑员工（通道和模型在同一个窗口里选）。</div></div></div>
               <table className="cost-table">
-                <thead><tr><th>员工</th><th>岗位</th><th>提供方</th><th>模型</th></tr></thead>
+                <thead><tr><th>员工</th><th>岗位</th><th>通道</th><th>模型</th></tr></thead>
                 <tbody>{emps.map((e) => {
                   const ep = e.endpoint_id ? eps.find((x) => x.id === e.endpoint_id) : undefined;
                   const provider = ep ? `${ep.name}（自建端点）` : e.provider === "copilot" ? "GitHub Copilot" : "Claude 订阅";

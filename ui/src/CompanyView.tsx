@@ -33,12 +33,24 @@ function EmployeeForm({ initial, onSubmit, onClose, onError }: {
   const [fetched, setFetched] = useState<string[]>([]);
   const [fetching, setFetching] = useState(false);
   const [fetchNote, setFetchNote] = useState("");
+  const [other, setOther] = useState(false);
   const [busy, setBusy] = useState(false);
   const [cat, setCat] = useState<ModelsOverview | null>(null);
   const [eps, setEps] = useState<Endpoint[]>([]);
   useEffect(() => { void api.modelsOverview().then(setCat).catch(() => setCat(null)); void api.listEndpoints().then(setEps).catch(() => setEps([])); }, []);
   const ep = epId ? eps.find((x) => x.id === epId) : undefined;
+  const channelLabel = ep ? ep.name : provider === "copilot" ? "GitHub Copilot" : "Claude 订阅";
+  // 当前通道里的模型：端点用它已启用的，订阅用模型目录里启用的
+  const channelModels: { id: string; label: string }[] = ep
+    ? ep.models.map((m) => ({ id: m, label: m }))
+    : (cat?.models ?? []).filter((m) => m.provider === provider && m.enabled).map((m) => ({ id: m.model_id, label: m.label && m.label !== m.model_id ? `${m.label}（${m.model_id}）` : m.model_id }));
+  const extraModels = ep ? fetched.filter((m) => !ep.models.includes(m)) : [];
   const enabledProv = (p: string) => !cat || (cat.providers.find((x) => x.provider === p)?.enabled ?? true) || initial?.provider === p;
+  const channels = [
+    { src: "claude", title: "Claude 订阅", desc: "本机登录的 Claude Code 账号，按订阅额度计量，可以边做边向你请求权限", disabled: !enabledProv("claude") },
+    { src: "copilot", title: "GitHub Copilot", desc: "本机登录的 Copilot 账号，按高级请求计量，权限在启动时一次定好", disabled: !enabledProv("copilot") },
+    ...eps.map((x) => ({ src: `ep:${x.id}`, title: x.name, desc: `自建端点 · ${x.base_url.replace(/^https?:\/\//, "")} · ${x.models.length} 个模型`, disabled: !x.enabled && x.id !== initial?.endpointId })),
+  ];
   const valid = name.trim() !== "" && !/[\s@]/.test(name);
   return (
     <Modal title={initial ? `编辑 ${initial.name}` : "新员工"} onClose={onClose}>
@@ -51,30 +63,30 @@ function EmployeeForm({ initial, onSubmit, onClose, onError }: {
             {[...new Set([role, ...ROLES])].map((r) => <option key={r}>{r}</option>)}
           </select>
         </Field>
-        <Field label="LLM 提供方" hint={initial
-          ? (provider !== initial.provider ? "⚠ 切换引擎后 TA 之前的对话上下文不会带过去（任务分支、工作区、历史记录和记忆都保留）；TA 正在工作时不能切换。" : "可以随时切换，下次执行时生效；换提供方会清掉 TA 的旧会话。")
-          : "订阅：用本机已登录的账号（Claude 可以边做边向你请求权限；Copilot 的权限在启动时一次定好）。自建端点：只有 TA 的进程连到那个服务（如另一台电脑上的 Ollama），不影响本机登录。要添加端点，到“模型”页。"}>
-          <select value={src} onChange={(e) => { setSrc(e.target.value); setModel(""); setFetched([]); setFetchNote(""); }}>
-            <optgroup label="订阅（本机登录的账号）">
-              <option value="claude" disabled={!enabledProv("claude")}>Claude Code{enabledProv("claude") ? "" : "（已停用）"}</option>
-              <option value="copilot" disabled={!enabledProv("copilot")}>GitHub Copilot CLI{enabledProv("copilot") ? "" : "（已停用）"}</option>
-            </optgroup>
-            {eps.length > 0 && (
-              <optgroup label="自建端点">
-                {eps.map((x) => <option key={x.id} value={`ep:${x.id}`} disabled={!x.enabled && x.id !== initial?.endpointId}>{x.name}{x.enabled ? "" : "（已停用）"}</option>)}
-              </optgroup>
-            )}
-          </select>
+        <Field label="LLM 通道" hint={initial
+          ? (provider !== initial.provider ? "⚠ 切换引擎后 TA 之前的对话上下文不会带过去（任务分支、工作区、历史记录和记忆都保留）；TA 正在工作时不能切换。" : "可以随时切换，下次执行时生效；换通道会清掉 TA 的旧会话。")
+          : "先选通道，再在通道里选模型。要添加自建端点，到“模型”页。"}>
+          <div className="channels">
+            {channels.map((c) => (
+              <label key={c.src} className={`channel ${src === c.src ? "on" : ""} ${c.disabled ? "off" : ""}`}>
+                <input type="radio" name="llm-channel" checked={src === c.src} disabled={c.disabled}
+                  onChange={() => { setSrc(c.src); setModel(""); setOther(false); setFetched([]); setFetchNote(""); }} />
+                <span><b>{c.title}</b><span className="hint" style={{ display: "block" }}>{c.desc}{c.disabled ? "（已停用）" : ""}</span></span>
+              </label>
+            ))}
+          </div>
         </Field>
-        <Field label="模型" hint={ep
-          ? "从下拉里选，也可以直接输入端点上的任意模型名（保存时会自动加进这个端点的模型清单）；留空用清单里的第一个。本地模型的工具调用较弱，更适合做范围明确的开发任务，不建议当负责人。"
-          : "留空使用引擎默认。从下拉里选，或输入别名 / 完整模型名；名称不对时 TA 会在下次执行时报错，改回即可。"}>
-          <input list="emp-models" value={model} placeholder={ep ? `${ep.models[0] ?? ""}（默认）` : "默认（可在“模型”页按用途设置默认模型）"} onChange={(e) => setModel(e.target.value.trim())} />
-          <datalist id="emp-models">
-            {ep
-              ? [...ep.models, ...fetched.filter((m) => !ep.models.includes(m))].map((m) => <option key={m} value={m}>{ep.models.includes(m) ? "" : "服务器上有，未启用（选它会自动启用）"}</option>)
-              : (cat?.models ?? []).filter((m) => m.provider === provider && m.enabled).map((m) => <option key={m.model_id} value={m.model_id}>{m.label}</option>)}
-          </datalist>
+        <Field label={`模型（${channelLabel}里的）`} hint={ep
+          ? "只列这个端点已启用的模型；不在列表里的，先“从服务器读取”再选，或选“其他”手动输入（保存时会自动加进端点的模型清单）。留空用清单里的第一个。本地模型的工具调用较弱，更适合做范围明确的开发任务，不建议当负责人。"
+          : "只列这个通道里已启用的模型；留空用引擎默认（可在“模型”页按用途设置）。不在列表里的选“其他”手动输入，名称不对时 TA 会在下次执行时报错，改回即可。"}>
+          <select value={other ? "__other__" : model} onChange={(e) => { if (e.target.value === "__other__") { setOther(true); setModel(""); } else { setOther(false); setModel(e.target.value); } }}>
+            <option value="">{ep ? `${ep.models[0] ?? ""}（端点默认）` : "引擎默认"}</option>
+            {channelModels.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            {extraModels.length > 0 && <optgroup label="服务器上有，未启用（选它会自动启用）">{extraModels.map((m) => <option key={m} value={m}>{m}</option>)}</optgroup>}
+            {model && !other && !channelModels.some((m) => m.id === model) && !extraModels.includes(model) && <option value={model}>{model}（当前，不在列表里）</option>}
+            <option value="__other__">其他（手动输入）…</option>
+          </select>
+          {other && <input style={{ marginTop: 6 }} autoFocus value={model} placeholder="模型名" onChange={(e) => setModel(e.target.value.trim())} />}
           {ep && (
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
               <button className="btn" disabled={fetching} onClick={async () => {
@@ -86,7 +98,7 @@ function EmployeeForm({ initial, onSubmit, onClose, onError }: {
             </div>
           )}
         </Field>
-        <div className="hint" style={{ marginTop: -4 }}>TA 将通过 <b>{ep ? ep.name : provider === "copilot" ? "GitHub Copilot" : "Claude 订阅"}</b> 使用 <b>{model || (ep ? ep.models[0] : "引擎默认模型") || "引擎默认模型"}</b>。</div>
+        <div className="hint" style={{ marginTop: -4 }}>TA 将通过 <b>{channelLabel}</b> 使用 <b>{model || (ep ? ep.models[0] : "") || "引擎默认模型"}</b>。</div>
         <Field label="身份说明" hint="告诉 TA 是谁、怎么沟通、擅长什么。留空会使用默认说明。">
           <textarea rows={5} value={persona} onChange={(e) => setPersona(e.target.value)} />
         </Field>

@@ -426,3 +426,11 @@ button.u-cell:hover { background: var(--panel-2); }
 .u-table td, .u-table th { overflow-wrap: normal; }
 
 .mitem-group { padding: 10px 10px 2px; color: var(--muted); font-size: 11px; letter-spacing: .06em; }
+
+/* 员工编辑里的通道选择：每个通道一张卡片，说明它是什么、模型数 */
+.channels { display: grid; gap: 6px; }
+.channel { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; background: var(--panel-2); }
+.channel:hover { border-color: var(--accent); }
+.channel.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+.channel.off { opacity: .55; cursor: not-allowed; }
+.channel input { margin-top: 3px; width: auto; }
