@@ -1018,7 +1018,12 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
 
     async fn maybe_standup(&self) {
         let Ok(_g) = self.standup_lock.try_lock() else { return };
-        let active = self.db().list_tasks(&self.repo.to_string_lossy()).map(|t| t.into_iter().filter(|t| t.status == "active").count()).unwrap_or(0);
+        // 只数员工此刻真的在干活的任务：失败后留着的、排队没轮到的不算（本地模型串行，多开一场会白占几十分钟）
+        let busy_ids: HashSet<String> = {
+            let names = self.busy.lock().unwrap().clone();
+            self.db().list_employees().map(|v| v.into_iter().filter(|e| names.contains(&e.name)).map(|e| e.id).collect()).unwrap_or_default()
+        };
+        let active = self.db().list_tasks(&self.repo.to_string_lossy()).map(|t| t.into_iter().filter(|t| t.status == "active" && busy_ids.contains(&t.employee_id)).count()).unwrap_or(0);
         let merged = self.merged.load(Ordering::SeqCst);
         if active < 2 || (self.standups.load(Ordering::SeqCst) > 0 && merged <= self.last_standup_at_merged.load(Ordering::SeqCst)) || self.over_budget().is_some() || self.soft_budget() {
             return;
@@ -1254,7 +1259,13 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                         if self.escalate_level_after_failure(&id, &e.to_string(), &mut level_fails) {
                             continue; // 已升级、放回待开始，下一轮由更强的人接，不算失败，也不用负责人再调整
                         }
-                        failed.insert(id);
+                        // 任务已经失败、没人在跑了：放弃它（改动存成 WIP 提交）并把条目放回待开始，状态才和事实一致，负责人也才能让它重试
+                        if let Some(tid) = self.db().get_plan_item(&id).ok().flatten().and_then(|i| i.task_id) {
+                            if self.orch.abandon_task(&tid).await.is_ok() {
+                                self.say("autopilot_step", format!("《{title}》失败后的任务已放弃（改动保存在分支上），条目回到待开始，本批次不再自动派它"));
+                            }
+                        }
+                        failed.insert(id.clone());
                         // 负责人看一眼：拆小、补前置、取消、改派或换个说明重试（每批次最多 2 次）
                         if replans < 2 && !self.ctl.stop.load(Ordering::SeqCst) && self.over_budget().is_none() {
                             replans += 1;

@@ -417,14 +417,14 @@ impl Orchestrator {
                     _ => out.rejected.push(format!("改派 #{item}：没有这个条目")),
                 },
                 Change::Retry { item, note } => match by_no(item) {
-                    Some(i) if i.status == "blocked" => {
+                    Some(i) if matches!(i.status.as_str(), "blocked" | "planned") => {
                         let n = NewPlanItem { title: i.title.clone(), description: format!("{}\n\n[负责人补充说明（上次失败后）]\n{note}", i.description), acceptance: i.acceptance.clone(), kind: i.kind.clone(), module: i.module.clone(), assignee_id: i.assignee_id.clone(), deps: vec![] };
-                        if self.db.update_plan_item(&i.id, &n).is_ok() && self.db.set_plan_status(&i.id, "planned", "负责人让它换个说明重试").is_ok() {
+                        if self.db.update_plan_item(&i.id, &n).is_ok() && (i.status == "planned" || self.db.set_plan_status(&i.id, "planned", "负责人让它换个说明重试").is_ok()) {
                             out.retried.push(i.title.clone());
                             out.retried_ids.push(i.id.clone());
                         }
                     }
-                    Some(i) => out.rejected.push(format!("重试《{}》：只有失败（已阻塞）的条目才能重试", i.title)),
+                    Some(i) => out.rejected.push(format!("重试《{}》：只有失败后回到待开始或已阻塞的条目才能重试", i.title)),
                     None => out.rejected.push(format!("重试 #{item}：没有这个条目")),
                 },
             }

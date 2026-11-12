@@ -133,6 +133,20 @@ fn is_listed_command(cmd: &str, list: &[&str]) -> bool {
     if cmd.is_empty() || cmd.contains(SHELL_META) {
         return false;
     }
+    // git -C <目录> 只是换个目录看，等价于去掉这一段再判断（目录可带引号）
+    if let Some(rest) = cmd.strip_prefix("git -C ") {
+        let rest = rest.trim_start();
+        let (dir_len, after) = if let Some(q) = rest.strip_prefix('"') {
+            match q.find('"') { Some(n) => (n + 2, &rest[n + 2..]), None => return false }
+        } else {
+            let n = rest.find(' ').unwrap_or(rest.len());
+            (n, &rest[n..])
+        };
+        if dir_len == 0 || !after.starts_with(' ') {
+            return false;
+        }
+        return is_listed_command(&format!("git{after}"), list);
+    }
     list.iter().any(|p| cmd == *p || cmd.strip_prefix(p).is_some_and(|r| r.starts_with(' ')))
 }
 
@@ -183,6 +197,10 @@ mod tests {
         assert!(matches!(p.decide("Bash", &j_!({"command": "git --no-pager diff"})), PolicyDecision::Allow(_)));
         assert!(matches!(p.decide("Bash", &j_!({"command": "git --no-pager log --oneline -6"})), PolicyDecision::Allow(_)));
         assert!(matches!(p.decide("Bash", &j_!({"command": "git --no-pager push"})), PolicyDecision::Deny(_)), "只放行查看类的 git 子命令");
+        assert!(matches!(p.decide("Bash", &j_!({"command": "git -C /a/b status"})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Bash", &j_!({"command": "git -C \"/a b/c\" log --oneline -8"})), PolicyDecision::Allow(_)));
+        assert!(matches!(p.decide("Bash", &j_!({"command": "git -C /a/b push"})), PolicyDecision::Deny(_)));
+        assert!(matches!(p.decide("Bash", &j_!({"command": "git -C /a/b status; rm x"})), PolicyDecision::Deny(_)));
     }
     use super::*;
     use serde_json::json;
