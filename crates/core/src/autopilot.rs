@@ -499,7 +499,10 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     fn pick(&self, item: &PlanItem, busy: &HashSet<String>) -> Option<Employee> {
         let ms_all = self.members();
         let human_busy = self.busy.lock().unwrap().clone();
-        let busy_for = |e: &Employee| busy.contains(&e.id) || human_busy.contains(&e.name);
+        let repo = self.repo.to_string_lossy().into_owned();
+        // 手上还有别的进行中的任务（上次被打断留下的、手动派的）的人也算忙：派过去只会失败，等 TA 做完或放弃了再派
+        let has_other_task = |e: &Employee| self.db().active_task(&e.id, &repo).ok().flatten().is_some_and(|t| item.task_id.as_deref() != Some(t.id.as_str()));
+        let busy_for = |e: &Employee| busy.contains(&e.id) || human_busy.contains(&e.name) || has_other_task(e);
         // 架构师只做设计条目，设计条目只给架构师做（项目里没有架构师时，设计条目按普通条目处理）
         let has_architect = ms_all.iter().any(|(_, r)| r == "architect");
         if item.kind == crate::design::DESIGN_KIND && has_architect {
@@ -1041,7 +1044,26 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let _ = self.db().close_meeting(&m.id);
     }
 
-    /// 主循环：按依赖并行推进计划条目，直到做完、预算用尽、需要人，或被暂停/停止。
+    /// 对应的计划条目已经被取消、员工又没在工作的进行中任务（孤儿任务）：放弃（改动存成 WIP 提交、分支保留）。
+    /// 不处理的话，这位员工之后被派的任何条目都会因为「还有进行中的任务」失败。
+    async fn abandon_orphan_tasks(&self) -> usize {
+        let ids: Vec<(String, String, String)> = {
+            let conn = self.db().conn.lock().unwrap();
+            let Ok(mut st) = conn.prepare("SELECT t.id, t.title, e.name FROM tasks t JOIN plan_items p ON p.task_id = t.id JOIN employees e ON e.id = t.employee_id WHERE t.status = 'active' AND p.status = 'cancelled' AND p.project_id = ?1") else { return 0 };
+            st.query_map([&self.project_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map(|r| r.flatten().collect()).unwrap_or_default()
+        };
+        let busy_names = self.busy.lock().unwrap().clone();
+        let mut n = 0;
+        for (id, title, who) in ids {
+            if busy_names.contains(&who) { continue; }
+            if self.orch.abandon_task(&id).await.is_ok() {
+                self.say("autopilot_step", format!("《{title}》对应的计划条目已经取消，{who} 手上这个任务没人要了，已放弃（改动保存在分支上），免得拦着 TA 做别的"));
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// 批次开始时，“进行中”但没有人在做的条目（应用重启或崩溃时干活的进程没了）放回“待开始”，
     /// 员工会接着自己那个任务继续做；不然这些条目永远卡在“进行中”，后面等它的条目也开不了工。
     /// 员工此刻正被别处占着（比如你手动派的活）的不动。返回放回了几条。
@@ -1060,6 +1082,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         n
     }
 
+    /// 主循环：按依赖并行推进计划条目，直到做完、预算用尽、需要人，或被暂停/停止。
     pub async fn run(self: Arc<Self>) -> AutopilotRun {
         // 批次运行期间不让 Mac 因空闲睡眠（全局设置里可关；不论批次怎么结束都会放开）
         let _awake = crate::keep_awake::hold();
@@ -1067,6 +1090,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             self.say("autopilot_step", "批次运行期间已阻止 Mac 因空闲而睡眠（批次结束自动放开；到“设置”里可以关掉）");
         }
         self.requeue_orphaned_items();
+        self.abandon_orphan_tasks().await;
         // 积压很多（≥ START_TRIAGE_BACKLOG 条）时，批次一开始就在后台清一遍，不挡派活（本地模型很慢，整理要十几分钟）；
         // 之后每合并 2 个条目、积压够多时会再整理
         if self.orch.later_actions(&self.project_id).map(|v| v.len()).unwrap_or(0) >= START_TRIAGE_BACKLOG {
@@ -1110,6 +1134,8 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let mut final_review_done = false;
         let mut replans = 0usize;
         let mut level_fails: std::collections::HashMap<String, u32> = Default::default();
+        // 因为「员工手上还有别的任务」这类瞬时冲突没派成的条目：不算失败，等下一次有条目做完（条件可能变了）再派
+        let mut deferred: HashSet<String> = HashSet::new();
         let mut escalation: Option<String> = None;
         let (status, reason) = loop {
             if self.ctl.stop.load(Ordering::SeqCst) { break ("stopped", "你停止了推进".to_string()); }
@@ -1165,7 +1191,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 let mut busy = busy;
                 // 设计阶段：项目里有架构师时，设计条目没做完，其他条目不开始
                 let design_open = matches!(self.db().design_phase(&self.project_id), Ok(crate::design::DesignPhase::Pending(_)));
-                let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id) && (!design_open || i.kind == crate::design::DESIGN_KIND)).cloned().collect();
+                let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id) && !deferred.contains(&i.id) && (!design_open || i.kind == crate::design::DESIGN_KIND)).cloned().collect();
                 let mut starts: Vec<(String, Employee)> = vec![];
                 // 预计会改同一个文件的条目不并行（并行必然合并冲突，每次解决要多花调用）
                 let files = self.db().plan_files(&self.project_id).unwrap_or_default();
@@ -1191,6 +1217,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             }
             if let Some(Ok((id, res))) = set.join_next().await {
                 running.remove(&id);
+                deferred.clear();
                 match res {
                     Ok(()) => {
                         self.ensure_baseline().await;
@@ -1218,6 +1245,12 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                     Err(e) => {
                         let title = self.db().get_plan_item(&id).ok().flatten().map(|i| i.title).unwrap_or_default();
                         self.say("autopilot_step", format!("《{title}》没做成：{e}"));
+                        if e.to_string().contains("还有进行中的任务") {
+                            // 员工手上有别的进行中的任务：派不出去是冲突，不是这个条目做不好。留在待开始，下次有条目做完再派
+                            self.say("autopilot_step", format!("《{title}》先不派：{e}（不算失败，等条件变了再派）"));
+                            deferred.insert(id);
+                            continue;
+                        }
                         if self.escalate_level_after_failure(&id, &e.to_string(), &mut level_fails) {
                             continue; // 已升级、放回待开始，下一轮由更强的人接，不算失败，也不用负责人再调整
                         }

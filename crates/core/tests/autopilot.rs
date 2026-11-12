@@ -999,3 +999,36 @@ async fn after_a_lead_handover_the_new_lead_reviews_the_unstarted_plan_once_in_t
     assert_eq!(r2.status, "finished", "{r2:?}");
     assert_eq!(count_events(&e, "autopilot_step", "刚接任负责人：先复盘"), 1, "第二个批次不再复盘");
 }
+
+#[tokio::test]
+async fn an_employee_with_another_active_task_is_skipped_not_failed_and_orphan_tasks_are_abandoned_at_batch_start() {
+    let e = setup().await;
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    for id in &e.ids { e.db.set_plan_status(id, "cancelled", "测试").unwrap(); }
+    let who = |n: &str| e.db.employee_by_name(n).unwrap().unwrap();
+    let (alice, bob) = (who("alice"), who("bob"));
+    let item = |t: &str, assignee: Option<&str>| e.db.create_plan_item(&e.pid, &NewPlanItem { title: t.into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: assignee.map(String::from), deps: vec![] }, None).unwrap();
+
+    // 孤儿任务：bob 做着一个条目，条目后来被取消了，任务还挂着
+    let orphan_item = item("被取消的活", Some(&bob.id));
+    e.orch.dispatch_plan_item(&orphan_item, Some(&bob.id), &Deny, &crewforge_core::runner::NoopObserver).await.unwrap();
+    let orphan_task = e.db.get_plan_item(&orphan_item).unwrap().unwrap().task_id.unwrap();
+    // 真实的来路：应用重启后条目被放回待开始（任务还挂着），负责人又把它取消了
+    assert!(e.db.requeue_plan_item(&orphan_item).unwrap());
+    e.db.set_plan_status(&orphan_item, "cancelled", "测试：负责人取消了").unwrap();
+    // 另外：alice 手上有一个手动派的、没做完的任务（和计划无关）
+    e.orch.assign(&alice, &e.repo, "手动派的活", &Deny, &crewforge_core::runner::NoopObserver).await.unwrap();
+    let manual = e.db.active_task(&alice.id, e.repo.to_str().unwrap()).unwrap().unwrap();
+    // 没指定负责人的条目：alice 在忙，就该给别人（bob 的孤儿任务批次开始时会被放弃），不能派给 alice 再失败
+    let x = item("X 没指定负责人", None);
+
+    let r = run(&e, 300, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(e.db.get_task(&orphan_task).unwrap().unwrap().status, "abandoned", "孤儿任务批次开始时被放弃");
+    assert_eq!(count_events(&e, "autopilot_step", "手上这个任务没人要了"), 1);
+    assert_eq!(e.db.get_task(&manual.id).unwrap().unwrap().status, "active", "手动派的任务不是孤儿，不能动");
+    assert_eq!(count_events(&e, "autopilot_step", "没做成"), 0, "没有因为「还有进行中的任务」失败的条目：{r:?}");
+    let t = e.db.get_plan_item(&x).unwrap().unwrap();
+    assert_eq!(t.status, "done", "{r:?}");
+    let doer = e.db.get_task(t.task_id.as_deref().unwrap()).unwrap().unwrap().employee_id;
+    assert_ne!(doer, alice.id, "alice 手上还有别的任务，X 不该派给她");
+}
