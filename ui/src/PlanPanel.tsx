@@ -109,7 +109,8 @@ export function PlanPanel({ project, members, events, onError, onChanged, onOpen
       <section className="panel-box">
         <h4 className="group-title">项目目标与硬性约束</h4>
         <div className="hint" style={{ marginBottom: 6 }}>每个新任务开始时都会带上这段话，例如“技术栈升级，业务行为不变”。</div>
-        <textarea rows={3} value={goal} placeholder="写下这个项目要达到什么、不能违反什么" onChange={(e) => setGoal(e.target.value)} />
+        <textarea rows={Math.min(16, Math.max(4, goal.split("\n").length + 1))} value={goal} placeholder="写下这个项目要达到什么、不能违反什么（支持 Markdown 写法，纯文本保存）" onChange={(e) => setGoal(e.target.value)} />
+        <div className={`hint${[...goal].length > 6000 ? " bad" : ""}`} style={{ textAlign: "right" }}>{[...goal].length} / 6000 字</div>
         <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
           <button className="btn primary" disabled={!goalDirty} onClick={() => void act(() => api.setProjectGoal(project.id, goal))}>保存</button>
           {GOAL_TEMPLATES.map(([l, t]) => <button key={l} className="btn" onClick={() => setGoal(t)}>用模板：{l}</button>)}

@@ -17,6 +17,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// 条目预计会改的文件（换行分隔），自主推进据此避免让改同一个文件的条目并行。
+/// 项目“目标与约束”的字数上限（每个任务开始时都会带上，太长会挤占上下文）
+pub const GOAL_MAX_CHARS: usize = 6000;
+
 pub const MIGRATION_15: &str = "ALTER TABLE plan_items ADD COLUMN files TEXT NOT NULL DEFAULT '';";
 
 /// AI 负责人提议修改项目目标：只是提议，人点头才生效。
@@ -432,8 +435,8 @@ impl Db {
     }
 
     pub fn set_project_goal(&self, id: &str, goal: &str) -> Result<()> {
-        if goal.chars().count() > 2000 {
-            bail!("目标与约束太长（上限 2000 字）");
+        if goal.chars().count() > GOAL_MAX_CHARS {
+            bail!("目标与约束太长（上限 {GOAL_MAX_CHARS} 字）");
         }
         self.conn.lock().unwrap().execute("UPDATE projects SET goal = ?2, updated_at = ?3 WHERE id = ?1", params![id, goal.trim(), now_ms()])?;
         Ok(())
@@ -443,7 +446,7 @@ impl Db {
     pub fn propose_goal_change(&self, project_id: &str, employee_id: &str, new_goal: &str, reason: &str) -> Result<String> {
         let (new_goal, reason) = (new_goal.trim(), reason.trim());
         if new_goal.is_empty() { bail!("新的目标不能为空"); }
-        if new_goal.chars().count() > 2000 { bail!("目标与约束太长（上限 2000 字）"); }
+        if new_goal.chars().count() > GOAL_MAX_CHARS { bail!("目标与约束太长（上限 {GOAL_MAX_CHARS} 字）"); }
         if reason.is_empty() { bail!("请写明为什么要改目标"); }
         let cur: String = self.conn.lock().unwrap().query_row("SELECT goal FROM projects WHERE id = ?1", params![project_id], |r| r.get(0))?;
         if cur.trim() == new_goal { bail!("新目标和现有目标相同"); }
@@ -687,7 +690,7 @@ mod tests {
         let (db, pid, _a, _b) = setup();
         db.set_project_goal(&pid, "  技术栈升级，业务行为不变  ").unwrap();
         assert_eq!(db.get_project(&pid).unwrap().unwrap().goal, "技术栈升级，业务行为不变");
-        assert!(db.set_project_goal(&pid, &"字".repeat(2001)).is_err());
+        assert!(db.set_project_goal(&pid, &"字".repeat(GOAL_MAX_CHARS + 1)).is_err());
     }
 }
 
