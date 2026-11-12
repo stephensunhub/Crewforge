@@ -21,6 +21,8 @@ cargo test -p crewforge-core --lib stuck           # 单个模块的单元测试
 cargo test -p crewforge-core --test autopilot items_left   # 单个集成测试
 cargo check -p crewforge-app                       # 改了 commands.rs / lib.rs 之后检查 Tauri 端
 cd ui && npx tsc --noEmit                          # 前端类型检查（没有 lint 和前端测试）
+cargo deny check                                   # 依赖的许可证、漏洞和来源（需 cargo install cargo-deny）
+python3 scripts/gen-third-party.py                 # 依赖有变化后重新生成 THIRD_PARTY_LICENSES.md
 ./scripts/install-mac.sh                           # 构建并装到 /Applications
 ```
 

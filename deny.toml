@@ -26,10 +26,14 @@ allow = [
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
+allow-wildcard-paths = true  # 本仓库内部 crate 之间用 path 依赖（这些 crate 都标了 publish = false）
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # proc-macro-error 已无人维护，由 Tauri 的 Linux 图形栈（gtk/glib）间接引入，macOS 构建不会用到；等上游升级
+    "RUSTSEC-2024-0370",
+]
 
 [sources]
 unknown-registry = "deny"
