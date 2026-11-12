@@ -39,6 +39,7 @@ echo '{"type":"system","subtype":"init","session_id":"x"}'
 f="w_$$_$(date +%s%N).txt"
 case "$line" in *"[角色交接]"*) printf '%s' "$line" > "@SEEN@" ;; esac
 case "$line" in
+  *"接手复盘"*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"set_level\",\"item\":1,\"level\":2},{\"op\":\"reassign\",\"item\":3,\"assignee\":\"bob\"},{\"op\":\"add\",\"title\":\"夹带\",\"reason\":\"x\"}],\"escalate\":null,\"summary\":\"复盘\"}","usage":{}}' ;;
   *"把这个角色交接给"*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"摘要：正在推进脚手架，决定用 SSE，下一步先看 C。","usage":{}}' ;;
   *"写 docs/architecture.md"*) mkdir -p docs; if [ -f "@BADDOC@" ]; then echo 'package main' > main.go; fi; printf '# 架构\n## 模块\nx\n## 给团队的要点\n- 模块之间只通过接口通信\n- 错误统一用 error 返回\n' > docs/architecture.md; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已写完架构文档。","usage":{}}' ;;
   *"写 docs/conventions.md"*) mkdir -p docs; printf '# 规范\n## 命名\nx\n## 给团队的要点\n- 函数小而纯\n- 先写测试\n' > docs/conventions.md; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已写完规范文档。","usage":{}}' ;;
@@ -909,7 +910,7 @@ async fn handing_over_the_lead_role_summarises_first_then_moves_the_role_and_giv
 
     // 2) 执行：newlead 不在项目里，直接加入并接任；alice 保留为开发；名下没开始的活一起交过去
     let text = format!("{}\n\n{}", prep.snapshot, prep.model_summary.unwrap());
-    let rep = e.orch.handover_execute(&e.pid, &alice.id, &newlead.id, "lead", &text, "keep", true).await.unwrap();
+    let rep = e.orch.handover_execute(&e.pid, &alice.id, &newlead.id, "lead", &text, "keep", "move").await.unwrap();
     assert_eq!((rep.moved_plan_items, rep.from.as_str(), rep.to.as_str()), (1, "alice", "newlead"));
     assert_eq!(rep.abandoned.len(), 1, "{:?}", rep.abandoned);
     assert_eq!(e.db.get_task(&active.id).unwrap().unwrap().status, "abandoned");
@@ -937,7 +938,7 @@ async fn handing_over_the_lead_role_summarises_first_then_moves_the_role_and_giv
 
     // 4) 再交接一次，这回原员工移出项目：他名下没开始的条目改回未指定（没选一起交接）
     let extra = e.db.create_plan_item(&e.pid, &NewPlanItem { title: "bob 的后续活".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: Some(bob.id.clone()), deps: vec![] }, None).unwrap();
-    let rep2 = e.orch.handover_execute(&e.pid, &bob.id, &alice.id, "developer", "bob 交接给 alice", "remove", false).await.unwrap();
+    let rep2 = e.orch.handover_execute(&e.pid, &bob.id, &alice.id, "developer", "bob 交接给 alice", "remove", "keep").await.unwrap();
     assert_eq!(rep2.moved_plan_items, 0);
     assert!(!e.db.is_member(&e.pid, &bob.id).unwrap());
     assert!(e.db.get_plan_item(&extra).unwrap().unwrap().assignee_id.is_none(), "没一起交接的，移出时改回未指定");
@@ -955,11 +956,46 @@ async fn handing_over_abandons_a_plan_linked_task_and_the_item_goes_back_to_the_
     let task = e.db.get_task(a.task_id.as_deref().unwrap()).unwrap().unwrap();
 
     // bob 的开发角色交给 alice，bob 移出项目，名下没开始的活一起交过去
-    let rep = e.orch.handover_execute(&e.pid, &bob.id, &alice.id, "developer", "bob 交接给 alice", "remove", true).await.unwrap();
+    let rep = e.orch.handover_execute(&e.pid, &bob.id, &alice.id, "developer", "bob 交接给 alice", "remove", "move").await.unwrap();
     assert_eq!(rep.abandoned.len(), 1);
     assert_eq!(e.db.get_task(&task.id).unwrap().unwrap().status, "abandoned");
     let a = e.db.get_plan_item(&e.ids[0]).unwrap().unwrap();
     assert_eq!((a.status.as_str(), a.assignee_id.as_deref()), ("planned", Some(alice.id.as_str())), "条目回到待开始，归新人");
     assert!(a.note.contains("原由 bob 做到一半") && a.note.contains(&task.branch), "{}", a.note);
     assert!(!e.db.is_member(&e.pid, &bob.id).unwrap());
+}
+
+
+#[tokio::test]
+async fn after_a_lead_handover_the_new_lead_reviews_the_unstarted_plan_once_in_the_first_batch() {
+    let e = setup().await;
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    let who = |n: &str| e.db.employee_by_name(n).unwrap().unwrap();
+    let (alice, bob) = (who("alice"), who("bob"));
+    let newlead = e.db.add_employee("newlead", "全栈", "你是 newlead").unwrap();
+    let mine = e.db.create_plan_item(&e.pid, &NewPlanItem { title: "alice 的活".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: Some(alice.id.clone()), deps: vec![] }, None).unwrap();
+
+    // 交接负责人：名下还没开始的活改回「未指定」
+    let rep = e.orch.handover_execute(&e.pid, &alice.id, &newlead.id, "lead", "交接", "keep", "unassign").await.unwrap();
+    assert_eq!((rep.unassigned_plan_items, rep.moved_plan_items), (1, 0));
+    let item = e.db.get_plan_item(&mine).unwrap().unwrap();
+    assert!(item.assignee_id.is_none() && item.note.contains("改回未指定"), "{item:?}");
+    assert!(e.orch.handover_execute(&e.pid, &alice.id, &newlead.id, "lead", "x", "keep", "bogus").await.is_err());
+
+    // 第一个批次：新负责人先做接手复盘（定级 + 改派），多余的追加被拒绝
+    let r = run(&e, 300, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    assert_eq!(count_events(&e, "autopilot_step", "刚接任负责人：先复盘"), 1);
+    assert_eq!(e.db.get_plan_item(&e.ids[0]).unwrap().unwrap().level, 2, "A 定为 2 级");
+    let c_task = e.db.get_plan_item(&e.ids[2]).unwrap().unwrap().task_id.unwrap();
+    assert_eq!(e.db.get_task(&c_task).unwrap().unwrap().employee_id, bob.id, "C 改派给 bob 做");
+    assert_eq!(count_events(&e, "autopilot_step", "接手复盘时只能定级和改派"), 1);
+    assert_eq!(count_events(&e, "autopilot_plan_changed", "定级 《A》→ L2"), 1);
+    assert!(e.db.plan_view(&e.pid).unwrap().items.iter().all(|i| i.title != "夹带"));
+
+    // 只做这一次：再来一批不再触发
+    e.db.create_plan_item(&e.pid, &NewPlanItem { title: "之后的条目".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: Some(bob.id.clone()), deps: vec![] }, None).unwrap();
+    let r2 = run(&e, 300, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r2.status, "finished", "{r2:?}");
+    assert_eq!(count_events(&e, "autopilot_step", "刚接任负责人：先复盘"), 1, "第二个批次不再复盘");
 }

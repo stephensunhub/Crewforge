@@ -39,7 +39,7 @@ export const api = {
   setEmployeeLevelCap: (id: string, cap: number) => invoke<void>("set_employee_level_cap", { id, cap }),
   employeeLevels: () => invoke<[string, number][]>("employee_levels"),
   handoverPrepare: (projectId: string, fromId: string, toId: string, role: string, askSummary: boolean) => invoke<HandoverPrep>("handover_prepare", { projectId, fromId, toId, role, askSummary }),
-  handoverExecute: (projectId: string, fromId: string, toId: string, role: string, summary: string, after: string, moveWork: boolean) => invoke<HandoverReport>("handover_execute", { projectId, fromId, toId, role, summary, after, moveWork }),
+  handoverExecute: (projectId: string, fromId: string, toId: string, role: string, summary: string, after: string, work: string) => invoke<HandoverReport>("handover_execute", { projectId, fromId, toId, role, summary, after, work }),
   memberPendingWork: (projectId: string, employeeId: string) => invoke<[number, number]>("member_pending_work", { projectId, employeeId }),
   // 成本与额度
   modelsOverview: () => invoke<ModelsOverview>("models_overview"),

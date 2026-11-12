@@ -379,4 +379,4 @@ export interface Intervention { error: string | null; actions: IvAction[]; id: n
 export interface InterventionReport { items: Intervention[]; counts: [string, string, number][] }
 
 export interface HandoverPrep { snapshot: string; model_summary: string | null; warnings: string[]; summary_note: string }
-export interface HandoverReport { from: string; to: string; role: string; moved_plan_items: number; moved_actions: number; moved_issues: number; moved_meetings: number; abandoned: string[]; warnings: string[] }
+export interface HandoverReport { from: string; to: string; role: string; moved_plan_items: number; moved_actions: number; unassigned_plan_items: number; unassigned_actions: number; moved_issues: number; moved_meetings: number; abandoned: string[]; warnings: string[] }

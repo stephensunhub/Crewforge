@@ -10,6 +10,8 @@
 //!
 //! 原员工在这个项目里有进行中的任务时不拦着：交接时自动放弃它（改动保存为 WIP 提交、分支保留，对应的计划条目回到待开始），
 //! 并把任务、分支和改动了哪些文件写进给新人的说明，新人可以从那个分支的 WIP 提交接着做。
+//! 交接负责人时，还会留一个标记：新负责人在下一个批次开始时做一次「接手复盘」（`AdjustTrigger::Takeover`）——给没定级的条目补等级、
+//! 按各人的能力上限重新分配还没开始的条目，只做这一次。
 //! 项目的自主推进在运行时由命令层拦住（先暂停或停止）。
 
 use crate::db::{Db, Employee, PROJECT_ROLES, now_ms};
@@ -46,6 +48,9 @@ pub struct HandoverReport {
     pub role: String,
     pub moved_plan_items: usize,
     pub moved_actions: usize,
+    /// 改回未指定的（计划条目，行动项）
+    pub unassigned_plan_items: usize,
+    pub unassigned_actions: usize,
     pub moved_issues: usize,
     pub moved_meetings: usize,
     /// 交接时自动放弃的进行中任务（任务、分支）
@@ -54,6 +59,7 @@ pub struct HandoverReport {
 }
 
 fn note_key(project_id: &str, employee_id: &str) -> String { format!("handover_note:{project_id}:{employee_id}") }
+fn takeover_key(project_id: &str) -> String { format!("takeover_review:{project_id}") }
 
 impl Db {
     /// 取走（并清掉）留给这位员工的一次性交接说明。
@@ -119,6 +125,25 @@ impl Db {
             s.push_str(&format!("\n【自主推进】最近一个批次：{}{}\n", r.status, if r.reason.is_empty() { String::new() } else { format!("（{}）", r.reason.chars().take(80).collect::<String>()) }));
         }
         Ok(s)
+    }
+
+    /// 新负责人在下一个批次开始时是否要做「接手复盘」：标记是给这位负责人留的才算，取走后清掉（只做一次）。
+    pub fn take_takeover_review(&self, project_id: &str, lead_id: &str) -> bool {
+        let key = takeover_key(project_id);
+        let marked = self.get_setting(&key).ok().flatten().unwrap_or_default();
+        if marked.is_empty() { return false; }
+        let _ = self.set_setting(&key, "");
+        marked == lead_id
+    }
+
+    /// 把一个员工在项目里还没开始的活改回「未指定」（备注写明原因），由自主推进按等级和能力重新分配。
+    fn unassign_unstarted_work(&self, project_id: &str, from_id: &str) -> Result<(usize, usize)> {
+        let name = self.employee_by_id(from_id)?.map(|e| e.name).unwrap_or_default();
+        let msg = format!("原负责人 {name} 交接了角色，改回未指定，由负责人按等级和能力分配");
+        let conn = self.conn.lock().unwrap();
+        let plans = conn.execute("UPDATE plan_items SET assignee_id = NULL, updated_at = ?3, note = CASE WHEN note = '' THEN ?4 ELSE note || '；' || ?4 END WHERE project_id = ?1 AND assignee_id = ?2 AND status IN ('proposed','planned','blocked')", params![project_id, from_id, now_ms(), msg])?;
+        let actions = conn.execute("UPDATE action_items SET assignee_id = NULL WHERE project_id = ?1 AND assignee_id = ?2 AND status = 'open'", params![project_id, from_id])?;
+        Ok((plans, actions))
     }
 
     /// 把一个员工在项目里还没开始的活（计划条目、待处理行动项）交给另一个人。返回（条目数，行动项数）。
@@ -189,8 +214,9 @@ impl Orchestrator {
 
     /// 执行交接。`summary` 是要留给新人的全部说明（快照 + 摘要，人可能改过）；`after` 是原员工之后的去向：`keep`（保留为开发）或 `remove`（移出项目）；
     /// `move_work` 为 true 时，原员工名下还没开始的条目和行动项一并交给新人。
-    pub async fn handover_execute(&self, project_id: &str, from_id: &str, to_id: &str, role: &str, summary: &str, after: &str, move_work: bool) -> Result<HandoverReport> {
+    pub async fn handover_execute(&self, project_id: &str, from_id: &str, to_id: &str, role: &str, summary: &str, after: &str, work: &str) -> Result<HandoverReport> {
         if !matches!(after, "keep" | "remove") { bail!("原员工之后的去向只能是 keep 或 remove"); }
+        if !matches!(work, "keep" | "move" | "unassign") { bail!("名下还没开始的活只能是 keep（不动）、move（交给新人）或 unassign（改回未指定）"); }
         let (from, to) = self.db.check_handover(project_id, from_id, to_id, role)?;
         let mut rep = HandoverReport { from: from.name.clone(), to: to.name.clone(), role: role.into(), ..Default::default() };
         // 0. 原员工进行中的任务：先放弃（改动存成 WIP 提交，分支保留，计划条目回到待开始），放弃失败就不交接
@@ -209,22 +235,27 @@ impl Orchestrator {
         let summary = summary.as_str();
         // 1. 新人接任（不在项目里就加入）
         if self.db.is_member(project_id, to_id)? { self.db.set_member_role(project_id, to_id, role)?; } else { self.db.add_member(project_id, to_id, role)?; }
-        // 2. 原员工的去向
+        // 2. 原员工的去向，以及名下还没开始的活：交给新人（move）、改回未指定由自主推进按等级和能力重新分配（unassign）、不动（keep）
+        match work {
+            "move" => { let (p, a) = self.db.move_unstarted_work(project_id, from_id, to_id)?; rep.moved_plan_items = p; rep.moved_actions = a; }
+            "unassign" => { let (p, a) = self.db.unassign_unstarted_work(project_id, from_id)?; rep.unassigned_plan_items = p; rep.unassigned_actions = a; }
+            _ => {}
+        }
         if after == "remove" {
-            let (p, a) = if move_work { self.db.move_unstarted_work(project_id, from_id, to_id)? } else { (0, 0) };
-            rep.moved_plan_items = p; rep.moved_actions = a;
-            // 没交接过去的由 remove_member 改回未指定
+            // 没处理的（keep）由 remove_member 改回未指定
             self.db.remove_member(project_id, from_id)?;
-        } else {
+        } else if role != "lead" {
             // 负责人只能有一位，set_member_role 已经把原负责人降为开发；其他角色多人可以并存，原员工也降为开发
-            if role != "lead" { self.db.set_member_role(project_id, from_id, "developer")?; }
-            if move_work { let (p, a) = self.db.move_unstarted_work(project_id, from_id, to_id)?; rep.moved_plan_items = p; rep.moved_actions = a; }
+            self.db.set_member_role(project_id, from_id, "developer")?;
         }
         // 3. 负责人的附带职责：议题的负责人、进行中的会议的主持人
         if role == "lead" {
             let conn = self.db.conn.lock().unwrap();
             rep.moved_issues = conn.execute("UPDATE issues SET owner_id = ?3, updated_at = ?4 WHERE project_id = ?1 AND owner_id = ?2 AND status IN ('open','discussing','pending_decision')", params![project_id, from_id, to_id, now_ms()])?;
             rep.moved_meetings = conn.execute("UPDATE meetings SET host_id = ?3 WHERE project_id = ?1 AND host_id = ?2 AND status != 'closed'", params![project_id, from_id, to_id])?;
+        }
+        if role == "lead" {
+            self.db.set_setting(&takeover_key(project_id), to_id)?;
         }
         // 4. 留给新人的一次性说明、项目记忆、事件
         let note = format!("[角色交接] {} 把这个项目的「{}」交接给了你。下面是交接说明，请先读完再开始工作：\n\n{}", from.name, role_label(role), summary.trim().chars().take(4500).collect::<String>());
@@ -233,8 +264,9 @@ impl Orchestrator {
             layer: "project".into(), project_id: Some(project_id.into()), kind: "decision".into(), title: format!("交接：{} → {}（{}）", from.name, to.name, role_label(role)),
             content: summary.trim().chars().take(3500).collect(), scope: "角色交接".into(), source_kind: "handover".into(), created_by: from.name.clone(), status: "verified".into(), ..Default::default()
         });
-        let text = format!("{} 把「{}」交接给了 {}{}{}", from.name, role_label(role), to.name,
+        let text = format!("{} 把「{}」交接给了 {}{}{}{}", from.name, role_label(role), to.name,
             if rep.moved_plan_items + rep.moved_actions > 0 { format!("；一并交过去 {} 个计划条目、{} 条行动项", rep.moved_plan_items, rep.moved_actions) } else { String::new() },
+            if rep.unassigned_plan_items + rep.unassigned_actions > 0 { format!("；{} 个计划条目、{} 条行动项改回未指定", rep.unassigned_plan_items, rep.unassigned_actions) } else { String::new() },
             if rep.abandoned.is_empty() { String::new() } else { format!("；放弃了 {} 手上进行中的任务（WIP 已保留在分支上）", from.name) });
         self.db.append_event_for(Some(project_id), "role_handover", Some(to_id), None, &json!({"from": from.name, "to": to.name, "role": role, "after": after, "moved_plan_items": rep.moved_plan_items, "moved_actions": rep.moved_actions, "moved_issues": rep.moved_issues, "moved_meetings": rep.moved_meetings, "abandoned": rep.abandoned, "text": text}))?;
         Ok(rep)

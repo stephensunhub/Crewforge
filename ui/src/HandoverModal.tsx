@@ -13,7 +13,8 @@ export function HandoverModal({ projectId, from, members, employees, onClose, on
   const [caps, setCaps] = useState<Record<string, number>>({});
   const [to, setTo] = useState("");
   const [after, setAfter] = useState<"keep" | "remove">("keep");
-  const [moveWork, setMoveWork] = useState(false);
+  // 原员工名下还没开始的条目和行动项：keep 不动 · move 交给新人 · unassign 改回未指定，由自主推进按等级和能力重新分配
+  const [work, setWork] = useState<"keep" | "move" | "unassign">("keep");
   const [ask, setAsk] = useState(true);
   const [busy, setBusy] = useState<"" | "prep" | "run">("");
   const [prep, setPrep] = useState<HandoverPrep | null>(null);
@@ -42,7 +43,7 @@ export function HandoverModal({ projectId, from, members, employees, onClose, on
   async function execute() {
     setBusy("run");
     try {
-      const rep = await api.handoverExecute(projectId, from.employee_id, to, role, summary, after, moveWork);
+      const rep = await api.handoverExecute(projectId, from.employee_id, to, role, summary, after, work);
       if (rep.warnings.length) onError(`已交接，但有提示：${rep.warnings.join("；")}`);
       onDone();
     } catch (e) { onError(String(e)); } finally { setBusy(""); }
@@ -60,13 +61,15 @@ export function HandoverModal({ projectId, from, members, employees, onClose, on
               </select>
             </Field>
             <Field label={`${from.name} 之后`}>
-              <label className="tog"><input type="radio" checked={after === "keep"} onChange={() => { setAfter("keep"); setMoveWork(false); }} /> 保留在项目里，改为「开发」</label>
-              <label className="tog"><input type="radio" checked={after === "remove"} onChange={() => { setAfter("remove"); setMoveWork(true); }} /> 移出项目</label>
+              <label className="tog"><input type="radio" checked={after === "keep"} onChange={() => { setAfter("keep"); setWork("keep"); }} /> 保留在项目里，改为「开发」</label>
+              <label className="tog"><input type="radio" checked={after === "remove"} onChange={() => { setAfter("remove"); setWork(role === "lead" ? "unassign" : "move"); }} /> 移出项目</label>
             </Field>
-            <label className="tog" style={{ alignItems: "flex-start" }}>
-              <input type="checkbox" checked={moveWork} onChange={(e) => setMoveWork(e.target.checked)} />
-              <span>同时把 {from.name} 名下还没开始的计划条目和行动项交给新人<span className="hint" style={{ display: "block" }}>不勾选：保留在 TA 名下（保留为开发时继续做；移出项目时改回「未指定」，由负责人按角色重新分配）。TA 手上进行中的任务会在交接时自动放弃（改动保存为 WIP 提交、分支保留，条目回到待开始），并写进交接说明。</span></span>
-            </label>
+            <Field label={`${from.name} 名下还没开始的条目和行动项`} hint="TA 手上进行中的任务不受这个选项影响：交接时会自动放弃（改动保存为 WIP 提交、分支保留，条目回到待开始），并写进交接说明。">
+              <label className="tog"><input type="radio" checked={work === "keep"} onChange={() => setWork("keep")} /> 不动（保留为开发时继续做；移出项目时会改回「未指定」）</label>
+              <label className="tog"><input type="radio" checked={work === "unassign"} onChange={() => setWork("unassign")} /> 改回「未指定」，由自主推进按等级和能力重新分配{role === "lead" ? "（推荐：负责人只做计划和高等级的任务，不用扛一堆开发条目）" : ""}</label>
+              <label className="tog"><input type="radio" checked={work === "move"} onChange={() => setWork("move")} /> 全部交给新人</label>
+            </Field>
+            {role === "lead" && <div className="hint">交接负责人后，新负责人在下一个批次开始时会做一次「接手复盘」：给没有等级的条目补等级、按各人的能力上限重新分配还没开始的条目。只做这一次。</div>}
             <label className="tog" style={{ alignItems: "flex-start" }}>
               <input type="checkbox" checked={ask} onChange={(e) => setAsk(e.target.checked)} />
               <span>让 {from.name} 自己写一份交接摘要<span className="hint" style={{ display: "block" }}>续着 TA 在这个项目里的会话写，本地模型上要几分钟（最长等 5 分钟，超时就只用系统整理的状态快照）。不勾选就只有快照。</span></span>

@@ -98,6 +98,8 @@ pub enum Change {
     Cancel { item: usize, reason: String },
     Reassign { item: usize, assignee: String },
     Retry { item: usize, note: String },
+    /// 给条目定级（接手复盘时用）
+    SetLevel { item: usize, level: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,6 +128,11 @@ pub fn parse_adjustment(text: &str) -> Result<Adjustment> {
             Some("cancel") => Change::Cancel { item: item.context("cancel 需要 item")?, reason: Some(text_of(c, "reason")).filter(|r| !r.is_empty()).context("取消必须写原因")? },
             Some("reassign") => Change::Reassign { item: item.context("reassign 需要 item")?, assignee: Some(text_of(c, "assignee")).filter(|a| !a.is_empty()).context("reassign 需要 assignee")? },
             Some("retry") => Change::Retry { item: item.context("retry 需要 item")?, note: Some(text_of(c, "note")).filter(|r| !r.is_empty()).context("重试必须写新的说明")? },
+            Some("set_level") => {
+                let level = crate::levels::parse_level(c);
+                if level == 0 { bail!("set_level 的 level 必须是 1–{}", crate::levels::MAX_LEVEL); }
+                Change::SetLevel { item: item.context("set_level 需要 item")?, level }
+            }
             other => bail!("未知的改动类型：{other:?}"),
         });
     }
@@ -139,6 +146,8 @@ pub struct Applied {
     pub cancelled: Vec<String>,
     pub reassigned: Vec<String>,
     pub retried: Vec<String>,
+    /// 接手复盘时定了级的条目（《标题》→ L级）
+    pub leveled: Vec<String>,
     /// 被拒绝的改动及原因（超出权限或上限）
     pub rejected: Vec<String>,
     pub escalate: Option<String>,
@@ -155,6 +164,8 @@ pub enum AdjustTrigger {
     FinalReview,
     /// 批次开始时清理重复条目：只能取消
     Dedupe,
+    /// 刚接任负责人后的第一个批次：给没定级的条目定级、按能力重新分配还没开始的条目：只能定级和改派
+    Takeover,
 }
 
 /// 疑似重复的条目对（#编号 与 plan_table 一致）：至少有一条还没开始（待开始/已阻塞），标题相似度 ≥ 0.7。
@@ -324,6 +335,7 @@ impl Orchestrator {
                 let pairs = self.db.unchecked_duplicate_pairs(project_id, &view.items).iter().map(|(a, b)| format!("#{a} 与 #{b}")).collect::<Vec<_>>().join("、");
                 p.push_str(&format!("\n\n触发原因：批次开始，清理计划里的重复条目。系统按标题相似度找到这些疑似重复：{pairs}。请逐对核实它们是不是同一件事（看说明和验收标准，不要只看标题）：是同一件事，就取消还没开始的那一条（两条都没开始时保留编号小的，也就是更早建的），原因写“与 #N 重复”；不是同一件事就不要动。只能取消，不能追加、改派或重试；没有真正的重复就返回空 changes。"));
             }
+            AdjustTrigger::Takeover => p.push_str("\n\n触发原因：接手复盘。你刚刚接任这个项目的负责人，原来的计划是别人定的，条目大多没有等级、指派也没有按各人的能力上限来。请复盘所有还没开始的条目（待开始、已阻塞）：① 没有等级的补上等级（按上面的评分标准）；② 按各人的能力上限重新分配：每个条目指派给“能力上限够用的最低档”的人，只有高等级的条目才给强的人（包括你自己），原来的指派合适就不要动。只能用 set_level（定级，写 item 和 level）和 reassign（改派）；不要取消、追加、重试，也不要改条目的说明。例如：{\"op\":\"set_level\",\"item\":3,\"level\":2},{\"op\":\"reassign\",\"item\":3,\"assignee\":\"成员名\"}。没有需要改的就返回空 changes。"),
             AdjustTrigger::FinalReview => p.push_str("\n\n触发原因：计划里的条目都做完了。请对照项目目标做一次完成度复盘：还有没覆盖到的必要工作吗？只能追加条目；没有就返回空 changes。不要为了凑数追加。"),
         }
         p.push_str(&format!("\n\n规则：每次最多追加 {MAX_ADDED_PER_ADJUST} 个条目，每条都要写原因；已开始和已完成的条目不能动；涉及项目目标、需求或范围变更时，不要自己改，用 escalate 交给人（写明原因）。\
@@ -338,6 +350,14 @@ impl Orchestrator {
         for ch in adj.changes {
             if trigger == AdjustTrigger::Dedupe && !matches!(ch, Change::Cancel { .. }) {
                 out.rejected.push("清理重复条目时只能取消".into());
+                continue;
+            }
+            if trigger == AdjustTrigger::Takeover && !matches!(ch, Change::SetLevel { .. } | Change::Reassign { .. }) {
+                out.rejected.push("接手复盘时只能定级和改派".into());
+                continue;
+            }
+            if trigger != AdjustTrigger::Takeover && matches!(ch, Change::SetLevel { .. }) {
+                out.rejected.push("定级只在接手复盘时使用".into());
                 continue;
             }
             match ch {
@@ -378,6 +398,16 @@ impl Orchestrator {
                     Some(i) => out.rejected.push(format!("取消《{}》：条目已是「{}」，不能动", i.title, crate::plan::status_label(&i.status))),
                     None => out.rejected.push(format!("取消 #{item}：没有这个条目")),
                 },
+                Change::SetLevel { item, level } => match by_no(item) {
+                    Some(i) if matches!(i.status.as_str(), "planned" | "blocked" | "proposed") => match self.db.set_plan_item_level(&i.id, level) {
+                        Ok(()) => out.leveled.push(format!("《{}》→ L{level}", i.title)),
+                        Err(e) => out.rejected.push(format!("定级《{}》：{e}", i.title)),
+                    },
+                    Some(i) => out.rejected.push(format!("定级《{}》：只能给还没开始的条目定级", i.title)),
+                    None => out.rejected.push(format!("定级 #{item}：没有这个条目")),
+                },
+                Change::Reassign { item, .. } if by_no(item).is_some_and(|i| i.kind == crate::design::DESIGN_KIND) => out.rejected.push(format!("改派 #{item}：设计条目只给架构师做，不能改派")),
+                Change::Reassign { item, assignee } if members.iter().any(|m| m.name == assignee && m.role == "architect") && by_no(item).is_some_and(|i| i.kind != crate::design::DESIGN_KIND) => out.rejected.push(format!("改派 #{item}：架构师只做设计条目，不能指派实现条目")),
                 Change::Reassign { item, assignee } => match (by_no(item), member(&assignee)) {
                     (Some(i), Some(aid)) if i.status == "planned" => {
                         let n = NewPlanItem { title: i.title.clone(), description: i.description.clone(), acceptance: i.acceptance.clone(), kind: i.kind.clone(), module: i.module.clone(), assignee_id: Some(aid), deps: vec![] };

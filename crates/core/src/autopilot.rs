@@ -942,9 +942,12 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 if !a.added.is_empty() { parts.push(format!("追加 {}", a.added.iter().map(|t| format!("《{t}》")).collect::<Vec<_>>().join("、"))); }
                 if !a.cancelled.is_empty() { parts.push(format!("取消 {}", a.cancelled.iter().map(|t| format!("《{t}》")).collect::<Vec<_>>().join("、"))); }
                 if !a.reassigned.is_empty() { parts.push(format!("改派 {}", a.reassigned.join("、"))); }
+                if !a.leveled.is_empty() { parts.push(format!("定级 {}", a.leveled.join("、"))); }
                 if !a.retried.is_empty() { parts.push(format!("重试 {}", a.retried.iter().map(|t| format!("《{t}》")).collect::<Vec<_>>().join("、"))); }
                 if !parts.is_empty() {
                     self.say("autopilot_plan_changed", format!("{} 调整了计划：{}{}", lead.name, parts.join("；"), if a.summary.is_empty() { String::new() } else { format!("（{}）", clip(&a.summary, 100)) }));
+                } else if trigger == AdjustTrigger::Takeover {
+                    self.say("autopilot_step", format!("{} 接手复盘：现有的等级和分配不需要改", lead.name));
                 } else if trigger == AdjustTrigger::Dedupe {
                     self.say("autopilot_step", format!("{} 核对了疑似重复的条目：没有需要取消的", lead.name));
                 } else if trigger == AdjustTrigger::FinalReview && a.escalate.is_none() {
@@ -1072,6 +1075,16 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             let me = self.clone();
             let h = tokio::spawn(async move { me.maybe_triage(true).await });
             self.bg_standups.lock().unwrap().push(h);
+        }
+        // 刚接任负责人后的第一个批次：新负责人先复盘一遍还没开始的条目（补等级、按能力重新分配），只做这一次，再派活
+        if let Some(lead) = self.lead() {
+            if self.db().take_takeover_review(&self.project_id, &lead.id) {
+                let unstarted = self.db().plan_view(&self.project_id).map(|v| v.items.iter().filter(|i| matches!(i.status.as_str(), "planned" | "blocked")).count()).unwrap_or(0);
+                if unstarted > 0 {
+                    self.say("autopilot_step", format!("{} 刚接任负责人：先复盘 {unstarted} 个还没开始的条目，补等级、按各人的能力重新分配（只做这一次）", lead.name));
+                    self.adjust_plan(AdjustTrigger::Takeover, "").await;
+                }
+            }
         }
         // 计划里有疑似重复的条目：批次开始时先让负责人核对并取消，再派活（同步：放到后台的话，重复的条目可能在取消之前就被派出去做了两遍）。
         // 只有存在“没核对过”的疑似重复时才会花这一次调用（本地模型上约十几分钟）；核对过的条目对记在设置里，不再问。
