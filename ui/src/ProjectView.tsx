@@ -180,7 +180,9 @@ function MembersTab({ project, members, employees, running, activities, onOpenWo
                 {ROLE_ORDER.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
               </select>
               <button className="btn danger" onClick={async () => {
-                if (await api.confirm(`把 ${m.name} 移出项目？\n不会删除 TA 的任何历史。`, "确认移出")) await guard(() => api.removeMember(p.id, m.employee_id));
+                const [pw, aw] = await api.memberPendingWork(p.id, m.employee_id).catch(() => [0, 0] as [number, number]);
+                const carry = pw + aw > 0 ? `\nTA 名下还没开始的 ${pw} 个计划条目、${aw} 条行动项会改回「未指定」，由负责人按角色重新分配。` : "";
+                if (await api.confirm(`把 ${m.name} 移出项目？\n不会删除 TA 的任何历史。${carry}`, "确认移出")) await guard(() => api.removeMember(p.id, m.employee_id));
               }}>移出</button>
             </div>
           </div>

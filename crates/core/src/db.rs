@@ -837,16 +837,40 @@ impl Db {
     }
 
     /// 移出项目成员。该员工在项目里有进行中的任务时拒绝，避免工作区被遗弃。
-    pub fn remove_member(&self, project_id: &str, employee_id: &str) -> Result<()> {
+    /// 员工在这个项目里还没开始的活：（指派给 TA 的计划条目数，指派给 TA 的待处理行动项数）。
+    /// 计划条目只算还没开始的（提议中、待开始、已阻塞）；进行中的有任务，移出前必须先合并或放弃。
+    pub fn member_pending_work(&self, project_id: &str, employee_id: &str) -> Result<(usize, usize)> {
+        let conn = self.conn.lock().unwrap();
+        let plans: i64 = conn.query_row("SELECT COUNT(*) FROM plan_items WHERE project_id = ?1 AND assignee_id = ?2 AND status IN ('proposed','planned','blocked')", params![project_id, employee_id], |r| r.get(0))?;
+        let actions: i64 = conn.query_row("SELECT COUNT(*) FROM action_items WHERE project_id = ?1 AND assignee_id = ?2 AND status = 'open'", params![project_id, employee_id], |r| r.get(0))?;
+        Ok((plans as usize, actions as usize))
+    }
+
+    /// 把员工移出项目。TA 名下还没开始的计划条目和待处理行动项改回「未指定」，由负责人按角色重新分配
+    /// （否则这些条目指定了一个不在项目里的人，永远没人接）。返回改回未指定的（计划条目数, 行动项数）。
+    pub fn remove_member(&self, project_id: &str, employee_id: &str) -> Result<(usize, usize)> {
         let p = self.get_project(project_id)?.context("项目不存在")?;
         if self.active_task(employee_id, &p.path)?.is_some() {
             anyhow::bail!("该员工在本项目有进行中的任务，请先合并或放弃");
         }
-        self.conn.lock().unwrap().execute(
-            "DELETE FROM project_members WHERE project_id = ?1 AND employee_id = ?2",
-            params![project_id, employee_id],
-        )?;
-        Ok(())
+        let name = self.employee_by_id(employee_id)?.map(|e| e.name).unwrap_or_default();
+        let now = now_ms();
+        let msg = format!("原负责人 {name} 已移出项目，改回未指定，由负责人按角色分配");
+        let (plans, actions) = {
+            let conn = self.conn.lock().unwrap();
+            let plans = conn.execute(
+                "UPDATE plan_items SET assignee_id = NULL, updated_at = ?3, note = CASE WHEN note = '' THEN ?4 ELSE note || '；' || ?4 END
+                 WHERE project_id = ?1 AND assignee_id = ?2 AND status IN ('proposed','planned','blocked')", params![project_id, employee_id, now, msg])?;
+            let actions = conn.execute(
+                "UPDATE action_items SET assignee_id = NULL, note = CASE WHEN note = '' THEN ?3 ELSE note || '；' || ?3 END
+                 WHERE project_id = ?1 AND assignee_id = ?2 AND status = 'open'", params![project_id, employee_id, msg])?;
+            conn.execute("DELETE FROM project_members WHERE project_id = ?1 AND employee_id = ?2", params![project_id, employee_id])?;
+            (plans, actions)
+        };
+        self.append_event_for(Some(project_id), "member_removed", Some(employee_id), None, &json!({
+            "plans": plans, "actions": actions,
+            "text": format!("{name} 已移出项目{}", if plans + actions > 0 { format!("；TA 名下 {plans} 个计划条目、{actions} 条行动项改回未指定，由负责人按角色分配") } else { String::new() })}))?;
+        Ok((plans, actions))
     }
 }
 

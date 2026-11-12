@@ -497,7 +497,10 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let human_busy = self.busy.lock().unwrap().clone();
         let busy_for = |e: &Employee| busy.contains(&e.id) || human_busy.contains(&e.name);
         if let Some(a) = &item.assignee_id {
-            return ms.iter().find(|(e, _)| &e.id == a && !busy_for(e)).map(|(e, _)| e.clone());
+            // 指定的人还在项目里：只能是 TA（忙就等）；已经不在项目里（移出、归档）：当作未指定，按角色重新选人，不能永远卡住
+            if ms.iter().any(|(e, _)| &e.id == a) {
+                return ms.iter().find(|(e, _)| &e.id == a && !busy_for(e)).map(|(e, _)| e.clone());
+            }
         }
         let qa_like = item.kind == "characterize" || ["测试", "QA", "质检", "评审", "验收"].iter().any(|k| item.title.contains(k));
         let mut order: Vec<&(Employee, String)> = ms.iter().filter(|(_, r)| (r == "qa") == qa_like).collect();

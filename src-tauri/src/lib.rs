@@ -204,6 +204,7 @@ pub fn run() {
             commands::add_member,
             commands::set_member_role,
             commands::remove_member,
+            commands::member_pending_work,
             commands::claude_version,
             commands::list_employees,
             commands::add_employee,

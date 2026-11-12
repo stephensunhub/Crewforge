@@ -688,3 +688,31 @@ async fn background_housekeeping_is_deferred_while_ready_items_are_waiting() {
     assert_eq!(r.status, "finished", "{r:?}");
     assert!(count_events(&e, "autopilot_step", "后台整理（记忆、行动项）先推迟") >= 1, "前面的条目合并时后面还有就绪的，应当推迟整理");
 }
+
+#[tokio::test]
+async fn removing_a_member_returns_their_unstarted_work_to_unassigned_and_the_lead_assigns_it_by_role() {
+    let e = setup().await;
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    let carol = e.db.employee_by_name("carol").unwrap().unwrap().id;
+    // C 指派给 carol；先看移出前提示用的数字
+    assert_eq!(e.db.member_pending_work(&e.pid, &carol).unwrap(), (1, 0));
+    assert_eq!(e.db.remove_member(&e.pid, &carol).unwrap(), (1, 0));
+    let c = e.db.get_plan_item(&e.ids[2]).unwrap().unwrap();
+    assert!(c.assignee_id.is_none() && c.note.contains("已移出项目"), "{c:?}");
+    assert!(e.db.recent_events(200).unwrap().iter().any(|x| x.kind == "member_removed" && x.payload["plans"] == 1));
+    assert_eq!(e.db.member_pending_work(&e.pid, &carol).unwrap(), (0, 0));
+    // 批次照常做完，C 由剩下的人接
+    let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    assert_eq!(e.db.get_plan_item(&e.ids[2]).unwrap().unwrap().status, "done");
+
+    // 兜底：旧数据里指派的人已经不在项目里（之前移出时没清），也当作未指定，不会永远卡住
+    let e2 = setup().await;
+    std::fs::write(e2._d.path().join("bin").join("final_add_once"), "").unwrap();
+    let carol2 = e2.db.employee_by_name("carol").unwrap().unwrap().id;
+    rusqlite::Connection::open(e2._d.path().join("home").join("crewforge.db")).unwrap().execute("DELETE FROM project_members WHERE employee_id = ?1", [&carol2]).unwrap();
+    assert!(e2.db.get_plan_item(&e2.ids[2]).unwrap().unwrap().assignee_id.is_some());
+    let r2 = run(&e2, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r2.status, "finished", "{r2:?}");
+    assert_eq!(e2.db.get_plan_item(&e2.ids[2]).unwrap().unwrap().status, "done");
+}

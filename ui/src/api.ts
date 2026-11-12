@@ -33,7 +33,8 @@ export const api = {
   members: (projectId: string) => invoke<Member[]>("list_members", { projectId }),
   addMember: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("add_member", { projectId, employeeId, role }),
   setMemberRole: (projectId: string, employeeId: string, role: ProjectRole) => invoke<void>("set_member_role", { projectId, employeeId, role }),
-  removeMember: (projectId: string, employeeId: string) => invoke<void>("remove_member", { projectId, employeeId }),
+  removeMember: (projectId: string, employeeId: string) => invoke<[number, number]>("remove_member", { projectId, employeeId }),
+  memberPendingWork: (projectId: string, employeeId: string) => invoke<[number, number]>("member_pending_work", { projectId, employeeId }),
   // 成本与额度
   modelsOverview: () => invoke<ModelsOverview>("models_overview"),
   setProviderEnabled: (provider: string, enabled: boolean) => invoke<void>("set_provider_enabled", { provider, enabled }),

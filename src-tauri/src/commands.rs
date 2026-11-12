@@ -191,8 +191,14 @@ pub fn set_member_role(state: State<'_, AppState>, project_id: String, employee_
 }
 
 #[tauri::command]
-pub fn remove_member(state: State<'_, AppState>, project_id: String, employee_id: String) -> CmdResult<()> {
+pub fn remove_member(state: State<'_, AppState>, project_id: String, employee_id: String) -> CmdResult<(usize, usize)> {
     state.db.remove_member(&project_id, &employee_id).map_err(err)
+}
+
+/// 移出前提示用：TA 名下还没开始的（计划条目数，行动项数），移出后会改回未指定。
+#[tauri::command]
+pub fn member_pending_work(state: State<'_, AppState>, project_id: String, employee_id: String) -> CmdResult<(usize, usize)> {
+    state.db.member_pending_work(&project_id, &employee_id).map_err(err)
 }
 
 #[tauri::command]
