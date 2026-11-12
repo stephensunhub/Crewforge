@@ -10,6 +10,7 @@ import { OnboardingView } from "./OnboardingView";
 import { DocsView } from "./DocsView";
 import { DutiesPanel } from "./DutiesPanel";
 import { PlanPanel } from "./PlanPanel";
+import { HandoverModal } from "./HandoverModal";
 import { ActionsView } from "./ActionsView";
 import { EndProjectModal } from "./EndProject";
 import type { Activity, ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
@@ -150,6 +151,7 @@ function MembersTab({ project, members, employees, running, activities, onOpenWo
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(false);
   const [ending, setEnding] = useState(false);
+  const [handover, setHandover] = useState<Member | null>(null);
   const p = project.project;
   const candidates = employees.filter((e) => !members.some((m) => m.employee_id === e.id));
 
@@ -179,6 +181,7 @@ function MembersTab({ project, members, employees, running, activities, onOpenWo
               <select value={m.role} onChange={(e) => void guard(() => api.setMemberRole(p.id, m.employee_id, e.target.value as ProjectRole))}>
                 {ROLE_ORDER.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
               </select>
+              <button className="btn" title="把 TA 在这个项目里的角色交给别人：先整理摘要，再执行" disabled={running.includes(m.name)} onClick={() => setHandover(m)}>交接…</button>
               <button className="btn danger" onClick={async () => {
                 const [pw, aw] = await api.memberPendingWork(p.id, m.employee_id).catch(() => [0, 0] as [number, number]);
                 const carry = pw + aw > 0 ? `\nTA 名下还没开始的 ${pw} 个计划条目、${aw} 条行动项会改回「未指定」，由负责人按角色重新分配。` : "";
@@ -199,6 +202,7 @@ function MembersTab({ project, members, employees, running, activities, onOpenWo
         <span>目录</span><code>{p.path}</code>
         <span>描述</span><span>{p.description || "—"}</span>
       </div>
+      {handover && <HandoverModal projectId={p.id} from={handover} members={members} employees={employees} onClose={() => setHandover(null)} onDone={() => { setHandover(null); onChanged(); }} onError={onError} />}
       {ending && <EndProjectModal summary={project} onClose={() => setEnding(false)} onError={onError} onDone={() => { setEnding(false); onChanged(); onArchived(); }} />}
 
       {adding && <AddMember candidates={candidates} hasLead={members.some((m) => m.role === "lead")} onClose={() => setAdding(false)}

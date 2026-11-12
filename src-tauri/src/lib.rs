@@ -193,6 +193,8 @@ pub fn run() {
             commands::update_employee,
             commands::archive_employee,
             commands::rename_employee,
+            commands::handover_prepare,
+            commands::handover_execute,
             commands::set_employee_level_cap,
             commands::employee_levels,
             commands::list_projects,

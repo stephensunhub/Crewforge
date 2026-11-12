@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import type {
-  RenameReport,
+  RenameReport, HandoverPrep, HandoverReport,
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
   ProjectRole, ProjectSummary, RepoStatus, TaskView, IssueView, PendingDecision, Memory, OnboardingState, CostReport, ScanReport, BaselineCommand, CheckReport, StoredCheck, ActionItem, PlanViewData, PlanItemInput, SchedStatus, SchedulerConfig, Meeting, MeetingDetail, MeetingKind, CallPage, Duties, DocFile, DocsPublish, Curated, AutopilotRun, AutopilotStatus, ModelsOverview, UsageFilter, UsageOverview, UsagePageData, CostGroup, SessionsView, EndedProject, DiscardReport, GoalProposal, AlignConfig, AlignOverviewRow, Activity, SandboxDomains, DomainCheck, StuckItem, BlockedMerge, AutopilotConfig, InterventionReport, LogRun, Endpoint, EndpointInput, EndpointTest,
 } from "./types";
@@ -38,6 +38,8 @@ export const api = {
   renameEmployee: (id: string, newName: string) => invoke<RenameReport>("rename_employee", { id, newName }),
   setEmployeeLevelCap: (id: string, cap: number) => invoke<void>("set_employee_level_cap", { id, cap }),
   employeeLevels: () => invoke<[string, number][]>("employee_levels"),
+  handoverPrepare: (projectId: string, fromId: string, toId: string, role: string, askSummary: boolean) => invoke<HandoverPrep>("handover_prepare", { projectId, fromId, toId, role, askSummary }),
+  handoverExecute: (projectId: string, fromId: string, toId: string, role: string, summary: string, after: string, moveWork: boolean) => invoke<HandoverReport>("handover_execute", { projectId, fromId, toId, role, summary, after, moveWork }),
   memberPendingWork: (projectId: string, employeeId: string) => invoke<[number, number]>("member_pending_work", { projectId, employeeId }),
   // 成本与额度
   modelsOverview: () => invoke<ModelsOverview>("models_overview"),

@@ -107,6 +107,39 @@ pub async fn rename_employee(state: State<'_, AppState>, id: String, new_name: S
     state.orch.rename_employee(&id, &new_name).await.map_err(err)
 }
 
+/// 交接前的拦截：项目的自主推进在运行、原员工或新员工正在工作时不能交接。
+fn guard_handover(state: &AppState, project_id: &str, from_id: &str, to_id: &str) -> Result<(), String> {
+    if state.autopilots.lock().unwrap().contains_key(project_id) {
+        return Err("这个项目的自主推进正在运行，请先暂停或停止，再交接".into());
+    }
+    for id in [from_id, to_id] {
+        let name = state.db.employee_by_id(id).map_err(err)?.ok_or("员工不存在")?.name;
+        if state.running.lock().unwrap().contains(&name) || state.busy.lock().unwrap().contains(&name) {
+            return Err(format!("{name} 正在工作，请等 TA 做完再交接"));
+        }
+    }
+    Ok(())
+}
+
+/// 准备交接：系统整理的状态快照，加上（可选）让原员工自己写一份摘要。本地模型上可能要几分钟（最长 5 分钟）。
+#[tauri::command]
+pub async fn handover_prepare(state: State<'_, AppState>, project_id: String, from_id: String, to_id: String, role: String, ask_summary: bool) -> CmdResult<crewforge_core::handover::HandoverPrep> {
+    guard_handover(&state, &project_id, &from_id, &to_id)?;
+    // 摘要期间把原员工标成工作中，免得别处同时派活给 TA
+    let from_name = state.db.employee_by_id(&from_id).map_err(err)?.ok_or("员工不存在")?.name;
+    if !state.busy.lock().unwrap().insert(from_name.clone()) { return Err("该员工正在工作，请稍等".into()); }
+    let r = state.orch.handover_prepare(&project_id, &from_id, &to_id, &role, ask_summary).await;
+    state.busy.lock().unwrap().remove(&from_name);
+    r.map_err(err)
+}
+
+/// 执行交接。`summary` 是留给新人的全部说明；`after` 是 keep（原员工保留为开发）或 remove（移出项目）。
+#[tauri::command]
+pub fn handover_execute(state: State<'_, AppState>, project_id: String, from_id: String, to_id: String, role: String, summary: String, after: String, move_work: bool) -> CmdResult<crewforge_core::handover::HandoverReport> {
+    guard_handover(&state, &project_id, &from_id, &to_id)?;
+    state.orch.handover_execute(&project_id, &from_id, &to_id, &role, &summary, &after, move_work).map_err(err)
+}
+
 #[tauri::command]
 pub fn list_projects(state: State<'_, AppState>) -> CmdResult<Vec<ProjectSummary>> {
     state.db.project_summaries().map_err(err)

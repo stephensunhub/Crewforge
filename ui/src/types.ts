@@ -377,3 +377,6 @@ export interface BlockedMerge { task_id: string; employee: string; project_id: s
 export interface IvAction { kind: "goto" | "models" | "settings" | "whitelist" | "merge" | "log"; label: string; tab: string | null; domain: string | null; task_id: string | null; employee: string | null }
 export interface Intervention { error: string | null; actions: IvAction[]; id: number; ts: number; category: string; label: string; title: string; detail: string; project_id: string | null; project_name: string | null; employee: string | null; tab: string }
 export interface InterventionReport { items: Intervention[]; counts: [string, string, number][] }
+
+export interface HandoverPrep { snapshot: string; model_summary: string | null; warnings: string[]; summary_note: string }
+export interface HandoverReport { from: string; to: string; role: string; moved_plan_items: number; moved_actions: number; moved_issues: number; moved_meetings: number; warnings: string[] }

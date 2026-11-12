@@ -37,7 +37,9 @@ fn fake_cli_with(dir: &Path, name: &str, actions: &str) -> String {
 read -r line
 echo '{"type":"system","subtype":"init","session_id":"x"}'
 f="w_$$_$(date +%s%N).txt"
+case "$line" in *"[角色交接]"*) printf '%s' "$line" > "@SEEN@" ;; esac
 case "$line" in
+  *"把这个角色交接给"*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"摘要：正在推进脚手架，决定用 SSE，下一步先看 C。","usage":{}}' ;;
   *"写 docs/architecture.md"*) mkdir -p docs; if [ -f "@BADDOC@" ]; then echo 'package main' > main.go; fi; printf '# 架构\n## 模块\nx\n## 给团队的要点\n- 模块之间只通过接口通信\n- 错误统一用 error 返回\n' > docs/architecture.md; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已写完架构文档。","usage":{}}' ;;
   *"写 docs/conventions.md"*) mkdir -p docs; printf '# 规范\n## 命名\nx\n## 给团队的要点\n- 函数小而纯\n- 先写测试\n' > docs/conventions.md; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已写完规范文档。","usage":{}}' ;;
   *清理计划里的重复条目*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"cancel\",\"item\":4,\"reason\":\"与 #1 重复\"},{\"op\":\"add\",\"title\":\"夹带\",\"reason\":\"x\"}],\"escalate\":null,\"summary\":\"取消重复\"}","usage":{}}' ;;
@@ -54,7 +56,7 @@ case "$line" in
   *站会*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"做完了；无依赖。","usage":{}}' ;;
   *) echo x > "$f"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已完成。","usage":{}}' ;;
 esac
-"###.replace("@MARK@", &dir.join("final_add_once").to_string_lossy()).replace("@SKIP@", &dir.join("review_skip").to_string_lossy()).replace("@BADDOC@", &dir.join("bad_doc").to_string_lossy()).replace("@ACTIONS@", actions);
+"###.replace("@MARK@", &dir.join("final_add_once").to_string_lossy()).replace("@SKIP@", &dir.join("review_skip").to_string_lossy()).replace("@BADDOC@", &dir.join("bad_doc").to_string_lossy()).replace("@SEEN@", &dir.join("handover_seen").to_string_lossy()).replace("@ACTIONS@", actions);
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path.to_string_lossy().into_owned()
@@ -875,4 +877,56 @@ async fn other_items_wait_for_the_design_and_design_items_may_only_change_docs()
     assert_ne!(d1.status, "done", "改了代码文件的设计条目不能算完成：{d1:?}");
     assert!(count_events(&e2, "autopilot_step", "设计类条目只能改文档，但改了这些非文档文件：main.go") >= 1, "验证失败要说明改了哪些非文档文件");
     assert!(!e2.repo.join("main.go").exists(), "代码文件没有合并进主分支");
+}
+
+
+#[tokio::test]
+async fn handing_over_the_lead_role_summarises_first_then_moves_the_role_and_gives_the_new_lead_a_one_shot_note() {
+    let e = setup().await;
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    // 先让项目跑一批，alice（负责人）在这个项目里有了会话
+    let r = run(&e, 300, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    let who = |n: &str| e.db.employee_by_name(n).unwrap().unwrap();
+    let (alice, bob) = (who("alice"), who("bob"));
+    let newlead = e.db.add_employee("newlead", "全栈", "你是 newlead").unwrap();
+    // 给 alice 名下留一个没开始的条目
+    let mine = e.db.create_plan_item(&e.pid, &NewPlanItem { title: "alice 的后续活".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: Some(alice.id.clone()), deps: vec![] }, None).unwrap();
+
+    // 1) 准备：快照 + 原员工自己写的摘要
+    let prep = e.orch.handover_prepare(&e.pid, &alice.id, &newlead.id, "lead", true).await.unwrap();
+    assert!(prep.snapshot.contains("交出的角色：负责人") && prep.snapshot.contains("alice 的后续活"), "{}", prep.snapshot);
+    assert!(prep.model_summary.as_deref().unwrap_or("").contains("正在推进脚手架"), "{prep:?}");
+    // 没有要摘要时只有快照
+    let prep2 = e.orch.handover_prepare(&e.pid, &alice.id, &newlead.id, "lead", false).await.unwrap();
+    assert!(prep2.model_summary.is_none() && prep2.summary_note.is_empty());
+
+    // 2) 执行：newlead 不在项目里，直接加入并接任；alice 保留为开发；名下没开始的活一起交过去
+    let text = format!("{}\n\n{}", prep.snapshot, prep.model_summary.unwrap());
+    let rep = e.orch.handover_execute(&e.pid, &alice.id, &newlead.id, "lead", &text, "keep", true).unwrap();
+    assert_eq!((rep.moved_plan_items, rep.from.as_str(), rep.to.as_str()), (1, "alice", "newlead"));
+    let members = e.db.list_members(&e.pid).unwrap();
+    let role = |id: &str| members.iter().find(|m| m.employee_id == id).map(|m| m.role.clone());
+    assert_eq!((role(&newlead.id).as_deref(), role(&alice.id).as_deref(), role(&bob.id).as_deref()), (Some("lead"), Some("developer"), Some("developer")));
+    assert_eq!(e.db.get_plan_item(&mine).unwrap().unwrap().assignee_id.as_deref(), Some(newlead.id.as_str()));
+    assert!(e.db.recent_events(2000).unwrap().iter().any(|x| x.kind == "role_handover" && x.payload["to"] == "newlead"));
+    let mems = e.db.list_memories(&crewforge_core::memory::MemoryFilter { layer: Some("project".into()), project_id: Some(e.pid.clone()), ..Default::default() }).unwrap();
+    assert!(mems.iter().any(|m| m.source_kind == "handover" && m.title.contains("alice → newlead")));
+
+    // 3) 新负责人下一次被调用时，提示词最前面带着交接说明，用完即清
+    let seen = e._d.path().join("bin").join("handover_seen");
+    assert!(!seen.exists());
+    e.db.create_plan_item(&e.pid, &NewPlanItem { title: "交接后的条目".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: Some(bob.id.clone()), deps: vec![] }, None).unwrap();
+    let r2 = run(&e, 300, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r2.status, "finished", "{r2:?}");
+    let line = std::fs::read_to_string(&seen).expect("新负责人的某次调用带着交接说明");
+    assert!(line.contains("alice 把这个项目的「负责人」交接给了你") && line.contains("正在推进脚手架"), "{line}");
+    assert!(e.db.take_handover_note(&e.pid, &newlead.id).is_none(), "已经被取走了");
+
+    // 4) 再交接一次，这回原员工移出项目：他名下没开始的条目改回未指定（没选一起交接）
+    let extra = e.db.create_plan_item(&e.pid, &NewPlanItem { title: "bob 的后续活".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: Some(bob.id.clone()), deps: vec![] }, None).unwrap();
+    let rep2 = e.orch.handover_execute(&e.pid, &bob.id, &alice.id, "developer", "bob 交接给 alice", "remove", false).unwrap();
+    assert_eq!(rep2.moved_plan_items, 0);
+    assert!(!e.db.is_member(&e.pid, &bob.id).unwrap());
+    assert!(e.db.get_plan_item(&extra).unwrap().unwrap().assignee_id.is_none(), "没一起交接的，移出时改回未指定");
 }

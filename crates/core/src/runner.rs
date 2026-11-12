@@ -114,6 +114,10 @@ pub async fn run_turn<A: Approver, O: Observer>(
     // 上次停留在 running，说明客户端或 CLI 曾异常退出：用 --resume 接上，并给 Agent 一条精简说明。
     let recovered = session.status == "running";
     let mut effective_prompt = prompt.to_string();
+    // 角色交接留给这位员工的一次性说明（见 handover.rs）：放在提示词最前面，用完即清
+    if let Some(note) = cfg.attr_project.as_deref().or(pid0).and_then(|p| db.take_handover_note(p, &employee.id)) {
+        effective_prompt = format!("{note}\n\n{effective_prompt}");
+    }
     if recovered {
         db.append_event_for(pid, "session_recovered", eid, sid, &json!({"reason": "上次任务未正常结束"}))?;
         effective_prompt = format!(
@@ -316,18 +320,27 @@ pub fn session_restarts(db: &Db, employee: &Employee, project_path: &str) -> boo
 const HANDOFF_TIMEOUT_SECS: u64 = 300;
 
 async fn handoff_summary(employee: &Employee, cfg: &TurnConfig, old_session: &str, r: &crate::endpoint::Resolved) -> Option<String> {
-    let mut spec = ClaudeSpec::new(old_session.to_string(), true, employee.persona.clone(), cfg.project_path.clone());
-    spec.program = cfg.program.clone();
-    spec.model = Some(r.model.clone());
-    spec.env = r.env.clone();
     let prompt = "[系统提示] 你的会话上下文即将换成新会话，之后你的对话记录不再可见。请不要调用任何工具，直接写一份给“新会话里的你”的交接摘要，500 字以内，包含：\n\
         ① 当前任务的目标和做到哪了；② 已经确定的决定和原因；③ 试过但失败或被否决的做法（避免重复）；④ 下一步具体要做什么；⑤ 需要注意的坑或未验证的假设。\n只写事实，不要客套。";
+    ask_session_once(employee, &cfg.program, &cfg.project_path, old_session, Some(&r.model), r.env.clone(), prompt, HANDOFF_TIMEOUT_SECS, 1500).await
+}
+
+/// 续着员工已有的会话问一句话（不调用工具），等回答，最长 `timeout_secs` 秒；失败、超时或空回答返回 None。
+/// 角色交接时让原员工写摘要也用它。调用方负责占端点名额。
+pub async fn ask_session_once(
+    employee: &Employee, program: &str, project_path: &std::path::Path, session_id: &str, model: Option<&str>,
+    env: Vec<(String, String)>, prompt: &str, timeout_secs: u64, max_chars: usize,
+) -> Option<String> {
+    let mut spec = ClaudeSpec::new(session_id.to_string(), true, employee.persona.clone(), project_path.to_path_buf());
+    spec.program = program.to_string();
+    spec.model = model.map(String::from);
+    spec.env = env;
     let mut p = ClaudeProcess::spawn(&spec, prompt).await.ok()?;
-    let waited = tokio::time::timeout(std::time::Duration::from_secs(HANDOFF_TIMEOUT_SECS), async {
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
         loop {
             match p.next_event().await {
                 Ok(Some(AgentEvent::Result(res))) => return Some(res),
-                Ok(Some(AgentEvent::Approval(req))) => { let _ = p.respond(&req, &Decision::Deny("交接摘要不需要调用工具，请直接回答".into())).await; }
+                Ok(Some(AgentEvent::Approval(req))) => { let _ = p.respond(&req, &Decision::Deny("这一步不需要调用工具，请直接回答".into())).await; }
                 Ok(Some(_)) => {}
                 _ => return None,
             }
@@ -335,7 +348,7 @@ async fn handoff_summary(employee: &Employee, cfg: &TurnConfig, old_session: &st
     }).await;
     p.kill().await;
     let res = waited.ok().flatten()?;
-    (!res.is_error && !res.text.trim().is_empty()).then(|| res.text.trim().chars().take(1500).collect())
+    (!res.is_error && !res.text.trim().is_empty()).then(|| res.text.trim().chars().take(max_chars).collect())
 }
 
 /// 会话上下文上限（token）。超过后下一次任务换新会话；设置项 `context_limit`，0 表示不限，默认 150000。

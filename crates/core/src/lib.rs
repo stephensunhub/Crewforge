@@ -18,6 +18,7 @@ pub mod review_gate;
 pub mod rename;
 pub mod levels;
 pub mod design;
+pub mod handover;
 pub mod lead_triage;
 pub mod mcp;
 pub mod meeting;
