@@ -318,7 +318,7 @@ impl Db {
                         } else if busy.contains(name) {
                             why.push(format!("{name} 正在忙别的"));
                         } else if let Some(t) = self.employee_active_task_title(a, project_id, it.task_id.as_deref()) {
-                            why.push(format!("{name} 手上还有进行中的任务《{t}》（可能是被打断后留下的），做完或放弃后才能派"));
+                            why.push(format!("{name} 名下有未结束的任务《{t}》（没有在运行就是被打断后留下的残留），做完或放弃后才能派"));
                         }
                     }
                     if let Some(mine) = files.get(&it.id) {
@@ -792,6 +792,6 @@ mod waiting_tests {
         let it = db.create_plan_item(&p, &NewPlanItem { title: "待做".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: Some(dev.id.clone()), deps: vec![] }, None).unwrap();
         db.create_task(&crate::db::Task { id: "t1".into(), repo_path: "/tmp/p-leftover".into(), employee_id: dev.id.clone(), title: "上次留下的".into(), branch: "b".into(), base_branch: "main".into(), base_commit: "c".into(), worktree_path: "/tmp/w".into(), status: "active".into(), merged_commit: None, created_at: 0, updated_at: 0 }).unwrap();
         let w = db.plan_waiting(&p, &HashSet::new(), true).unwrap();
-        assert!(w[&it].iter().any(|x| x.contains("手上还有进行中的任务《上次留下的》")), "{:?}", w[&it]);
+        assert!(w[&it].iter().any(|x| x.contains("名下有未结束的任务《上次留下的》")), "{:?}", w[&it]);
     }
 }

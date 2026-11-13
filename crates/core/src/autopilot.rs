@@ -513,11 +513,16 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let repo = self.repo.to_string_lossy().into_owned();
         let human_busy = self.busy.lock().unwrap().clone();
         let why_busy = |e: &Employee| -> String {
-            if let Some(t) = self.db().active_task(&e.id, &repo).ok().flatten().filter(|t| item.task_id.as_deref() != Some(t.id.as_str())) {
-                format!("{} 手上还有进行中的任务《{}》（可能是上次被打断留下的），做完或放弃后才能派", e.name, t.title)
-            } else if busy.contains(&e.id) { format!("{} 正在做本批次的别的条目", e.name) }
-            else if human_busy.contains(&e.name) { format!("{} 正在忙别的（对话、整理或会议）", e.name) }
-            else { format!("{} 暂时不能接", e.name) }
+            let active = self.db().active_task(&e.id, &repo).ok().flatten().filter(|t| item.task_id.as_deref() != Some(t.id.as_str()));
+            let working = busy.contains(&e.id) || human_busy.contains(&e.name);
+            match (active, working) {
+                (Some(t), true) => format!("{} 正在做《{}》，做完才轮到", e.name, t.title),
+                // 有未结束的任务、却没人在跑它：被打断后留下的，不放弃就一直占着这个人
+                (Some(t), false) => format!("{} 名下有残留的任务《{}》（没有在运行，应是被打断后留下的），放弃它之后才能派", e.name, t.title),
+                (None, true) if busy.contains(&e.id) => format!("{} 正在做本批次的别的条目", e.name),
+                (None, true) => format!("{} 正在忙别的（对话、整理或会议）", e.name),
+                (None, false) => format!("{} 暂时不能接", e.name),
+            }
         };
         if let Some(a) = &item.assignee_id {
             if let Some((e, _)) = ms.iter().find(|(e, _)| &e.id == a) { return format!("指派给 {}，{}", e.name, why_busy(e)); }
