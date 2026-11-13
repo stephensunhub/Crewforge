@@ -952,6 +952,16 @@ pub async fn list_docs(state: State<'_, AppState>, project_id: String) -> CmdRes
 }
 
 #[tauri::command]
+pub async fn doc_history(state: State<'_, AppState>, project_id: String, path: String) -> CmdResult<Vec<crewforge_core::docs::DocVersion>> {
+    state.orch.doc_history(&project_id, &path).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn doc_version_diff(state: State<'_, AppState>, project_id: String, path: String, commit: String) -> CmdResult<String> {
+    state.orch.doc_version_diff(&project_id, &path, &commit).await.map_err(err)
+}
+
+#[tauri::command]
 pub async fn read_doc(state: State<'_, AppState>, project_id: String, path: String) -> CmdResult<String> {
     state.orch.read_doc(&project_id, &path).await.map_err(err)
 }
@@ -1768,21 +1778,111 @@ pub fn set_autopilot_config(state: State<'_, AppState>, project_id: String, max_
 // ───────────── 长期维护：bug、功能规格、定时任务、公司总览 ─────────────
 
 #[derive(serde::Deserialize)]
-pub struct BugInput { pub title: String, pub steps: String, pub expected: String, pub actual: String, pub severity: String, pub extra: String }
+pub struct BugInput {
+    pub title: String, pub steps: String, pub expected: String, pub actual: String, pub unchanged: String, pub severity: String, pub extra: String,
+    /// 出自哪个计划条目（可选）
+    pub origin_item_id: Option<String>,
+    /// 手动指定责任开发（可选，不指定取出处条目的开发）
+    pub owner_id: Option<String>,
+}
 
 #[tauri::command]
 pub fn report_bug(state: State<'_, AppState>, project_id: String, bug: BugInput) -> CmdResult<String> {
-    state.db.report_bug(&project_id, &crewforge_core::maintenance::BugReport { title: bug.title, steps: bug.steps, expected: bug.expected, actual: bug.actual, severity: bug.severity, extra: bug.extra }).map_err(err)
+    state.db.report_bug(&project_id, &crewforge_core::bugs::NewBug {
+        title: bug.title, severity: bug.severity, steps: bug.steps, expected: bug.expected, actual: bug.actual, unchanged: bug.unchanged, extra: bug.extra,
+        source: "human".into(), reporter_id: None, origin_item_id: bug.origin_item_id.filter(|s| !s.is_empty()), owner_id: bug.owner_id.filter(|s| !s.is_empty()),
+    }).map_err(err)
+}
+
+#[tauri::command]
+pub fn list_bugs(state: State<'_, AppState>, project_id: String) -> CmdResult<Vec<crewforge_core::bugs::Bug>> {
+    state.db.list_bugs(&project_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_bug_priority(state: State<'_, AppState>, id: String, priority: i64) -> CmdResult<()> {
+    state.db.set_bug_priority(&id, priority).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_bug_owner(state: State<'_, AppState>, id: String, owner_id: String) -> CmdResult<()> {
+    state.db.set_bug_owner(&id, &owner_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn resolve_bug(state: State<'_, AppState>, id: String, status: String, reason: String) -> CmdResult<()> {
+    state.db.resolve_bug_without_fix(&id, &status, &reason).map_err(err)
+}
+
+#[tauri::command]
+pub fn reopen_bug(state: State<'_, AppState>, id: String, reason: String) -> CmdResult<()> {
+    state.db.reopen_bug(&id, &reason).map_err(err)
+}
+
+// ───────────── 需求、排期 ─────────────
+
+#[tauri::command]
+pub fn submit_requirement(state: State<'_, AppState>, project_id: String, title: String, brief: String, human_tech: String, rtype: String, adopt_now: bool) -> CmdResult<String> {
+    let id = state.db.submit_requirement(&project_id, &title, &brief, &human_tech, &rtype, "human", None).map_err(err)?;
+    if adopt_now { state.db.adopt_requirement(&id, "人提交并直接采纳").map_err(err)?; }
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn adopt_requirement(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.db.adopt_requirement(&id, "人采纳").map_err(err)
+}
+
+#[tauri::command]
+pub fn decide_requirement(state: State<'_, AppState>, id: String, decision: String, reason: String) -> CmdResult<()> {
+    state.db.decide_requirement(&id, &decision, &reason).map_err(err)
+}
+
+#[tauri::command]
+pub fn timeline_view(state: State<'_, AppState>, project_id: String) -> CmdResult<crewforge_core::scheduling::TimelineView> {
+    state.db.timeline_view(&project_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn swap_plan_positions(state: State<'_, AppState>, a: String, b: String) -> CmdResult<()> {
+    state.db.swap_plan_positions(&a, &b).map_err(err)
+}
+
+#[tauri::command]
+pub fn unschedule_item(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.db.unschedule_item(&id).map_err(err)
+}
+
+#[tauri::command]
+pub fn schedule_item_by_human(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.db.schedule_item_by_human(&id).map_err(err)
+}
+
+/// 现在就让负责人给全部未排期的条目排期（你点了才会调用模型，一次处理全部）。没有 AI 负责人时按规则排。
+#[tauri::command]
+pub async fn lead_schedule_now(app: AppHandle, state: State<'_, AppState>, project_id: String) -> CmdResult<String> {
+    let lead_id = state.db.list_members(&project_id).map_err(err)?.into_iter().find(|m| m.role == "lead").map(|m| m.employee_id);
+    let Some(lead_id) = lead_id else {
+        let n = state.db.rule_schedule(&project_id, None).map_err(err)?;
+        return Ok(format!("项目没有 AI 负责人：{n} 个条目按规则排入"));
+    };
+    let lead = state.db.employee_by_id(&lead_id).map_err(err)?.ok_or("负责人不存在")?;
+    if !state.busy.lock().unwrap().insert(format!("schedule:{project_id}")) { return Err("负责人正在排期，请稍等".into()); }
+    let approver = UiApprover { app, pending: state.pending.clone(), project_id: Some(project_id.clone()) };
+    let res = async {
+        let _permit = state.sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
+        state.orch.lead_schedule(&project_id, &lead, &approver).await
+    }.await;
+    state.busy.lock().unwrap().remove(&format!("schedule:{project_id}"));
+    match res.map_err(err)? {
+        None => Ok("没有未排期的条目，也没有待评估的需求".into()),
+        Some(o) => Ok(format!("排入 {} 个，按规则排 {} 个{}{}", o.scheduled, o.by_rule, if o.rejected.is_empty() { String::new() } else { format!("；{}", o.rejected.join("；")) }, if o.summary.is_empty() { String::new() } else { format!("（{}）", o.summary) })),
+    }
 }
 
 #[tauri::command]
 pub fn list_specs(state: State<'_, AppState>, project_id: String) -> CmdResult<Vec<crewforge_core::maintenance::SpecView>> {
     state.db.list_specs(&project_id).map_err(err)
-}
-
-#[tauri::command]
-pub fn create_spec(state: State<'_, AppState>, project_id: String, title: String, brief: String) -> CmdResult<String> {
-    state.db.create_spec(&project_id, &title, &brief, None).map_err(err)
 }
 
 #[tauri::command]

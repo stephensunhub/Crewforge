@@ -461,3 +461,21 @@ button.u-cell:hover { background: var(--panel-2); }
 .ov-bar { height: 6px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
 .ov-bar i { display: block; height: 100%; background: var(--accent); }
 .ov-attn { font-size: 12.5px; color: var(--warn); }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { text-align: left; font-weight: 500; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tbl td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tbl tr.clickable { cursor: pointer; }
+.tbl tr.clickable:hover { background: var(--panel-2); }
+.tbl-title { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.tbl-done td { color: var(--muted); }
+.tl-block { color: var(--warn); font-size: 12.5px; }
+.bug-detail { display: grid; gap: 4px; padding: 6px 4px 10px; white-space: pre-wrap; }
+.req-tech { font-size: 12.5px; color: var(--warn); }
+.chip.on { color: var(--accent); border-color: var(--accent); }
+.badge.bs-open { color: var(--warn); border-color: var(--warn); }
+.badge.bs-fixing { color: var(--accent); border-color: var(--accent); }
+.badge.bs-verify { color: var(--warn); border-color: var(--warn); }
+.badge.bs-closed { color: var(--ok); border-color: var(--ok); }
+.badge.bp-0 { color: var(--bad); border-color: var(--bad); }
+.badge.bp-1 { color: var(--warn); border-color: var(--warn); }
+.doc-diff { max-height: 360px; overflow: auto; font-size: 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; }

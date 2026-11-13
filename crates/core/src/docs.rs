@@ -25,6 +25,21 @@ pub struct DocFile {
     pub managed: bool,
 }
 
+/// 文档的一个版本：该文件的每一次合并是一个版本（以 git 历史为准，不靠模型写）。
+#[derive(Debug, Clone, Serialize)]
+pub struct DocVersion {
+    /// 版本号，最早的是 1
+    pub version: usize,
+    pub commit: String,
+    pub at: i64,
+    pub author: String,
+    /// 提交标题（任务合并的提交标题就是条目标题）
+    pub subject: String,
+    /// 这次改了多少行（新增、删除）
+    pub added: u32,
+    pub removed: u32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DocsPublish {
     pub files: usize,
@@ -67,6 +82,25 @@ impl Orchestrator {
         }).collect();
         v.sort_by(|a, b| b.managed.cmp(&a.managed).then(a.path.cmp(&b.path)));
         Ok(v)
+    }
+
+    /// 一份文档的版本列表（新的在前）：版本号、时间、作者、提交标题、改动行数。
+    pub async fn doc_history(&self, project_id: &str, path: &str) -> Result<Vec<DocVersion>> {
+        if !valid_doc_path(path) { bail!("只能查看 docs/ 下的 Markdown 文档"); }
+        let project = self.db.get_project(project_id)?.context("项目不存在")?;
+        let repo = self.ws.repo_info(Path::new(&project.path)).await?;
+        let out = git_output(&repo.root, &["log", "--follow", "--format=\u{1}%H\u{1}%ct\u{1}%an\u{1}%s", "--numstat", "HEAD", "--", path]).await.unwrap_or_default();
+        Ok(parse_doc_history(&out))
+    }
+
+    /// 某个版本对这份文档的改动（diff 文本，过长截断）。
+    pub async fn doc_version_diff(&self, project_id: &str, path: &str, commit: &str) -> Result<String> {
+        if !valid_doc_path(path) { bail!("只能查看 docs/ 下的 Markdown 文档"); }
+        if commit.len() < 7 || commit.len() > 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) { bail!("提交号不对"); }
+        let project = self.db.get_project(project_id)?.context("项目不存在")?;
+        let repo = self.ws.repo_info(Path::new(&project.path)).await?;
+        let d = git_output(&repo.root, &["show", "--format=", "--no-color", commit, "--", path]).await.context("读不到这个版本")?;
+        Ok(if d.len() > MAX_DOC_BYTES { format!("{}\n…（改动太长，已截断）", d.chars().take(MAX_DOC_BYTES / 3).collect::<String>()) } else { d })
     }
 
     pub async fn read_doc(&self, project_id: &str, path: &str) -> Result<String> {
@@ -190,9 +224,37 @@ impl Orchestrator {
     }
 }
 
+/// 解析 `git log --format=\x01%H\x01%ct\x01%an\x01%s --numstat` 的输出（新的在前），版本号从最早的 1 开始。
+pub fn parse_doc_history(out: &str) -> Vec<DocVersion> {
+    let mut v: Vec<DocVersion> = vec![];
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix('\u{1}') {
+            let mut f = rest.splitn(4, '\u{1}');
+            let (commit, at, author, subject) = (f.next().unwrap_or(""), f.next().unwrap_or("0"), f.next().unwrap_or(""), f.next().unwrap_or(""));
+            v.push(DocVersion { version: 0, commit: commit.into(), at: at.parse::<i64>().unwrap_or(0) * 1000, author: author.into(), subject: subject.into(), added: 0, removed: 0 });
+        } else if let Some(cur) = v.last_mut() {
+            let mut f = line.split_whitespace();
+            if let (Some(a), Some(r)) = (f.next(), f.next()) { cur.added += a.parse().unwrap_or(0); cur.removed += r.parse().unwrap_or(0); }
+        }
+    }
+    let n = v.len();
+    for (i, x) in v.iter_mut().enumerate() { x.version = n - i; }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doc_history_is_parsed_newest_first_with_version_numbers_and_line_counts() {
+        let out = "\u{1}bbb222\u{1}1700000200\u{1}alice\u{1}修订需求规格：导出\n3\t1\tdocs/specs/x/requirements.md\n\u{1}aaa111\u{1}1700000100\u{1}bob\u{1}需求规格：导出\n10\t0\tdocs/specs/x/requirements.md\n";
+        let v = parse_doc_history(out);
+        assert_eq!(v.len(), 2);
+        assert_eq!((v[0].version, v[0].commit.as_str(), v[0].author.as_str(), v[0].added, v[0].removed, v[0].at), (2, "bbb222", "alice", 3, 1, 1_700_000_200_000));
+        assert_eq!((v[1].version, v[1].subject.as_str(), v[1].added), (1, "需求规格：导出", 10));
+        assert!(parse_doc_history("").is_empty());
+    }
 
     #[test]
     fn doc_paths_are_confined_to_docs_markdown() {

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
-import type { BugInput, SpecView, Schedule, ProjectOverview } from "./types";
+import type { DocVersion, Bug, BugInput, SpecView, Schedule, ProjectOverview, TimelineView } from "./types";
 import type {
   RenameReport, HandoverPrep, HandoverReport,
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
@@ -90,6 +90,8 @@ export const api = {
   usageSessions: () => invoke<SessionsView>("usage_sessions"),
   usageCalls: (filter: UsageFilter, page: number, pageSize: number) => invoke<UsagePageData>("usage_calls", { filter, page, pageSize }),
   listDocs: (projectId: string) => invoke<DocFile[]>("list_docs", { projectId }),
+  docHistory: (projectId: string, path: string) => invoke<DocVersion[]>("doc_history", { projectId, path }),
+  docVersionDiff: (projectId: string, path: string, commit: string) => invoke<string>("doc_version_diff", { projectId, path, commit }),
   readDoc: (projectId: string, path: string) => invoke<string>("read_doc", { projectId, path }),
   leadUpdateDocs: (projectId: string) => invoke<DocsPublish>("lead_update_docs", { projectId }),
   leadCurateMemory: (projectId: string) => invoke<Curated>("lead_curate_memory", { projectId }),
@@ -154,7 +156,20 @@ export const api = {
   // 长期维护：bug、功能规格、定时任务、公司总览
   reportBug: (projectId: string, bug: BugInput) => invoke<string>("report_bug", { projectId, bug }),
   listSpecs: (projectId: string) => invoke<SpecView[]>("list_specs", { projectId }),
-  createSpec: (projectId: string, title: string, brief: string) => invoke<string>("create_spec", { projectId, title, brief }),
+  listBugs: (projectId: string) => invoke<Bug[]>("list_bugs", { projectId }),
+  setBugPriority: (id: string, priority: number) => invoke<void>("set_bug_priority", { id, priority }),
+  setBugOwner: (id: string, ownerId: string) => invoke<void>("set_bug_owner", { id, ownerId }),
+  resolveBug: (id: string, status: string, reason: string) => invoke<void>("resolve_bug", { id, status, reason }),
+  reopenBug: (id: string, reason: string) => invoke<void>("reopen_bug", { id, reason }),
+  submitRequirement: (projectId: string, title: string, brief: string, humanTech: string, rtype: string, adoptNow: boolean) =>
+    invoke<string>("submit_requirement", { projectId, title, brief, humanTech, rtype, adoptNow }),
+  adoptRequirement: (id: string) => invoke<void>("adopt_requirement", { id }),
+  decideRequirement: (id: string, decision: string, reason: string) => invoke<void>("decide_requirement", { id, decision, reason }),
+  timelineView: (projectId: string) => invoke<TimelineView>("timeline_view", { projectId }),
+  swapPlanPositions: (a: string, b: string) => invoke<void>("swap_plan_positions", { a, b }),
+  unscheduleItem: (id: string) => invoke<void>("unschedule_item", { id }),
+  scheduleItemByHuman: (id: string) => invoke<void>("schedule_item_by_human", { id }),
+  leadScheduleNow: (projectId: string) => invoke<string>("lead_schedule_now", { projectId }),
   reviseSpec: (specId: string, change: string) => invoke<void>("revise_spec", { specId, change }),
   listSchedules: (projectId: string | null) => invoke<Schedule[]>("list_schedules", { projectId }),
   schedulePresets: () => invoke<[string, string, string, string][]>("schedule_presets"),

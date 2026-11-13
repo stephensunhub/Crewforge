@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 迁移列表：下标 + 1 即版本号。只能追加，不能修改已发布的迁移。
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10, MIGRATION_11, MIGRATION_12, crate::models::MIGRATION_13, crate::autopilot::MIGRATION_14, crate::plan::MIGRATION_15, crate::closeout::MIGRATION_16, crate::plan::MIGRATION_17, crate::align::MIGRATION_18, crate::endpoint::MIGRATION_19, crate::autopilot::MIGRATION_20, crate::autopilot::MIGRATION_21, crate::autopilot::MIGRATION_22, crate::models::MIGRATION_23, MIGRATION_24, crate::levels::MIGRATION_25, crate::maintenance::MIGRATION_26];
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, crate::board::MIGRATION_4, crate::memory::MIGRATION_5, crate::onboarding::MIGRATION_6, crate::scheduler::MIGRATION_7, crate::actions::MIGRATION_8, crate::plan::MIGRATION_9, crate::guest::MIGRATION_10, MIGRATION_11, MIGRATION_12, crate::models::MIGRATION_13, crate::autopilot::MIGRATION_14, crate::plan::MIGRATION_15, crate::closeout::MIGRATION_16, crate::plan::MIGRATION_17, crate::align::MIGRATION_18, crate::endpoint::MIGRATION_19, crate::autopilot::MIGRATION_20, crate::autopilot::MIGRATION_21, crate::autopilot::MIGRATION_22, crate::models::MIGRATION_23, MIGRATION_24, crate::levels::MIGRATION_25, crate::maintenance::MIGRATION_26, crate::maintenance::MIGRATION_27];
 
 /// 员工使用的执行引擎：claude（默认）或 copilot
 const MIGRATION_11: &str = "ALTER TABLE employees ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';";

@@ -70,8 +70,8 @@ CREATE TABLE plan_deps (
 );
 "#;
 
-/// bugfix = 修 bug（先复现、找根因、最小修复、补回归测试）；spec = 功能规格文档（需求 / 设计，只改 docs/specs）。
-pub const PLAN_KINDS: &[&str] = &["characterize", "migrate", "cleanup", "other", "design", "bugfix", "spec"];
+/// bugfix = 修 bug（先复现、找根因、最小修复、补回归测试）；spec = 功能规格文档（需求 / 设计，只改 docs/specs）；retest = 复测（QA 验证 bug 已修好）。
+pub const PLAN_KINDS: &[&str] = &["characterize", "migrate", "cleanup", "other", "design", "bugfix", "spec", "retest"];
 
 /// bug 修复条目的派活要求（替换通用要求）。
 pub const BUGFIX_RULES: &str = "要求：这是一个 bug 修复，按顺序做：\
@@ -80,6 +80,9 @@ pub const BUGFIX_RULES: &str = "要求：这是一个 bug 修复，按顺序做�
 3) 最小修复：只改必须改的地方，不顺手重构、不改无关代码；\
 4) 回归测试：让第 1 步的测试通过，并运行全部测试确认没有别的东西坏掉；确实无法自动化测试的，在说明里写清原因和手工验证步骤；\
 5) 最终说明里依次写：根因（一两句）、怎么修的、加了什么测试、是否还有同类问题可能出现在别处。";
+
+/// 复测条目的派活要求。
+pub const RETEST_RULES: &str = "要求：这是 bug 复测，你是验证者，不要修代码：1) 按 bug 报告的复现步骤，在最新代码上逐步操作，确认问题不再出现；2) 检查报告里「不应改变的行为」仍然正常，并跑相关测试；3) 通过就在最终说明里写清验证了什么；4) **没有修好或引入了新问题**：不要自己改，用 reopen_bug 工具说明原因（附上你观察到的现象），然后在最终说明里写“复测未通过”。";
 
 /// 规格文档条目的派活要求。
 pub const SPEC_RULES: &str = "要求：这是功能规格文档条目，只改说明里指定的 docs/specs 下的 Markdown，不写任何代码；写完自检：每条验收标准是否都能用具体的操作或命令检查、有没有和已有文档或代码现状矛盾；最终说明里列出你不确定、需要人确认的地方。";
@@ -109,6 +112,14 @@ pub struct PlanItem {
     pub ready: bool,
     /// 等级 1–5，0 = 未定级（见 `levels`）
     pub level: i64,
+    /// 已排期 scheduled | 未排期 unscheduled（见 `scheduling`）
+    pub schedule_state: String,
+    /// 所属需求（空 = 无）
+    pub requirement_id: String,
+    /// 由哪个 bug 产生（空 = 无）
+    pub bug_id: String,
+    /// 来源：bug | schedule | review | requirement | 空
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -223,6 +234,11 @@ impl Db {
             stmt.query_map([project_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?)))?
                 .collect::<std::result::Result<_, _>>()?
         };
+        let extra: HashMap<String, (String, String, String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT id, schedule_state, requirement_id, bug_id, source FROM plan_items WHERE project_id = ?1")?;
+            stmt.query_map([project_id], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))))?.collect::<std::result::Result<_, _>>()?
+        };
         let deps: Vec<(String, String)> = {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn.prepare("SELECT d.item_id, d.depends_on FROM plan_deps d JOIN plan_items p ON p.id = d.item_id WHERE p.project_id = ?1")?;
@@ -246,6 +262,10 @@ impl Db {
                 id: r.0.clone(), project_id: r.1.clone(), title: r.2.clone(), description: r.3.clone(), acceptance: r.4.clone(), kind: r.5.clone(),
                 module: r.6.clone(), position: r.7, assignee_name: name(&r.8)?, assignee_id: r.8.clone(), status: r.9.clone(), task_id: r.10.clone(),
                 proposed_by_name: name(&r.11)?, proposed_by: r.11.clone(), note: r.12.clone(), ready: r.9 == "planned" && waiting_for.is_empty(), deps: my_deps, waiting_for, level: r.13,
+                schedule_state: extra.get(&r.0).map(|e| e.0.clone()).unwrap_or_else(|| "scheduled".into()),
+                requirement_id: extra.get(&r.0).map(|e| e.1.clone()).unwrap_or_default(),
+                bug_id: extra.get(&r.0).map(|e| e.2.clone()).unwrap_or_default(),
+                source: extra.get(&r.0).map(|e| e.3.clone()).unwrap_or_default(),
             });
         }
         let total = items.len() - counts.cancelled - counts.proposed;
@@ -275,6 +295,9 @@ impl Db {
                 "proposed" => why.push("待确认：你批准计划（或开始自主推进）之后才会开始".into()),
                 "blocked" => why.push(if it.note.is_empty() { "已阻塞".into() } else { format!("已阻塞：{}", it.note) }),
                 "planned" => {
+                    if it.schedule_state == "unscheduled" {
+                        why.push("未排期：负责人排期之后才会被自动派（自主推进时，有人空闲就会排）".into());
+                    }
                     if design_open && it.kind != crate::design::DESIGN_KIND && it.kind != "bugfix" {
                         why.push("等架构师完成设计：设计条目都做完，其他条目才会开始".into());
                     }
@@ -409,6 +432,7 @@ impl Db {
             params![id, to, note.trim(), clear_task as i64, now_ms()],
         )?;
         self.append_event_for(Some(&it.project_id), "plan_item_status", None, None, &json!({"item_id": id, "title": it.title, "from": it.status, "to": to}))?;
+        if to == "done" { self.on_item_done(id)?; }
         Ok(())
     }
 
@@ -421,6 +445,7 @@ impl Db {
     pub fn mark_plan_started(&self, id: &str, task_id: &str) -> Result<()> {
         self.conn.lock().unwrap().execute(
             "UPDATE plan_items SET status = 'in_progress', task_id = ?2, updated_at = ?3 WHERE id = ?1 AND status IN ('planned','in_progress')", params![id, task_id, now_ms()])?;
+        self.on_item_started(id)?;
         Ok(())
     }
 
@@ -434,6 +459,7 @@ impl Db {
         for (id, pid, title) in rows {
             self.conn.lock().unwrap().execute("UPDATE plan_items SET status = 'done', updated_at = ?2 WHERE id = ?1", params![id, now_ms()])?;
             self.append_event_for(Some(&pid), "plan_item_status", None, None, &json!({"item_id": id, "title": title, "from": "in_progress", "to": "done"}))?;
+            self.on_item_done(&id)?;
         }
         Ok(())
     }
@@ -575,6 +601,7 @@ impl Orchestrator {
         }
         match item.kind.as_str() {
             "bugfix" => p.push_str(BUGFIX_RULES),
+            "retest" => p.push_str(RETEST_RULES),
             crate::maintenance::SPEC_KIND => p.push_str(SPEC_RULES),
             _ => p.push_str("要求：先阅读相关代码和测试；只做这一个条目，不要顺手处理计划外的事；小步修改，改完运行测试和项目约定的检查确认通过，并简要说明做了什么、有什么没做。"),
         }

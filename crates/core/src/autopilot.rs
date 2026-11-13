@@ -13,7 +13,7 @@ use crate::lead_actions::ActionOutcome;
 use crate::onboarding::baseline::{CommandResult, Origin, run_commands};
 use crate::onboarding::scan::scan_dir;
 use crate::orchestrator::Orchestrator;
-use crate::plan::PlanItem;
+use crate::plan::{NewPlanItem, PlanItem};
 use crate::planning::{AdjustTrigger, Applied};
 use crate::ruling::RulingOutcome;
 use crate::runner::{Approver, NoopObserver};
@@ -904,19 +904,64 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         self.triage_later().await;
     }
 
+    /// “之后再说”的行动项：直接转成未排期的计划条目（来源「评审意见」），不调用模型；没价值的由排期时的负责人取消。
     async fn triage_later(&self) {
-        let Some(lead) = self.lead() else { return };
-        if self.over_budget().is_some() || self.ctl.stop.load(Ordering::SeqCst) { return; }
-        if self.orch.later_actions(&self.project_id).map(|v| v.len()).unwrap_or(0) < crate::lead_triage::MIN_ITEMS_TO_TRIAGE { return; }
+        let Ok(items) = self.orch.later_actions(&self.project_id) else { return };
+        if items.is_empty() { return; }
+        let mut open_titles: HashSet<String> = self.db().plan_view(&self.project_id).map(|v| v.items.iter().filter(|i| matches!(i.status.as_str(), "planned" | "in_progress")).map(|i| i.title.trim().to_string()).collect()).unwrap_or_default();
+        let mut made = vec![];
+        for a in items.iter().take(crate::lead_triage::MAX_ITEMS_PER_TRIAGE) {
+            let title: String = a.text.lines().next().unwrap_or("").trim().chars().take(60).collect();
+            if title.is_empty() { continue; }
+            if open_titles.contains(&title) {
+                let _ = self.db().set_action_status(&a.id, "done", "计划里已有同名条目，不重复建");
+                continue;
+            }
+            let desc = format!("{}\n（来自评审会《{}》的“之后再说”）", a.text.trim(), a.meeting_title.chars().take(40).collect::<String>());
+            // 行动项指给负责人自己的，不带过来（负责人不写实现代码，由排期按角色重新分配）；指给别人的保留
+            let lead_id = self.lead().map(|l| l.id);
+            let aid = a.assignee_id.clone().filter(|x| self.db().is_member(&self.project_id, x).unwrap_or(false) && lead_id.as_deref() != Some(x.as_str()));
+            if let Ok(id) = self.db().create_plan_item(&self.project_id, &NewPlanItem { title: title.clone(), description: desc, acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: aid, deps: vec![] }, None) {
+                let _ = self.db().mark_unscheduled(&id, "review");
+                let _ = self.db().set_plan_note(&id, "评审意见里“之后再说”的事：未排期，排期时由负责人决定做不做");
+                let _ = self.db().set_action_status(&a.id, "done", &format!("已转为未排期的计划条目《{title}》"));
+                open_titles.insert(title.clone());
+                made.push(title);
+            }
+        }
+        if !made.is_empty() { self.say("autopilot_step", format!("“之后再说”的评审意见转成了 {} 个未排期条目（排期时由负责人决定做不做）", made.len())); }
+    }
+
+    /// 排期：有未排期的条目（或待评估的需求）、且有人空闲时，让负责人排一次；没有 AI 负责人时按代码规则排。
+    /// 返回是否有变化。
+    async fn schedule_backlog(&self, busy: &HashSet<String>) -> bool {
+        let unsched = self.db().unscheduled_items(&self.project_id).map(|v| v.len()).unwrap_or(0);
+        let pending = self.db().list_specs(&self.project_id).map(|v| v.iter().filter(|s| s.spec.status == "pending").count()).unwrap_or(0);
+        if unsched == 0 && (pending == 0 || self.lead().is_none()) { return false; }
+        if self.ctl.stop.load(Ordering::SeqCst) || self.ctl.pause.load(Ordering::SeqCst) { return false; }
+        let Some(lead) = self.lead() else {
+            let n = self.db().rule_schedule(&self.project_id, None).unwrap_or(0);
+            if n > 0 { self.say("autopilot_plan_changed", format!("项目没有 AI 负责人：{n} 个未排期条目按规则排入（P0 bug 在最前，其余按计划顺序）")); }
+            return n > 0;
+        };
+        // 有人空闲才排（排期期间别的活照常做）；负责人自己正在做任务时先不占用 TA
+        let human_busy = self.busy.lock().unwrap().clone();
+        let idle = self.members().iter().any(|(e, _)| !busy.contains(&e.id) && !human_busy.contains(&e.name));
+        if !idle || busy.contains(&lead.id) || human_busy.contains(&lead.name) { return false; }
+        if self.over_budget().is_some() { return false; }
+        self.say("autopilot_step", format!("有 {unsched} 个未排期条目{}，{} 来排期", if pending > 0 { format!("、{pending} 个待评估的需求") } else { String::new() }, lead.name));
         let _p = self.permit_for(Some(&lead)).await;
         let _busy = self.busy_scope(&lead.name);
-        match self.orch.lead_triage_later(&self.project_id, &lead, &*self.approver).await {
-            Ok(Some(t)) => {
-                self.say("autopilot_step", format!("{} 整理了“之后再说”的行动项：驳回 {} 条，转为计划条目 {} 个{}，保留 {} 条的编号未提及或被保留", lead.name, t.dismissed, t.planned.len(), if t.planned.is_empty() { String::new() } else { format!("（{}）", t.planned.join("、")) }, t.kept));
-                for r in &t.rejected { self.say("autopilot_step", format!("整理行动项被拒绝：{r}")); }
+        match self.orch.lead_schedule(&self.project_id, &lead, &*self.approver).await {
+            Ok(Some(o)) => {
+                for r in &o.rejected { self.say("autopilot_step", format!("排期：{r}")); }
+                true
             }
-            Ok(None) => {}
-            Err(e) => self.say("autopilot_step", format!("整理行动项没有完成：{e}")),
+            Ok(None) => false,
+            Err(e) => {
+                self.say("autopilot_step", format!("排期没有完成（{e}），改按代码规则排"));
+                self.db().rule_schedule(&self.project_id, None).map(|n| n > 0).unwrap_or(false)
+            }
         }
     }
 
@@ -1218,7 +1263,8 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                     self.triage_later().await;
                     self.update_docs().await;
                 }
-                break ("finished", "计划全部完成".to_string());
+                // 条目都已完成，但还有任务的收尾（合并后的善后）没返回：先等它们返回，下一圈再走完复盘和收尾，不能跳过
+                if set.is_empty() { break ("finished", "计划全部完成".to_string()); }
             }
             // 暂停、预算用尽或有事等人时，不再派新活，只等手上的做完
             if !(paused || budget.is_some() || human.is_some()) && !(self.no_room_for_another_item().is_some()) {
@@ -1226,12 +1272,13 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 self.handle_human_actions(&mut handled_human).await;
                 let busy: HashSet<String> = running.iter().filter_map(|rid| self.db().get_plan_item(rid).ok().flatten().and_then(|i| i.task_id).and_then(|t| self.db().get_task(&t).ok().flatten()).map(|t| t.employee_id)).collect();
                 let mut busy = busy;
+                // 排期：有未排期的条目（或待评估的需求）、且有人空闲时，问负责人怎么排；没有 AI 负责人按代码规则排
+                if self.schedule_backlog(&busy).await {
+                    if let Ok(v) = self.db().plan_view(&self.project_id) { view = v; }
+                }
                 // 设计阶段：项目里有架构师时，设计条目没做完，其他条目不开始
                 let design_open = matches!(self.db().design_phase(&self.project_id), Ok(crate::design::DesignPhase::Pending(_)));
-                let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id) && !deferred.contains(&i.id) && (!design_open || i.kind == crate::design::DESIGN_KIND || i.kind == "bugfix")).cloned().collect();
-                // bug 修复排在最前面（线上问题优先于新功能），其余保持计划顺序
-                let mut ready = ready;
-                ready.sort_by_key(|i| i.kind != "bugfix");
+                let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && i.schedule_state == "scheduled" && !running.contains(&i.id) && !failed.contains(&i.id) && !deferred.contains(&i.id) && (!design_open || i.kind == crate::design::DESIGN_KIND || i.kind == "bugfix")).cloned().collect();
                 let mut starts: Vec<(String, Employee)> = vec![];
                 // 预计会改同一个文件的条目不并行（并行必然合并冲突，每次解决要多花调用）
                 let files = self.db().plan_files(&self.project_id).unwrap_or_default();

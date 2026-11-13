@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { focusAction } from "./common";
-import { AlignBox } from "./AlignBox";
 import type { AutopilotConfig, AutopilotStatus, Duties, EventRow } from "./types";
 import type { ProjectTab } from "./ProjectView";
 
@@ -120,7 +119,6 @@ export function DutiesPanel({ projectId, projectName, events, onGoTab, onOpenMee
       </div>
 
       <AutopilotBox projectId={projectId} events={events} onGoTab={onGoTab} onError={onError} />
-      <AlignBox projectId={projectId} events={events} onOpenMeeting={onOpenMeeting} onError={onError} />
 
       <section className="panel-box">
         <h4 className="group-title">现在在等你 {d && <span className="u-count">{d.items.length}</span>}

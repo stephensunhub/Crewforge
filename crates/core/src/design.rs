@@ -62,7 +62,7 @@ pub struct DesignTemplate { pub title: &'static str, pub description: String, pu
 /// 设计条目模板：`imported` 为 true 时是导入的二次开发项目（总结现状），否则是新项目（做设计）。
 pub fn design_templates(imported: bool) -> Vec<DesignTemplate> {
     let rules = "你是这个项目的架构师：只做设计，不写任何代码，只改 docs/ 下的 Markdown 文件。先读项目目标（见项目目标原文）和仓库现状，再动笔；没有查证的写“未确认”，不要编造。";
-    let points = format!("最后一节必须是「{POINTS_HEADING}」：不超过 12 条，每条一句话，写开发者必须遵守的约定（这一节会被写进项目记忆，自动给每位员工看）。");
+    let points = format!("倒数第二节是「## 变更记录」（初版先写一行“初版”；以后每次修改都在这里追加一条：改了什么、为什么、影响哪些模块）。最后一节必须是「{POINTS_HEADING}」：不超过 12 条，每条一句话，写开发者必须遵守的约定（这一节会被写进项目记忆，自动给每位员工看）。");
     if imported {
         vec![
             DesignTemplate {

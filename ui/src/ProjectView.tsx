@@ -13,12 +13,15 @@ import { PlanPanel } from "./PlanPanel";
 import { HandoverModal } from "./HandoverModal";
 import { ActionsView } from "./ActionsView";
 import { EndProjectModal } from "./EndProject";
-import { MaintenancePanel } from "./MaintenancePanel";
+import { RequirementsView } from "./RequirementsView";
+import { TimelineView } from "./TimelineView";
+import { BugsView } from "./BugsView";
+import { TimersView } from "./TimersView";
 import type { Activity, ApprovalReq, Employee, EventRow, IssueView, Meeting, Member, ProjectRole, ProjectSummary, RepoStatus, TaskView } from "./types";
 
-export type ProjectTab = "duties" | "onboarding" | "chat" | "plan" | "tasks" | "issues" | "meetings" | "actions" | "members" | "maint" | "memory" | "docs";
+export type ProjectTab = "duties" | "onboarding" | "chat" | "plan" | "tasks" | "issues" | "meetings" | "actions" | "members" | "requirements" | "timeline" | "bugs" | "timers" | "memory" | "docs";
 export const PROJECT_TABS: [ProjectTab, string][] = [
-  ["duties", "职责"], ["onboarding", "导入"], ["chat", "群聊"], ["plan", "计划"], ["tasks", "任务"], ["issues", "议题"], ["meetings", "会议"], ["actions", "行动项"], ["maint", "维护"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
+  ["duties", "职责"], ["onboarding", "导入"], ["chat", "群聊"], ["requirements", "需求"], ["plan", "计划"], ["timeline", "排期"], ["tasks", "任务"], ["bugs", "Bug"], ["issues", "议题"], ["meetings", "会议"], ["actions", "评审意见"], ["timers", "定时器"], ["members", "成员"], ["memory", "记忆"], ["docs", "文档"],
 ];
 const TASK_EVENTS = ["task_created", "checkpoint_committed", "checkpoint_failed", "task_merged", "task_merge_blocked", "task_abandoned", "turn_result", "task_failed", "task_error"];
 
@@ -100,8 +103,14 @@ export function ProjectView({
     return <DutiesPanel projectId={project.id} projectName={project.name} events={events} onGoTab={onGoTab} onOpenMeeting={onOpenMeeting} onError={onError} />;
   if (tab === "plan")
     return <PlanPanel project={project} members={members} events={events} onError={onError} onChanged={onChanged} onOpenMeeting={onOpenMeeting} />;
-  if (tab === "maint")
-    return <MaintenancePanel projectId={project.id} events={events} onGoTab={(t) => onGoTab(t)} onError={onError} onChanged={onChanged} />;
+  if (tab === "requirements")
+    return <RequirementsView projectId={project.id} events={events} onGoTab={(t) => onGoTab(t)} onError={onError} onChanged={onChanged} />;
+  if (tab === "timeline")
+    return <TimelineView projectId={project.id} members={members} events={events} onGoTab={(t) => onGoTab(t)} onError={onError} onChanged={onChanged} />;
+  if (tab === "bugs")
+    return <BugsView projectId={project.id} members={members} events={events} onGoTab={(t) => onGoTab(t)} onError={onError} onChanged={onChanged} />;
+  if (tab === "timers")
+    return <TimersView projectId={project.id} events={events} onOpenMeeting={onOpenMeeting} onError={onError} onChanged={onChanged} />;
   if (tab === "chat")
     return (
       <Chat project={project} members={members} events={events} nameById={nameById} running={running} approvals={mine}

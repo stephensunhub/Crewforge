@@ -296,6 +296,7 @@ export interface PlanItem {
   proposed_by_name: string | null; note: string; deps: string[]; waiting_for: string[]; ready: boolean;
   /** 等级 1–5，0 = 未定级 */
   level: number;
+  schedule_state: "scheduled" | "unscheduled"; requirement_id: string; bug_id: string; source: string;
 }
 export interface PlanViewData {
   items: PlanItem[];
@@ -381,15 +382,37 @@ export interface InterventionReport { items: Intervention[]; counts: [string, st
 export interface HandoverPrep { snapshot: string; model_summary: string | null; warnings: string[]; summary_note: string }
 export interface HandoverReport { from: string; to: string; role: string; moved_plan_items: number; moved_actions: number; unassigned_plan_items: number; unassigned_actions: number; moved_issues: number; moved_meetings: number; abandoned: string[]; warnings: string[] }
 
-export interface BugInput { title: string; steps: string; expected: string; actual: string; severity: string; extra: string }
-export interface Spec { id: string; project_id: string; slug: string; title: string; brief: string; rounds: number; drafted_rounds: number; created_at: number; updated_at: number }
-export interface SpecView { spec: Spec; requirements_path: string; design_path: string; items: { id: string; title: string; kind: string; status: string }[]; stage: "writing" | "to_split" | "building" | "delivered" }
+export interface BugInput {
+  title: string; steps: string; expected: string; actual: string; unchanged: string; severity: string; extra: string;
+  origin_item_id: string | null; owner_id: string | null;
+}
+export interface Bug {
+  id: string; project_id: string; seq: number; title: string; severity: string; priority: number; steps: string; expected: string; actual: string; unchanged: string; extra: string;
+  source: string; reporter_id: string | null; reporter_name: string | null; origin_item_id: string | null; origin_title: string | null; owner_id: string | null; owner_name: string | null;
+  status: "open" | "fixing" | "verify" | "closed" | "cannot_repro" | "duplicate"; resolution: string; fix_item_id: string | null; retest_item_id: string | null;
+  fix_status: string | null; retest_status: string | null; created_at: number; updated_at: number;
+}
+export interface Spec {
+  id: string; project_id: string; slug: string; title: string; brief: string; rounds: number; drafted_rounds: number; created_at: number; updated_at: number;
+  rtype: "feature" | "tech"; source: string; status: "pending" | "adopted" | "held" | "rejected"; decision_note: string; human_tech: string; submitted_by: string | null;
+}
+export interface SpecView {
+  spec: Spec; requirements_path: string; design_path: string; items: { id: string; title: string; kind: string; status: string }[];
+  stage: "pending" | "held" | "rejected" | "writing" | "to_split" | "building" | "delivered";
+}
+export interface TimelineRow {
+  item: PlanItem; scheduled_at: number | null; trigger: string | null; reason: string | null; finished_at: number | null;
+  requirement_title: string | null; bug_label: string | null; bug_priority: number | null;
+}
+export interface TimelineView { scheduled: TimelineRow[]; unscheduled: TimelineRow[]; pending_requirements: number }
 export interface Schedule {
   id: string; project_id: string; project_name: string; title: string; description: string; kind: string; cadence: "daily" | "weekly"; weekday: number; hour: number;
   enabled: boolean; next_run_at: number; last_run_at: number | null; last_item_id: string | null; last_item_status: string | null;
 }
 export interface ProjectOverview {
   project_id: string; name: string; lead_name: string | null; member_count: number; percent_done: number;
-  planned: number; in_progress: number; done: number; blocked: number; proposed: number; ready: number; bugs_open: number; open_issues: number; specs: number; schedules: number;
+  planned: number; in_progress: number; done: number; blocked: number; proposed: number; ready: number; bugs_open: number; bugs_verify: number; unscheduled: number; pending_requirements: number; open_issues: number; specs: number; schedules: number;
   doing: string[]; last_event_at: number | null; last_run: AutopilotRun | null; calls_7d: number; cost_7d: number; attention: string[];
 }
+
+export interface DocVersion { version: number; commit: string; at: number; author: string; subject: string; added: number; removed: number }

@@ -33,7 +33,7 @@ export function OverviewView({ running, events, onOpenProject, onError }: {
       {rows.length === 0 && <div className="hint">还没有项目。</div>}
       <div className="cards">
         {rows.map((r) => (
-          <div className="card clickable" key={r.project_id} onClick={() => onOpenProject(r.project_id, "plan")}>
+          <div className="card clickable" key={r.project_id} onClick={() => onOpenProject(r.project_id, "timeline")}>
             <div className="card-top"><b>{r.name}</b>
               <span className={`badge ${r.attention.length ? "ps-blocked" : "ps-done"}`}>{r.attention.length ? "需要关注" : "正常"}</span></div>
             <div className="ov-bar" title={`${r.percent_done}%`}><i style={{ width: `${r.percent_done}%` }} /></div>
@@ -42,6 +42,9 @@ export function OverviewView({ running, events, onOpenProject, onError }: {
               <span className="chip static">进行中 {r.in_progress}</span>
               <span className="chip static">待开始 {r.planned}</span>
               {r.bugs_open > 0 && <span className="chip static">bug {r.bugs_open}</span>}
+              {r.bugs_verify > 0 && <span className="chip static">待复测 {r.bugs_verify}</span>}
+              {r.unscheduled > 0 && <span className="chip static">未排期 {r.unscheduled}</span>}
+              {r.pending_requirements > 0 && <span className="chip static">待评估需求 {r.pending_requirements}</span>}
               {r.open_issues > 0 && <span className="chip static">议题 {r.open_issues}</span>}
               {r.specs > 0 && <span className="chip static">规格 {r.specs}</span>}
               {r.schedules > 0 && <span className="chip static">定时 {r.schedules}</span>}
@@ -63,7 +66,7 @@ export function OverviewView({ running, events, onOpenProject, onError }: {
             <div className="maint-row" key={s.id}>
               <span className="maint-title"><b>{s.project_name}</b> · {s.title}</span>
               <span className="hint">{when(s.next_run_at)}</span>
-              <button className="btn" onClick={() => onOpenProject(s.project_id, "maint")}>去看看</button>
+              <button className="btn" onClick={() => onOpenProject(s.project_id, "timers")}>去看看</button>
             </div>
           ))}
         </section>

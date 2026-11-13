@@ -43,6 +43,7 @@ case "$line" in
   *"把这个角色交接给"*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"摘要：正在推进脚手架，决定用 SSE，下一步先看 C。","usage":{}}' ;;
   *"写 docs/architecture.md"*) mkdir -p docs; if [ -f "@BADDOC@" ]; then echo 'package main' > main.go; fi; printf '# 架构\n## 模块\nx\n## 给团队的要点\n- 模块之间只通过接口通信\n- 错误统一用 error 返回\n' > docs/architecture.md; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已写完架构文档。","usage":{}}' ;;
   *"写 docs/conventions.md"*) mkdir -p docs; printf '# 规范\n## 命名\nx\n## 给团队的要点\n- 函数小而纯\n- 先写测试\n' > docs/conventions.md; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已写完规范文档。","usage":{}}' ;;
+  *"[排期]"*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"schedule\":[],\"requirements\":[],\"cancel\":[],\"summary\":\"按默认顺序\"}","usage":{}}' ;;
   *清理计划里的重复条目*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"changes\":[{\"op\":\"cancel\",\"item\":4,\"reason\":\"与 #1 重复\"},{\"op\":\"add\",\"title\":\"夹带\",\"reason\":\"x\"}],\"escalate\":null,\"summary\":\"取消重复\"}","usage":{}}' ;;
   *是否需要评审*) if [ -f "@SKIP@" ]; then printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"review\":false,\"reason\":\"只改了一个小文件\"}","usage":{}}'; else printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"review\":true,\"reason\":\"逻辑有改动\"}","usage":{}}'; fi ;;
   *起草计划*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{\"items\":[{\"title\":\"搭脚手架\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[]},{\"title\":\"写核心逻辑\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"bob\",\"depends_on\":[0]},{\"title\":\"补测试\",\"description\":\"d\",\"acceptance\":\"a\",\"assignee\":\"carol\",\"depends_on\":[1]}]}","usage":{}}' ;;
@@ -54,7 +55,7 @@ case "$line" in
   *负责人裁决*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"我的裁决：\n{\"action\":\"decide\",\"option\":1,\"decision\":\"推送用 SSE\",\"reason\":\"单向推送足够，实现更简单\",\"rejected\":{\"2\":\"WebSocket 要额外处理心跳\"}}","usage":{}}' ;;
   *整理纪要*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"## 决议\n- 同意\n## 被否决的方案及原因\n无\n## 行动项\n@ACTIONS@\n## 待验证的经验\n无","usage":{}}' ;;
   *请评审*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"评审意见：可以。","usage":{}}' ;;
-  *站会*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"做完了；无依赖。","usage":{}}' ;;
+  *站会*|*每位成员发言一次*) printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"做完了；无依赖。","usage":{}}' ;;
   *) echo x > "$f"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"已完成。","usage":{}}' ;;
 esac
 "###.replace("@MARK@", &dir.join("final_add_once").to_string_lossy()).replace("@SKIP@", &dir.join("review_skip").to_string_lossy()).replace("@BADDOC@", &dir.join("bad_doc").to_string_lossy()).replace("@SEEN@", &dir.join("handover_seen").to_string_lossy()).replace("@ACTIONS@", actions);
@@ -118,9 +119,12 @@ async fn lead_loop_runs_the_whole_plan_by_dependency_and_merges_everything() {
     // 提议中的计划条目：点“开始”就是对计划的确认
     e.db.create_plan_item(&e.pid, &NewPlanItem { title: "D（AI 提议）".into(), description: String::new(), acceptance: String::new(), kind: "migrate".into(), module: String::new(), assignee_id: None, deps: vec![] }, Some(&e.db.employee_by_name("alice").unwrap().unwrap().id)).unwrap();
     let r = run(&e, 100, Arc::new(AutopilotCtl::default())).await;
-    assert_eq!((r.status.as_str(), r.reason.as_str()), ("finished", "计划全部完成"), "{r:?}");
+    let evs: Vec<String> = e.db.recent_events(3000).unwrap().iter().filter(|x| x.kind.starts_with("autopilot_step") || x.kind.contains("fail") || x.kind == "plan_scheduled" || x.kind == "task_error").map(|x| x.payload["text"].as_str().unwrap_or("").chars().take(200).collect::<String>()).collect();
+    assert_eq!((r.status.as_str(), r.reason.as_str()), ("finished", "计划全部完成"), "{r:?}\n{evs:#?}");
     let v = e.db.plan_view(&e.pid).unwrap();
-    assert_eq!((v.counts.done, v.percent_done), (5, 100), "4 个条目加上负责人复盘时追加的 1 个");
+    let titles: Vec<String> = v.items.iter().map(|i| format!("{}|{}|{}|{}", i.title, i.status, i.source, i.schedule_state)).collect();
+    // 4 个条目 + 复盘追加的 1 个；评审里没处理的“补一个说明”现在会转成条目（来源：评审意见）排期后做掉，收尾时新转的留给下一批
+    assert!(v.counts.done >= 5 && v.items.iter().filter(|i| i.kind != "design").all(|i| i.status == "done" || (i.source == "review" && i.schedule_state == "unscheduled")), "{titles:#?}");
     // 每个条目的改动都合并进了主分支
     assert!(e.repo.join("README.md").exists());
     let log = String::from_utf8(Command::new("git").arg("-C").arg(&e.repo).args(["log", "--oneline"]).output().unwrap().stdout).unwrap();
@@ -308,10 +312,19 @@ async fn lead_publishes_project_docs_through_the_normal_merge_flow_and_republish
 
     let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
     assert_eq!(r.status, "finished", "{r:?}");
+    let evs: Vec<String> = e.db.recent_events(3000).unwrap().iter().filter(|x| x.kind.starts_with("autopilot_") || x.kind.contains("fail") || x.kind.contains("docs")).map(|x| format!("{}: {}", x.kind, x.payload["text"].as_str().unwrap_or("").chars().take(160).collect::<String>())).collect();
     let docs = e.orch.list_docs(&e.pid).await.unwrap();
+    if docs.is_empty() { panic!("没有文档：{evs:#?}"); }
     let paths: Vec<&str> = docs.iter().map(|d| d.path.as_str()).collect();
     for p in ["docs/crewforge/overview.md", "docs/crewforge/decisions.md", "docs/crewforge/known-issues.md", "docs/crewforge/progress.md"] { assert!(paths.contains(&p), "缺少 {p}：{paths:?}"); }
     assert!(docs.iter().all(|d| d.managed));
+    // 版本列表来自 git 历史：每次合并一个版本，版本号从 1 开始，最新的在前
+    let hist = e.orch.doc_history(&e.pid, "docs/crewforge/decisions.md").await.unwrap();
+    assert!(!hist.is_empty() && hist[0].version == hist.len() && hist.last().unwrap().version == 1, "{hist:?}");
+    assert!(hist[0].added > 0, "{hist:?}");
+    let diff = e.orch.doc_version_diff(&e.pid, "docs/crewforge/decisions.md", &hist[0].commit).await.unwrap();
+    assert!(diff.contains("+# 决策记录") || diff.contains("决策记录"), "{diff}");
+    assert!(e.orch.doc_version_diff(&e.pid, "docs/crewforge/decisions.md", "zzz; rm").await.is_err(), "提交号只能是十六进制");
     let decisions = e.orch.read_doc(&e.pid, "docs/crewforge/decisions.md").await.unwrap();
     assert!(decisions.contains("推送方案") && decisions.contains("推送用 SSE") && decisions.contains("WebSocket 要额外处理心跳") && decisions.contains("拍板人：alice"), "{decisions}");
     let known = e.orch.read_doc(&e.pid, "docs/crewforge/known-issues.md").await.unwrap();
@@ -388,12 +401,13 @@ async fn at_most_three_review_comments_are_fixed_per_item_and_the_rest_become_la
     assert_eq!(count_events(&e, "autopilot_step", "评审意见交给"), 3, "最多处理 3 条");
     let m = e.db.list_meetings(&e.pid).unwrap();
     let acts = e.db.actions_for_meeting(&m[0].id).unwrap();
+    // 超出上限降级成“之后再说”的 2 条，现在直接转成未排期的计划条目（来源：评审意见），不再留在行动项里
     let later: Vec<_> = acts.iter().filter(|a| a.status == "open" && !a.blocking).collect();
-    assert_eq!(later.len(), 2, "超出的 2 条降级为之后再说，仍然开着、被跟踪：{acts:?}");
-    assert!(later.iter().all(|a| a.note.contains("上限")), "{later:?}");
-    assert_eq!(acts.iter().filter(|a| a.status == "done").count(), 3);
-    // 降级的不进人的待办，只计入“之后再说”
-    assert!(e.db.my_duties(&e.pid).unwrap().later_actions >= 2);
+    assert!(later.is_empty(), "降级的不再留着：{acts:?}");
+    assert_eq!(acts.iter().filter(|a| a.status == "done").count(), 5, "3 条修了，2 条转成了计划条目");
+    let from_review: Vec<_> = e.db.plan_view(&e.pid).unwrap().items.into_iter().filter(|i| i.source == "review").collect();
+    assert_eq!(from_review.len(), 2, "{from_review:?}");
+    assert!(from_review.iter().all(|i| i.status == "planned" && i.schedule_state == "unscheduled"), "收尾时才转成条目，留给下一批排期：{from_review:?}");
 }
 
 #[tokio::test]
@@ -1034,28 +1048,35 @@ async fn an_employee_with_another_active_task_is_skipped_not_failed_and_orphan_t
 }
 
 #[tokio::test]
-async fn bug_reports_jump_the_queue_and_are_not_held_back_by_the_design_phase() {
-    use crewforge_core::maintenance::BugReport;
+async fn bugs_are_scheduled_before_other_work_and_are_not_held_back_by_the_design_phase() {
+    use crewforge_core::bugs::NewBug;
     let text = |x: &crewforge_core::db::EventRow| x.payload["text"].as_str().unwrap_or("").to_string();
-    // 1) 排在计划里原有的条目前面：A、B、C 都在，bug 最后才报告，但最先开始
+    // 1) 计划里原有的 A、B、C 都在，bug 最后才报告：它的修复和复测进未排期，排期时 P0 排在最前，所以最先开始
     let e = setup().await;
-    let bug = e.db.report_bug(&e.pid, &BugReport { title: "登录闪退".into(), steps: "点登录".into(), actual: "闪退".into(), severity: "blocker".into(), ..Default::default() }).unwrap();
+    let bug = e.db.report_bug(&e.pid, &NewBug { title: "登录闪退".into(), steps: "点登录".into(), actual: "闪退".into(), severity: "blocker".into(), ..Default::default() }).unwrap();
+    let b = e.db.get_bug(&bug).unwrap().unwrap();
+    assert!(e.db.unscheduled_items(&e.pid).unwrap().len() == 2, "修复和复测都是未排期");
     let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
-    assert_eq!(r.status, "finished", "{r:?}");
-    assert_eq!(e.db.get_plan_item(&bug).unwrap().unwrap().status, "done");
+    let dbg: Vec<String> = e.db.plan_view(&e.pid).unwrap().items.iter().map(|i| format!("{}|{}|{}|{}|{}", i.title, i.status, i.schedule_state, i.note, i.waiting_for.join(","))).collect();
+    let evs: Vec<String> = e.db.recent_events(3000).unwrap().iter().filter(|x| x.kind.starts_with("autopilot_step") || x.kind.contains("fail") || x.kind == "plan_scheduled").map(|x| x.payload["text"].as_str().unwrap_or("").chars().take(160).collect::<String>()).collect();
+    assert_eq!(r.status, "finished", "{r:?}\n{dbg:#?}\n{evs:#?}");
+    assert_eq!(e.db.get_plan_item(b.fix_item_id.as_ref().unwrap()).unwrap().unwrap().status, "done");
+    assert_eq!(e.db.get_bug(&bug).unwrap().unwrap().status, "closed", "修复完成 → 复测完成 → 关闭");
     let events = e.db.recent_events(2000).unwrap();
+    assert!(events.iter().any(|x| x.kind == "plan_scheduled"), "有未排期条目时负责人排了期");
     let starts: Vec<String> = events.iter().filter(|x| x.kind == "autopilot_step" && text(x).starts_with("派《")).map(|x| text(x)).collect();
-    assert!(starts[0].starts_with("派《修复：登录闪退》"), "bug 最先开始：{starts:?}");
+    assert!(starts[0].starts_with("派《修复：登录闪退》"), "P0 bug 最先开始：{starts:?}");
     // 2) 设计阶段还没做完时，bug 也不用等
     let e2 = setup().await;
     with_architect(&e2);
     e2.db.create_design_items(&e2.pid, false).unwrap();
-    let bug2 = e2.db.report_bug(&e2.pid, &BugReport { title: "线上崩溃".into(), actual: "崩溃".into(), ..Default::default() }).unwrap();
+    let bug2 = e2.db.report_bug(&e2.pid, &NewBug { title: "线上崩溃".into(), actual: "崩溃".into(), severity: "blocker".into(), ..Default::default() }).unwrap();
+    let fix2 = e2.db.get_bug(&bug2).unwrap().unwrap().fix_item_id.unwrap();
     let waiting = e2.db.plan_waiting(&e2.pid, &Default::default(), true).unwrap();
-    assert!(waiting.get(&bug2).map(|w| !w.iter().any(|x| x.contains("等架构师"))).unwrap_or(true), "bug 条目不该显示在等设计：{:?}", waiting.get(&bug2));
+    assert!(!waiting[&fix2].iter().any(|x| x.contains("等架构师")), "bug 条目不该显示在等设计：{:?}", waiting[&fix2]);
     // 不要求整批跑完：两个任务并行时会开站会，假 CLI 会把站会提示里的设计任务说明当成要写文档的指令，是测试替身的干扰
     let _ = run(&e2, 400, Arc::new(AutopilotCtl::default())).await;
-    assert_eq!(e2.db.get_plan_item(&bug2).unwrap().unwrap().status, "done");
+    assert_eq!(e2.db.get_plan_item(&fix2).unwrap().unwrap().status, "done");
     let events = e2.db.recent_events(3000).unwrap();
     let first_bug = events.iter().position(|x| x.kind == "autopilot_step" && text(x).starts_with("派《修复：线上崩溃》")).unwrap();
     let first_design_merge = events.iter().position(|x| x.kind == "autopilot_merged" && text(x).contains("架构设计")).unwrap_or(usize::MAX);

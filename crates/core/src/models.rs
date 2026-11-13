@@ -244,7 +244,7 @@ mod tests {
             conn.execute("ALTER TABLE employees DROP COLUMN number", []).unwrap();
             conn.execute("ALTER TABLE employees DROP COLUMN level_cap", []).unwrap();
             conn.execute("ALTER TABLE plan_items DROP COLUMN level", []).unwrap();
-            conn.execute_batch("ALTER TABLE plan_items DROP COLUMN spec_id; DROP TABLE specs; DROP TABLE schedules;").unwrap();
+            conn.execute_batch("ALTER TABLE plan_items DROP COLUMN requirement_id; ALTER TABLE plan_items DROP COLUMN bug_id; ALTER TABLE plan_items DROP COLUMN source; ALTER TABLE plan_items DROP COLUMN schedule_state; DROP TABLE requirements; DROP TABLE schedules; DROP TABLE bugs; DROP TABLE schedule_entries;").unwrap();
             conn.pragma_update(None, "user_version", 22).unwrap();
         }
         let db = Db::open(d.path()).unwrap();

@@ -1,4 +1,4 @@
-//! 长期运转：上线之后的 bug、需求迭代、周期性检查，以及跨项目的总览。
+//! 长期运转：需求（含功能规格文档）、定时任务，以及跨项目的总览。Bug 见 `bugs`，排期见 `scheduling`。
 //!
 //! - **报告 bug**：一张结构化的 bug 单变成一个 `bugfix` 计划条目。bug 条目不被设计阶段挡住、排在其他条目前面，
 //!   派活提示词要求「先复现、再找根因、最小修复、补回归测试」（见 `plan::BUGFIX_RULES`）；
@@ -51,50 +51,55 @@ CREATE TABLE schedules (
 CREATE INDEX idx_schedules_next ON schedules(enabled, next_run_at);
 "#;
 
-// ───────────────────────────── bug ─────────────────────────────
-
-pub const SEVERITIES: &[(&str, &str)] = &[("blocker", "阻断（线上不可用 / 数据错误，要马上修）"), ("major", "严重（主要功能受影响）"), ("minor", "一般（有影响但有绕过办法）")];
-
-#[derive(Debug, Clone, Default)]
-pub struct BugReport {
-    pub title: String,
-    /// 复现步骤
-    pub steps: String,
-    pub expected: String,
-    pub actual: String,
-    /// blocker | major | minor
-    pub severity: String,
-    /// 环境 / 版本 / 日志等补充信息
-    pub extra: String,
-}
-
-/// 把 bug 单整理成条目说明。
-pub fn bug_description(b: &BugReport) -> String {
-    let sev = SEVERITIES.iter().find(|(k, _)| *k == b.severity).map(|(_, v)| *v).unwrap_or("未标注");
-    let mut s = format!("【Bug 报告】严重程度：{sev}\n");
-    for (label, v) in [("复现步骤", &b.steps), ("期望行为", &b.expected), ("实际行为", &b.actual), ("补充信息（版本 / 环境 / 日志）", &b.extra)] {
-        if !v.trim().is_empty() { s.push_str(&format!("{label}：{}\n", v.trim())); }
-    }
-    s.trim_end().to_string()
-}
-
-pub const BUG_ACCEPTANCE: &str = "按报告里的步骤，修复前能复现、修复后不再出现；新增或更新了会在修复前失败、修复后通过的自动化测试（确实无法自动化测试的，在说明里写清原因和手工验证步骤）；原有测试仍然全部通过";
-
-impl Db {
-    /// 报告一个 bug：建一个待开始的 `bugfix` 条目。
-    pub fn report_bug(&self, project_id: &str, b: &BugReport) -> Result<String> {
-        if b.title.trim().is_empty() { bail!("请写一句话说明是什么问题"); }
-        if b.steps.trim().is_empty() && b.actual.trim().is_empty() { bail!("请至少写明复现步骤或实际看到的现象"); }
-        if !b.severity.is_empty() && !SEVERITIES.iter().any(|(k, _)| *k == b.severity) { bail!("未知的严重程度：{}", b.severity); }
-        let id = self.create_plan_item(project_id, &NewPlanItem {
-            title: format!("修复：{}", b.title.trim()), description: bug_description(b), acceptance: BUG_ACCEPTANCE.into(),
-            kind: "bugfix".into(), module: String::new(), assignee_id: None, deps: vec![],
-        }, None)?;
-        self.set_plan_note(&id, "由 bug 报告创建：不受设计阶段限制，排在其他条目前面")?;
-        self.append_event_for(Some(project_id), "bug_reported", None, None, &json!({"item_id": id, "severity": b.severity, "title": b.title.trim(), "text": format!("收到 bug 报告：{}", b.title.trim())}))?;
-        Ok(id)
-    }
-}
+/// 统一模型：需求（由规格表改名而来）、Bug、排期记录；计划条目加来源、所属需求、所属 bug、是否已排期。
+pub const MIGRATION_27: &str = r#"
+ALTER TABLE specs RENAME TO requirements;
+ALTER TABLE requirements ADD COLUMN rtype TEXT NOT NULL DEFAULT 'feature';        -- feature（业务 + 技术）| tech（技术改进，只有技术面）
+ALTER TABLE requirements ADD COLUMN source TEXT NOT NULL DEFAULT 'human';         -- human | qa | employee | goal
+ALTER TABLE requirements ADD COLUMN status TEXT NOT NULL DEFAULT 'adopted';       -- pending | adopted | held | rejected
+ALTER TABLE requirements ADD COLUMN decision_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE requirements ADD COLUMN human_tech TEXT NOT NULL DEFAULT '';          -- 人指定的技术要求（硬约束）
+ALTER TABLE requirements ADD COLUMN submitted_by TEXT;
+ALTER TABLE plan_items RENAME COLUMN spec_id TO requirement_id;
+ALTER TABLE plan_items ADD COLUMN bug_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE plan_items ADD COLUMN source TEXT NOT NULL DEFAULT '';                -- bug | schedule | review | requirement | ''
+ALTER TABLE plan_items ADD COLUMN schedule_state TEXT NOT NULL DEFAULT 'scheduled'; -- scheduled | unscheduled
+CREATE TABLE bugs (
+    id             TEXT PRIMARY KEY,
+    project_id     TEXT NOT NULL REFERENCES projects(id),
+    seq            INTEGER NOT NULL,
+    title          TEXT NOT NULL,
+    severity       TEXT NOT NULL DEFAULT 'major',
+    priority       INTEGER NOT NULL DEFAULT 1,           -- 0..3（P0..P3）
+    steps          TEXT NOT NULL DEFAULT '',
+    expected       TEXT NOT NULL DEFAULT '',
+    actual         TEXT NOT NULL DEFAULT '',
+    unchanged      TEXT NOT NULL DEFAULT '',             -- 不应改变的行为（回归范围）
+    extra          TEXT NOT NULL DEFAULT '',
+    source         TEXT NOT NULL DEFAULT 'human',        -- human | qa | employee
+    reporter_id    TEXT,
+    origin_item_id TEXT,
+    owner_id       TEXT,
+    status         TEXT NOT NULL DEFAULT 'open',         -- open | fixing | verify | closed | cannot_repro | duplicate
+    resolution     TEXT NOT NULL DEFAULT '',
+    fix_item_id    TEXT,
+    retest_item_id TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+CREATE INDEX idx_bugs_project ON bugs(project_id, status);
+CREATE TABLE schedule_entries (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id   TEXT NOT NULL,
+    item_id      TEXT NOT NULL,
+    action       TEXT NOT NULL,                          -- 排入 | 重排 | 人调整 | 退回未排期
+    trigger_kind TEXT NOT NULL,                          -- 排期调用 | 规则兜底 | 人调整
+    reason       TEXT NOT NULL DEFAULT '',
+    by_employee  TEXT,
+    at           INTEGER NOT NULL
+);
+CREATE INDEX idx_schedule_entries_item ON schedule_entries(item_id, id);
+"#;
 
 // ───────────────────────────── 规格 ─────────────────────────────
 
@@ -111,6 +116,16 @@ pub struct Spec {
     pub drafted_rounds: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// feature（业务 + 技术）| tech（技术改进，只有技术面）
+    pub rtype: String,
+    /// human | qa | employee | goal
+    pub source: String,
+    /// pending（需求池，待评估）| adopted | held（搁置）| rejected
+    pub status: String,
+    pub decision_note: String,
+    /// 人指定的技术要求（硬约束，架构师不能推翻）
+    pub human_tech: String,
+    pub submitted_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,7 +142,7 @@ pub struct SpecView {
     pub requirements_path: String,
     pub design_path: String,
     pub items: Vec<SpecItemRef>,
-    /// writing（规格撰写中）| to_split（规格做完，等负责人拆实现条目）| building（实现中）| delivered（已交付）
+    /// pending / held / rejected（需求池里的状态）；writing（规格撰写中）| to_split（规格做完，等负责人拆实现条目）| building（实现中）| delivered（已交付）
     pub stage: String,
 }
 
@@ -144,7 +159,7 @@ pub fn slugify(title: &str) -> String {
 }
 
 /// 规格条目的说明模板。`change` 为 Some 时是修订：在现有文档上改，并追加变更记录。
-pub fn spec_item_descriptions(slug: &str, title: &str, brief: &str, change: Option<&str>) -> (String, String) {
+pub fn spec_item_descriptions(slug: &str, title: &str, brief: &str, human_tech: &str, rtype: &str, change: Option<&str>) -> (String, String) {
     let dir = spec_dir(slug);
     let rules = "你只写文档：只改 docs/specs 下的 Markdown，不写任何代码。先读项目目标、已有文档和相关代码，没有查证的写“未确认”，不要编造。";
     let (req_head, design_head) = match change {
@@ -158,6 +173,14 @@ pub fn spec_item_descriptions(slug: &str, title: &str, brief: &str, change: Opti
 写成这些小节：## 背景与目标、## 用户故事（作为…我希望…以便…）、## 验收标准（编号 AC-1、AC-2…，每条都要能用一个具体的操作或命令检查，写明输入和期望结果，不要写“体验良好”这类无法检查的话）、## 不做什么、## 待确认的问题。{changelog}");
     let design = format!("{rules}\n{design_head}\
 写成这些小节：## 方案概述、## 涉及的模块和文件（指出具体路径）、## 数据与接口变更、## 实现步骤建议（拆成一名员工一次能做完的小步，标明先后顺序，每步对应哪几条 AC）、## 测试方案（每条 AC 怎么验证）、## 风险与回滚。{changelog}");
+    let design = if human_tech.trim().is_empty() { design } else {
+        format!("{design}\n\n【人指定的技术要求】（硬约束：必须遵守，不能推翻；如果发现它不可行或有明显风险，不要自己改，写进文档的「风险与回滚」和最终说明，交给人决定）\n{}", human_tech.trim())
+    };
+    let req = format!("{req}\n（需求简述里如果夹杂了技术要求，业务部分写进本文档，技术部分留给 design.md。）");
+    if rtype == "tech" {
+        let design = design.replace("（依据已合并的 requirements.md）", "（这是技术改进，没有单独的业务需求文档；## 方案概述里先写清为什么要做、做到什么算完成，验收用可检查的技术结果表达）");
+        return (String::new(), design);
+    }
     (req, design)
 }
 
@@ -166,50 +189,82 @@ pub fn spec_acceptance(slug: &str, file: &str) -> String {
 }
 
 fn row_to_spec(r: &rusqlite::Row<'_>) -> rusqlite::Result<Spec> {
-    Ok(Spec { id: r.get(0)?, project_id: r.get(1)?, slug: r.get(2)?, title: r.get(3)?, brief: r.get(4)?, rounds: r.get(5)?, drafted_rounds: r.get(6)?, created_at: r.get(7)?, updated_at: r.get(8)? })
+    Ok(Spec { id: r.get(0)?, project_id: r.get(1)?, slug: r.get(2)?, title: r.get(3)?, brief: r.get(4)?, rounds: r.get(5)?, drafted_rounds: r.get(6)?, created_at: r.get(7)?, updated_at: r.get(8)?,
+        rtype: r.get(9)?, source: r.get(10)?, status: r.get(11)?, decision_note: r.get(12)?, human_tech: r.get(13)?, submitted_by: r.get(14)? })
 }
-const SPEC_COLS: &str = "id, project_id, slug, title, brief, rounds, drafted_rounds, created_at, updated_at";
+const SPEC_COLS: &str = "id, project_id, slug, title, brief, rounds, drafted_rounds, created_at, updated_at, rtype, source, status, decision_note, human_tech, submitted_by";
 
 impl Db {
     pub fn get_spec(&self, id: &str) -> Result<Option<Spec>> {
-        Ok(self.conn.lock().unwrap().query_row(&format!("SELECT {SPEC_COLS} FROM specs WHERE id = ?1"), [id], row_to_spec).ok())
+        Ok(self.conn.lock().unwrap().query_row(&format!("SELECT {SPEC_COLS} FROM requirements WHERE id = ?1"), [id], row_to_spec).ok())
     }
 
-    /// 新建一个功能规格：建「需求规格」「设计」两个条目（后者依赖前者）。
-    pub fn create_spec(&self, project_id: &str, title: &str, brief: &str, slug: Option<&str>) -> Result<String> {
-        if title.trim().is_empty() { bail!("请写功能名称"); }
-        if brief.trim().is_empty() { bail!("请简要写明这个功能要解决什么问题"); }
+    /// 提交一个需求进需求池（待评估）。业务和技术写在同一个需求里；`human_tech` 是人指定的技术要求（硬约束）。
+    /// `rtype`：feature（业务 + 技术）| tech（技术改进，只有技术面）。
+    pub fn submit_requirement(&self, project_id: &str, title: &str, brief: &str, human_tech: &str, rtype: &str, source: &str, submitted_by: Option<&str>) -> Result<String> {
+        if title.trim().is_empty() { bail!("请写需求名称"); }
+        if brief.trim().is_empty() { bail!("请简要写明要解决什么问题（业务和技术要求都可以写）"); }
+        if !["feature", "tech"].contains(&rtype) { bail!("需求类型只能是 feature 或 tech"); }
+        if !["human", "qa", "employee", "goal"].contains(&source) { bail!("未知的来源：{source}"); }
         self.get_project(project_id)?.context("项目不存在")?;
-        let n: i64 = self.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM specs WHERE project_id = ?1", [project_id], |r| r.get(0))?;
-        let slug = match slug.map(slugify).filter(|s| !s.is_empty()) {
-            Some(s) => s,
-            None => { let s = slugify(title); if s.is_empty() { format!("feature-{}", n + 1) } else { s } }
-        };
+        let n: i64 = self.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM requirements WHERE project_id = ?1", [project_id], |r| r.get(0))?;
+        let slug = { let s = slugify(title); if s.is_empty() { format!("feature-{}", n + 1) } else { s } };
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_ms();
         let dup = self.conn.lock().unwrap().execute(
-            "INSERT INTO specs (id, project_id, slug, title, brief, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6)",
-            params![id, project_id, slug, title.trim(), brief.trim(), now]);
-        if dup.is_err() { bail!("已经有一个目录名为 {slug} 的规格；要改需求请用「修订规格」，或换一个名字"); }
-        self.add_spec_round(&id, None)?;
+            "INSERT INTO requirements (id, project_id, slug, title, brief, rtype, source, status, human_tech, submitted_by, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'pending',?8,?9,?10,?10)",
+            params![id, project_id, slug, title.trim(), brief.trim(), rtype, source, human_tech.trim(), submitted_by, now]);
+        if dup.is_err() { bail!("已经有一个目录名为 {slug} 的需求；要改需求请用「修订」，或换一个名字"); }
+        self.append_event_for(Some(project_id), "requirement_submitted", submitted_by, None, &json!({"requirement_id": id, "text": format!("需求池收到新需求：{}", title.trim())}))?;
+        Ok(id)
+    }
+
+    /// 采纳需求：开始写规格（业务需求 + 技术方案两份文档；技术改进只有设计）。
+    pub fn adopt_requirement(&self, id: &str, note: &str) -> Result<()> {
+        let s = self.get_spec(id)?.context("需求不存在")?;
+        if s.status == "adopted" { bail!("这个需求已经采纳了"); }
+        if s.status == "rejected" { bail!("这个需求已被拒绝；要重新考虑请先提交新的需求"); }
+        self.conn.lock().unwrap().execute("UPDATE requirements SET status = 'adopted', decision_note = ?2, updated_at = ?3 WHERE id = ?1", params![id, note.trim(), now_ms()])?;
+        self.add_spec_round(id, None)?;
+        Ok(())
+    }
+
+    /// 搁置或拒绝需求（必须写原因）。
+    pub fn decide_requirement(&self, id: &str, decision: &str, reason: &str) -> Result<()> {
+        let s = self.get_spec(id)?.context("需求不存在")?;
+        if !["held", "rejected"].contains(&decision) { bail!("只能搁置（held）或拒绝（rejected）"); }
+        if reason.trim().is_empty() { bail!("搁置或拒绝必须写原因"); }
+        if s.status == "adopted" { bail!("已经采纳并开始写规格的需求不能搁置或拒绝，请取消对应的条目"); }
+        self.conn.lock().unwrap().execute("UPDATE requirements SET status = ?2, decision_note = ?3, updated_at = ?4 WHERE id = ?1", params![id, decision, reason.trim(), now_ms()])?;
+        self.append_event_for(Some(&s.project_id), "requirement_decided", None, None, &json!({"requirement_id": id, "decision": decision, "text": format!("需求「{}」{}：{}", s.title, if decision == "held" { "搁置" } else { "拒绝" }, reason.trim())}))?;
+        Ok(())
+    }
+
+    /// 兼容旧入口：提交并直接采纳（人说了算）。
+    pub fn create_spec(&self, project_id: &str, title: &str, brief: &str, slug: Option<&str>) -> Result<String> {
+        let _ = slug;
+        let id = self.submit_requirement(project_id, title, brief, "", "feature", "human", None)?;
+        self.adopt_requirement(&id, "人提交并直接采纳")?;
         Ok(id)
     }
 
     /// 需求迭代：在原规格上再建一轮「修订」条目。
-    pub fn revise_spec(&self, spec_id: &str, change: &str) -> Result<()> {
+    pub fn revise_spec(&self, requirement_id: &str, change: &str) -> Result<()> {
         if change.trim().is_empty() { bail!("请写明需求有什么变化"); }
-        let spec = self.get_spec(spec_id)?.context("规格不存在")?;
+        let spec = self.get_spec(requirement_id)?.context("规格不存在")?;
+        if spec.status != "adopted" { bail!("这个需求还没有采纳，先采纳再修订"); }
         if self.spec_view(&spec)?.stage == "writing" { bail!("这个规格的文档还在撰写中，等它做完再修订，或直接取消那两个条目"); }
-        self.add_spec_round(spec_id, Some(change.trim()))
+        self.add_spec_round(requirement_id, Some(change.trim()))
     }
 
-    fn add_spec_round(&self, spec_id: &str, change: Option<&str>) -> Result<()> {
-        let s = self.get_spec(spec_id)?.context("规格不存在")?;
-        let (req, design) = spec_item_descriptions(&s.slug, &s.title, &s.brief, change);
+    fn add_spec_round(&self, requirement_id: &str, change: Option<&str>) -> Result<()> {
+        let s = self.get_spec(requirement_id)?.context("规格不存在")?;
+        let (req, design) = spec_item_descriptions(&s.slug, &s.title, &s.brief, &s.human_tech, &s.rtype, change);
         let who = self.architects(&s.project_id)?.into_iter().next().map(|m| m.employee_id);
         let rev = if change.is_some() { "修订" } else { "" };
         let mut prev: Option<String> = None;
         for (what, file, desc) in [("需求规格", "requirements.md", req), ("设计", "design.md", design)] {
+            if file == "requirements.md" && s.rtype == "tech" { continue; }
             let deps = prev.iter().cloned().collect();
             let id = self.create_plan_item(&s.project_id, &NewPlanItem {
                 title: format!("{rev}{what}：{}", s.title), description: desc, acceptance: spec_acceptance(&s.slug, file),
@@ -217,32 +272,32 @@ impl Db {
             }, None)?;
             self.set_plan_item_files(&id, &[format!("{}/{file}", spec_dir(&s.slug))])?;
             self.set_plan_item_level(&id, 4)?;
-            self.conn.lock().unwrap().execute("UPDATE plan_items SET spec_id = ?2 WHERE id = ?1", params![id, spec_id])?;
-            self.set_plan_note(&id, "功能规格：先写清需求和验收标准，再据此拆实现条目")?;
+            self.conn.lock().unwrap().execute("UPDATE plan_items SET requirement_id = ?2, source = 'requirement' WHERE id = ?1", params![id, requirement_id])?;
+            self.set_plan_note(&id, "需求规格：先写清需求和验收标准，再据此拆实现条目")?;
             prev = Some(id);
         }
-        self.conn.lock().unwrap().execute("UPDATE specs SET rounds = rounds + 1, updated_at = ?2 WHERE id = ?1", params![spec_id, now_ms()])?;
+        self.conn.lock().unwrap().execute("UPDATE requirements SET rounds = rounds + 1, updated_at = ?2 WHERE id = ?1", params![requirement_id, now_ms()])?;
         self.append_event_for(Some(&s.project_id), if change.is_some() { "spec_revised" } else { "spec_created" }, None, None,
-            &json!({"spec_id": spec_id, "text": format!("{}功能规格「{}」", if change.is_some() { "修订" } else { "新建" }, s.title)}))?;
+            &json!({"requirement_id": requirement_id, "text": format!("{}功能规格「{}」", if change.is_some() { "修订" } else { "新建" }, s.title)}))?;
         Ok(())
     }
 
     /// 给条目挂上规格（负责人按规格拆出的实现条目）。
-    pub fn set_plan_item_spec(&self, item_id: &str, spec_id: &str) -> Result<()> {
-        self.conn.lock().unwrap().execute("UPDATE plan_items SET spec_id = ?2 WHERE id = ?1", params![item_id, spec_id])?;
+    pub fn set_plan_item_spec(&self, item_id: &str, requirement_id: &str) -> Result<()> {
+        self.conn.lock().unwrap().execute("UPDATE plan_items SET requirement_id = ?2 WHERE id = ?1", params![item_id, requirement_id])?;
         Ok(())
     }
 
     /// 条目所属的规格。
     pub fn spec_of_item(&self, item_id: &str) -> Result<Option<Spec>> {
-        let sid: String = self.conn.lock().unwrap().query_row("SELECT spec_id FROM plan_items WHERE id = ?1", [item_id], |r| r.get(0)).unwrap_or_default();
+        let sid: String = self.conn.lock().unwrap().query_row("SELECT requirement_id FROM plan_items WHERE id = ?1", [item_id], |r| r.get(0)).unwrap_or_default();
         if sid.is_empty() { Ok(None) } else { self.get_spec(&sid) }
     }
 
-    fn spec_items(&self, spec_id: &str) -> Result<Vec<SpecItemRef>> {
+    fn spec_items(&self, requirement_id: &str) -> Result<Vec<SpecItemRef>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, title, kind, status FROM plan_items WHERE spec_id = ?1 AND status != 'cancelled' ORDER BY position")?;
-        let rows = stmt.query_map([spec_id], |r| Ok(SpecItemRef { id: r.get(0)?, title: r.get(1)?, kind: r.get(2)?, status: r.get(3)? }))?;
+        let mut stmt = conn.prepare("SELECT id, title, kind, status FROM plan_items WHERE requirement_id = ?1 AND status != 'cancelled' ORDER BY position")?;
+        let rows = stmt.query_map([requirement_id], |r| Ok(SpecItemRef { id: r.get(0)?, title: r.get(1)?, kind: r.get(2)?, status: r.get(3)? }))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -250,7 +305,8 @@ impl Db {
         let items = self.spec_items(&s.id)?;
         let docs_open = items.iter().any(|i| i.kind == SPEC_KIND && i.status != "done");
         let impl_items: Vec<&SpecItemRef> = items.iter().filter(|i| i.kind != SPEC_KIND).collect();
-        let stage = if docs_open { "writing" }
+        let stage = if s.status != "adopted" { s.status.as_str() }
+            else if docs_open { "writing" }
             else if s.drafted_rounds < s.rounds { "to_split" }
             else if impl_items.iter().any(|i| i.status != "done") { "building" }
             else { "delivered" };
@@ -260,7 +316,7 @@ impl Db {
     pub fn list_specs(&self, project_id: &str) -> Result<Vec<SpecView>> {
         let specs: Vec<Spec> = {
             let conn = self.conn.lock().unwrap();
-            let mut stmt = conn.prepare(&format!("SELECT {SPEC_COLS} FROM specs WHERE project_id = ?1 ORDER BY created_at"))?;
+            let mut stmt = conn.prepare(&format!("SELECT {SPEC_COLS} FROM requirements WHERE project_id = ?1 ORDER BY created_at"))?;
             let rows = stmt.query_map([project_id], row_to_spec)?;
             rows.collect::<std::result::Result<_, _>>()?
         };
@@ -272,8 +328,8 @@ impl Db {
         Ok(self.list_specs(project_id)?.into_iter().filter(|v| v.stage == "to_split").map(|v| v.spec).collect())
     }
 
-    pub fn mark_spec_split(&self, spec_id: &str) -> Result<()> {
-        self.conn.lock().unwrap().execute("UPDATE specs SET drafted_rounds = rounds, updated_at = ?2 WHERE id = ?1", params![spec_id, now_ms()])?;
+    pub fn mark_spec_split(&self, requirement_id: &str) -> Result<()> {
+        self.conn.lock().unwrap().execute("UPDATE requirements SET drafted_rounds = rounds, updated_at = ?2 WHERE id = ?1", params![requirement_id, now_ms()])?;
         Ok(())
     }
 }
@@ -421,6 +477,7 @@ impl Db {
             let title = format!("定时：{}", s.title);
             let item = self.create_plan_item(&s.project_id, &NewPlanItem { title: title.clone(), description: s.description.clone(), acceptance: "按说明检查并处理；没发现问题也要在最终说明里写“已检查，无需处理”，并列出检查了什么".into(), kind: s.kind.clone(), module: String::new(), assignee_id: None, deps: vec![] }, None)?;
             self.set_plan_note(&item, &format!("由定时任务「{}」创建", s.title))?;
+            self.mark_unscheduled(&item, "schedule")?;
             self.conn.lock().unwrap().execute("UPDATE schedules SET next_run_at = ?2, last_run_at = ?3, last_item_id = ?4 WHERE id = ?1", params![s.id, next, now, item])?;
             self.append_event_for(Some(&s.project_id), "schedule_fired", None, None, &json!({"schedule_id": s.id, "item_id": item, "text": format!("定时任务「{}」到点，已在计划里建了条目", s.title)}))?;
             fired.push((s.project_id.clone(), s.project_name.clone(), title));
@@ -446,6 +503,12 @@ pub struct ProjectOverview {
     /// 现在就能开始、在等人 / 等自主推进的条目
     pub ready: usize,
     pub bugs_open: usize,
+    /// 修复完成、等复测的 bug 数
+    pub bugs_verify: usize,
+    /// 未排期的条目数
+    pub unscheduled: usize,
+    /// 需求池里待评估的需求数
+    pub pending_requirements: usize,
     pub open_issues: i64,
     pub specs: usize,
     pub schedules: usize,
@@ -470,8 +533,12 @@ impl Db {
             let pid = s.project.id.clone();
             let view = self.plan_view(&pid)?;
             let live_now = live.contains(&pid);
-            let ready = view.items.iter().filter(|i| i.status == "planned" && i.ready).count();
-            let bugs_open = view.items.iter().filter(|i| i.kind == "bugfix" && !matches!(i.status.as_str(), "done" | "cancelled")).count();
+            let ready = view.items.iter().filter(|i| i.status == "planned" && i.ready && i.schedule_state == "scheduled").count();
+            let bugs = self.list_bugs(&pid)?;
+            let bugs_open = bugs.iter().filter(|b| matches!(b.status.as_str(), "open" | "fixing")).count();
+            let bugs_verify = bugs.iter().filter(|b| b.status == "verify").count();
+            let unscheduled = view.items.iter().filter(|i| i.schedule_state == "unscheduled" && i.status == "planned").count();
+            let pending_requirements = self.list_specs(&pid)?.iter().filter(|v| v.spec.status == "pending").count();
             let (open_issues, last_event_at): (i64, Option<i64>) = {
                 let conn = self.conn.lock().unwrap();
                 let n = conn.query_row("SELECT COUNT(*) FROM issues WHERE project_id = ?1 AND status = 'open'", [&pid], |r| r.get(0)).unwrap_or(0);
@@ -483,6 +550,9 @@ impl Db {
             let mut attention = vec![];
             if view.counts.blocked > 0 { attention.push(format!("{} 个条目已阻塞", view.counts.blocked)); }
             if bugs_open > 0 { attention.push(format!("{bugs_open} 个 bug 待修")); }
+            if bugs_verify > 0 { attention.push(format!("{bugs_verify} 个 bug 等复测")); }
+            if unscheduled > 0 { attention.push(format!("{unscheduled} 个条目未排期{}", if live_now { "" } else { "（开始自主推进后负责人会排）" })); }
+            if pending_requirements > 0 { attention.push(format!("{pending_requirements} 个需求待评估")); }
             if view.counts.proposed > 0 { attention.push(format!("{} 个条目待你确认", view.counts.proposed)); }
             if goal_pending.contains(&pid) { attention.push("有目标变更等你批准".into()); }
             if !live_now && ready > 0 { attention.push(format!("{ready} 个条目可以开始，但自主推进没在运行")); }
@@ -490,7 +560,7 @@ impl Db {
             out.push(ProjectOverview {
                 project_id: pid.clone(), name: s.project.name.clone(), lead_name: s.lead_name.clone(), member_count: s.member_count, percent_done: view.percent_done,
                 planned: view.counts.planned, in_progress: view.counts.in_progress, done: view.counts.done, blocked: view.counts.blocked, proposed: view.counts.proposed,
-                ready, bugs_open, open_issues, specs: self.list_specs(&pid)?.len(), schedules: self.list_schedules(Some(&pid))?.iter().filter(|x| x.enabled).count(),
+                ready, bugs_open, bugs_verify, unscheduled, pending_requirements, open_issues, specs: self.list_specs(&pid)?.len(), schedules: self.list_schedules(Some(&pid))?.iter().filter(|x| x.enabled).count(),
                 doing: view.items.iter().filter(|i| i.status == "in_progress").map(|i| i.title.clone()).collect(),
                 last_event_at, last_run, calls_7d: t.turns, cost_7d: t.cost_usd, attention,
             });
@@ -515,19 +585,6 @@ mod tests {
         let db = Db::open_memory().unwrap();
         let p = db.create_project("p", "", "/tmp/p-maint").unwrap().id;
         (db, p)
-    }
-
-    #[test]
-    fn bug_report_becomes_a_bugfix_item_with_a_regression_test_acceptance() {
-        let (db, p) = setup();
-        assert!(db.report_bug(&p, &BugReport { title: "  ".into(), ..Default::default() }).is_err());
-        assert!(db.report_bug(&p, &BugReport { title: "崩溃".into(), ..Default::default() }).is_err(), "没有步骤也没有现象");
-        assert!(db.report_bug(&p, &BugReport { title: "崩溃".into(), actual: "闪退".into(), severity: "huge".into(), ..Default::default() }).is_err());
-        let id = db.report_bug(&p, &BugReport { title: "导出时崩溃".into(), steps: "点导出".into(), expected: "生成文件".into(), actual: "闪退".into(), severity: "major".into(), extra: String::new() }).unwrap();
-        let it = db.get_plan_item(&id).unwrap().unwrap();
-        assert_eq!((it.kind.as_str(), it.status.as_str(), it.title.as_str()), ("bugfix", "planned", "修复：导出时崩溃"));
-        assert!(it.description.contains("严重（主要功能受影响）") && it.description.contains("复现步骤：点导出"));
-        assert!(it.acceptance.contains("修复前失败、修复后通过的自动化测试"));
     }
 
     #[test]
@@ -633,10 +690,14 @@ mod tests {
         let ov = db.company_overview(&[]).unwrap();
         assert_eq!(ov.len(), 1);
         assert!(ov[0].attention.is_empty(), "空项目没有需要关注的");
-        db.report_bug(&p, &BugReport { title: "崩".into(), actual: "闪退".into(), ..Default::default() }).unwrap();
+        db.report_bug(&p, &crate::bugs::NewBug { title: "崩".into(), actual: "闪退".into(), ..Default::default() }).unwrap();
         let ov = &db.company_overview(&[]).unwrap()[0];
-        assert_eq!((ov.bugs_open, ov.ready), (1, 1));
-        assert!(ov.attention.iter().any(|a| a.contains("bug")) && ov.attention.iter().any(|a| a.contains("没在运行")));
+        assert_eq!((ov.bugs_open, ov.unscheduled), (1, 2), "修复和复测两个未排期条目");
+        assert!(ov.attention.iter().any(|a| a.contains("bug")) && ov.attention.iter().any(|a| a.contains("未排期")));
+        db.rule_schedule(&p, None).unwrap();
+        let ov = &db.company_overview(&[]).unwrap()[0];
+        assert_eq!(ov.ready, 1);
+        assert!(ov.attention.iter().any(|a| a.contains("没在运行")));
         let live = &db.company_overview(&[p.clone()]).unwrap()[0];
         assert!(!live.attention.iter().any(|a| a.contains("没在运行")), "自主推进在跑就不提醒");
     }

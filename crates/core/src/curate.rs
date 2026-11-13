@@ -100,7 +100,7 @@ impl Orchestrator {
         for (i, m) in cands.iter().enumerate() {
             p.push_str(&format!("#{} [{}｜{}｜来源 {}] {}：{}\n", i + 1, if m.status == "unverified" { "待验证" } else { "已验证" }, crate::memory::kind_label(&m.kind), m.source_kind, m.title, m.content.chars().take(300).collect::<String>().replace('\n', " ")));
         }
-        p.push_str("\n你可以只读地查看代码核实。规则：只在能从代码或已有决议核实时才验证（写明依据）；过时、被推翻或和代码矛盾的让它过期（写明原因）；意思重复的合并成一条（保留一条、写出合并后的内容）；拿不准就不动，留给人。\
+        p.push_str("\n你可以只读地查看代码核实。规则：只在能从代码或已有决议核实时才验证（写明依据）；过时、被推翻或和代码矛盾的让它过期（写明原因）；和 docs/specs/ 下已定稿的功能规格冲突的，对那个功能以规格为准，让这条记忆过期并写明“与规格《…》冲突”；意思重复的合并成一条（保留一条、写出合并后的内容）；拿不准就不动，留给人。\
 空泛的、只适用于一次性情况的、当前状态描述这类不是经验的条目，让它过期。每次最多 8 条改动。涉及你无法判断的矛盾，用 escalate 交给人。\n");
         p.push_str("只输出一个 JSON 对象，不要任何其他文字：\n{\"ops\":[{\"op\":\"verify\",\"memory\":1,\"reason\":\"依据\"},{\"op\":\"expire\",\"memory\":2,\"reason\":\"原因\"},{\"op\":\"merge\",\"keep\":3,\"drop\":[4],\"content\":\"合并后的内容\"}],\"escalate\":null,\"summary\":\"一句话\"}");
         let cfg = TurnConfig {

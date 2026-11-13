@@ -24,6 +24,7 @@ pub const TEAM_TOOLS_HINT: &str = "[团队协作工具] 你可以使用名字以
 你亲自验证过、值得长期保留的经验，用 propose_memory 提议（需要人类验证后才会生效）。\
 当被要求制定计划（比如把一次大的重构或新项目拆成步骤）时，先用 list_plan 看现有计划，再用 propose_plan 一次提交整份计划：每个条目写清说明和验收标准，用 depends_on 标明先后依赖；人类批准后才会生效。\
 如果你是项目负责人，发现项目目标与现实不符、需要修改，用 propose_goal 提议新的目标全文和理由；它只是提议，人类点头后才生效，被驳回后不要重复提。\
+测试或评审中发现 bug（行为不对、崩溃、回归），用 report_bug 记到 Bug 栏目：写清复现步骤、期望和实际行为，尽量写明出自哪个计划条目（origin_item），并写出「不应改变的行为」；系统会自动安排原开发修复、再安排复测，你不用自己修。复测时发现没修好，用 reopen_bug 说明。\
 不要为琐碎的事提议题，每次任务或会议最多提 3 个。你只能提议，不能拍板。";
 
 const MAX_TITLE: usize = 80;
@@ -116,6 +117,19 @@ fn tools() -> Value {
               "module": str_prop("所属模块或目录，可选"),
               "assignee": str_prop("建议的负责人（项目成员的名字），可选"),
               "depends_on": {"type": "array", "description": "依赖：本次提交里排在前面的条目的序号（从 0 开始），或已有条目的 ID", "items": {}}}}}}}},
+        {"name": "report_bug",
+         "description": "把发现的 bug 记到 Bug 栏目（测试、评审、复测时发现的问题）。系统会自动建修复条目（指派给出问题条目的原开发）和复测条目，你不用自己修。同一个问题不要重复记。",
+         "inputSchema": {"type": "object", "required": ["title", "steps", "actual"], "properties": {
+            "title": str_prop("一句话说明问题，不超过 80 字"),
+            "severity": {"type": "string", "enum": ["blocker", "major", "minor"], "description": "blocker=阻断（不可用 / 数据错误）；major=严重（主要功能受影响）；minor=一般；默认 major"},
+            "steps": str_prop("复现步骤，越具体越好，不超过 600 字"),
+            "expected": str_prop("期望行为"), "actual": str_prop("实际行为（含报错信息）"),
+            "unchanged": str_prop("修这个 bug 时不应该改变的行为（划定回归范围），可选"),
+            "origin_item": str_prop("出自哪个计划条目：条目 ID（来自 list_plan）或标题；写了才能自动指派给原开发，可选"),
+            "extra": str_prop("版本、环境、日志，可选")}}},
+        {"name": "reopen_bug",
+         "description": "复测没通过：bug 回到修复中，系统会再安排一次修复和复测。必须写明你观察到的现象。",
+         "inputSchema": {"type": "object", "required": ["bug", "reason"], "properties": {"bug": str_prop("bug 编号（如 BUG-3）或 ID"), "reason": str_prop("复测发现了什么：步骤和现象")}}},
         {"name": "propose_goal",
          "description": "（仅项目负责人）提议修改项目目标与硬性约束。给出修改后的完整目标和理由；人类确认后才生效，你不能直接改。只有目标确实与现实不符、或需求变化时才提议。",
          "inputSchema": {"type": "object", "required": ["new_goal", "reason"], "properties": {
@@ -189,6 +203,8 @@ impl McpServer {
             "list_plan" => self.list_plan(),
             "propose_plan" => self.propose_plan(a),
             "propose_goal" => self.propose_goal(a),
+            "report_bug" => self.report_bug(a),
+            "reopen_bug" => self.reopen_bug(a),
             other => bail!("未知工具: {other}"),
         }
     }
@@ -321,6 +337,38 @@ impl McpServer {
         self.db.set_issue_status(&issue.id, "pending_decision")?;
         self.record("request_decision", json!({"issue_id": issue.id, "title": issue.title, "note": arg_str(a, "note").unwrap_or("")}));
         Ok(format!("已请求拍板《{}》。有权限的人会收到待办；你不能替他们决定。", issue.title))
+    }
+
+    fn text_arg(a: &Value, k: &str, max: usize) -> String { a[k].as_str().unwrap_or("").trim().chars().take(max).collect() }
+
+    fn report_bug(&self, a: &Value) -> Result<String> {
+        let title = Self::text_arg(a, "title", MAX_TITLE);
+        let me = self.db.list_members(&self.ctx.project_id)?.into_iter().find(|m| m.employee_id == self.ctx.employee_id);
+        // 同一个问题不重复记：未结束的 bug 里有同名的就拒绝
+        if self.db.list_bugs(&self.ctx.project_id)?.iter().any(|b| matches!(b.status.as_str(), "open" | "fixing" | "verify") && b.title.trim() == title) {
+            bail!("已经有一个同名的未结束的 bug 了，不要重复记；如果是复测没通过，请用 reopen_bug");
+        }
+        // 出处：条目 ID，或标题里包含这段文字的条目（优先已完成的）
+        let origin = a["origin_item"].as_str().map(str::trim).filter(|s| !s.is_empty()).and_then(|o| {
+            let items = self.db.plan_view(&self.ctx.project_id).ok()?.items;
+            items.iter().find(|i| i.id == o).or_else(|| items.iter().filter(|i| i.title.contains(o) || o.contains(i.title.as_str())).max_by_key(|i| (i.status == "done") as u8)).map(|i| i.id.clone())
+        });
+        let id = self.db.report_bug(&self.ctx.project_id, &crate::bugs::NewBug {
+            title, severity: Self::text_arg(a, "severity", 10), steps: Self::text_arg(a, "steps", MAX_SUMMARY), expected: Self::text_arg(a, "expected", MAX_SUMMARY),
+            actual: Self::text_arg(a, "actual", MAX_SUMMARY), unchanged: Self::text_arg(a, "unchanged", MAX_SUMMARY), extra: Self::text_arg(a, "extra", MAX_SUMMARY),
+            source: if me.as_ref().is_some_and(|m| m.role == "qa") { "qa".into() } else { "employee".into() }, reporter_id: Some(self.ctx.employee_id.clone()), origin_item_id: origin.clone(), owner_id: None,
+        })?;
+        let b = self.db.get_bug(&id)?.context("bug 没有记下来")?;
+        Ok(format!("已记为 BUG-{}（P{}）。{}修复和复测条目已建好，等负责人排期；你不用自己修。", b.seq, b.priority,
+            match (&b.owner_name, origin.is_some()) { (Some(n), _) => format!("默认由 {n} 修复。"), (None, true) => "出处条目的开发已不在项目里，由负责人指派。".to_string(), (None, false) => "没写出处，修复由负责人指派。".to_string() }))
+    }
+
+    fn reopen_bug(&self, a: &Value) -> Result<String> {
+        let key = Self::text_arg(a, "bug", 60);
+        let bugs = self.db.list_bugs(&self.ctx.project_id)?;
+        let b = bugs.iter().find(|b| b.id == key || format!("BUG-{}", b.seq).eq_ignore_ascii_case(&key)).context("找不到这个 bug，请用 BUG-编号")?;
+        self.db.reopen_bug(&b.id, &Self::text_arg(a, "reason", MAX_SUMMARY))?;
+        Ok(format!("BUG-{} 已重开，会再安排修复和复测。", b.seq))
     }
 
     fn list_plan(&self) -> Result<String> {
@@ -573,7 +621,7 @@ mod tests {
         assert!(s.handle(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"})).unwrap()["result"].is_object());
         let list = s.handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["list_issues", "propose_issue", "add_option", "request_decision", "list_plan", "propose_plan", "propose_goal", "propose_memory"]);
+        assert_eq!(names, vec!["list_issues", "propose_issue", "add_option", "request_decision", "list_plan", "propose_plan", "report_bug", "reopen_bug", "propose_goal", "propose_memory"]);
         assert!(!names.contains(&"decide_issue"), "AI 没有拍板工具");
         for t in list["result"]["tools"].as_array().unwrap() {
             assert_eq!(t["inputSchema"]["type"], "object", "每个工具都有合法的 schema");
@@ -730,6 +778,28 @@ mod tests {
         assert!(call(&s, "propose_memory", json!({"content": "集成测试前必须先启动 Redis 缓存服务"})).1.contains("完全相同"));
         assert!(call(&s, "propose_memory", json!({"content": "字".repeat(601)})).1.contains("太长"));
         assert!(call(&s, "propose_memory", json!({"content": "y", "kind": "rumor"})).1.contains("未知的记忆类型"));
+    }
+
+    #[test]
+    fn report_bug_records_a_bug_for_the_original_developer_and_rejects_duplicates_and_early_reopen() {
+        let (db, a, b, p) = setup();
+        // 出处条目：bob 做的
+        let origin = db.create_plan_item(&p, &crate::plan::NewPlanItem { title: "实现导出".into(), assignee_id: Some(b.clone()), ..Default::default() }, None).unwrap();
+        let s = server(&db, &a, &p, "task:1");
+        let (err, text) = call(&s, "report_bug", json!({"title": "导出崩溃", "steps": "点导出", "actual": "闪退", "origin_item": "导出", "unchanged": "导入正常"}));
+        assert!(!err, "{text}");
+        assert!(text.contains("BUG-1") && text.contains("bob"), "默认由出处条目的开发 bob 修：{text}");
+        let bug = &db.list_bugs(&p).unwrap()[0];
+        assert_eq!((bug.source.as_str(), bug.owner_name.as_deref(), bug.origin_item_id.as_deref()), ("employee", Some("bob"), Some(origin.as_str())));
+        let (e2, t2) = call(&s, "report_bug", json!({"title": "导出崩溃", "steps": "x", "actual": "y"}));
+        assert!(e2 && t2.contains("重复"), "{t2}");
+        let (e3, t3) = call(&s, "report_bug", json!({"title": "缺少步骤", "actual": ""}));
+        assert!(e3, "{t3}");
+        // 还没修好就复测重开：拒绝
+        let (e4, t4) = call(&s, "reopen_bug", json!({"bug": "BUG-1", "reason": "仍然崩溃"}));
+        assert!(!e4 || t4.contains("修复后"), "{t4}");
+        let (e5, _) = call(&s, "reopen_bug", json!({"bug": "BUG-9", "reason": "x"}));
+        assert!(e5, "找不到的 bug");
     }
 
     #[test]
