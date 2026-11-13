@@ -81,6 +81,15 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 }
             });
+            // 没在自主推进的项目：每 5 分钟给未排期的条目排一次期
+            let backlog_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                loop {
+                    commands::backlog_tick(&backlog_handle).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -226,6 +235,7 @@ pub fn run() {
             commands::update_employee,
             commands::archive_employee,
             commands::rename_employee,
+            commands::handover_candidates,
             commands::handover_prepare,
             commands::handover_execute,
             commands::set_employee_level_cap,

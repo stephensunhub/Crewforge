@@ -121,6 +121,12 @@ fn guard_handover(state: &AppState, project_id: &str, from_id: &str, to_id: &str
     Ok(())
 }
 
+/// 能接手这位员工角色的人：只有同一类岗位的（架构 / 测试 / 开发 / 负责人 …）。
+#[tauri::command]
+pub fn handover_candidates(state: State<'_, AppState>, from_id: String) -> CmdResult<Vec<crewforge_core::db::Employee>> {
+    state.db.handover_candidates(&from_id).map_err(err)
+}
+
 /// 准备交接：系统整理的状态快照，加上（可选）让原员工自己写一份摘要。本地模型上可能要几分钟（最长 5 分钟）。
 #[tauri::command]
 pub async fn handover_prepare(state: State<'_, AppState>, project_id: String, from_id: String, to_id: String, role: String, ask_summary: bool) -> CmdResult<crewforge_core::handover::HandoverPrep> {
@@ -1919,6 +1925,48 @@ pub fn delete_schedule(state: State<'_, AppState>, id: String) -> CmdResult<()> 
 pub fn company_overview(state: State<'_, AppState>) -> CmdResult<Vec<crewforge_core::maintenance::ProjectOverview>> {
     let live: Vec<String> = state.autopilots.lock().unwrap().keys().cloned().collect();
     state.db.company_overview(&live).map_err(err)
+}
+
+/// 没有在跑自主推进的项目，也给未排期的条目（和待评估的需求）排期：每 5 分钟看一次。
+/// 同一批未排期条目只排一次（负责人没排的不反复问），条目有变化或隔了一小时才再排。
+pub async fn backlog_tick(app: &AppHandle) {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use tauri::Manager;
+    static LAST: OnceLock<Mutex<HashMap<String, (String, i64)>>> = OnceLock::new();
+    let last = LAST.get_or_init(|| Mutex::new(HashMap::new()));
+    let st = app.state::<AppState>();
+    for p in st.db.list_projects().unwrap_or_default().into_iter().filter(|p| p.status == "active") {
+        if st.autopilots.lock().unwrap().contains_key(&p.id) { continue; }
+        let mut ids: Vec<String> = st.db.unscheduled_items(&p.id).map(|v| v.into_iter().map(|i| i.id).collect()).unwrap_or_default();
+        ids.sort();
+        let members = st.db.list_members(&p.id).unwrap_or_default();
+        let lead_id = members.iter().find(|m| m.role == "lead").map(|m| m.employee_id.clone());
+        let pending = if lead_id.is_some() { st.db.list_specs(&p.id).map(|v| v.iter().filter(|s| s.spec.status == "pending").count()).unwrap_or(0) } else { 0 };
+        if ids.is_empty() && pending == 0 { continue; }
+        let sig = format!("{}|{pending}", ids.join(","));
+        let now = crewforge_core::db::now_ms();
+        if let Some((s, t)) = last.lock().unwrap().get(&p.id) { if *s == sig && now - *t < 3_600_000 { continue; } }
+        let Some(lead_id) = lead_id else {
+            let _ = st.db.rule_schedule(&p.id, None);
+            last.lock().unwrap().insert(p.id.clone(), (sig, now));
+            continue;
+        };
+        let Ok(Some(lead)) = st.db.employee_by_id(&lead_id) else { continue };
+        if st.busy.lock().unwrap().contains(&lead.name) { continue; }
+        if !st.busy.lock().unwrap().insert(format!("schedule:{}", p.id)) { continue; }
+        last.lock().unwrap().insert(p.id.clone(), (sig, now));
+        let approver = UiApprover { app: app.clone(), pending: st.pending.clone(), project_id: Some(p.id.clone()) };
+        let res = async {
+            let _permit = st.sched.acquire_interactive().await.map_err(|e| anyhow::anyhow!(e))?;
+            let _b = st.busy.lock().unwrap().insert(lead.name.clone());
+            let r = st.orch.lead_schedule(&p.id, &lead, &approver).await;
+            st.busy.lock().unwrap().remove(&lead.name);
+            r
+        }.await;
+        st.busy.lock().unwrap().remove(&format!("schedule:{}", p.id));
+        if res.is_err() { let _ = st.db.rule_schedule(&p.id, None); }
+    }
 }
 
 /// 定时任务：到点的各建一个计划条目，并发系统通知（条目在计划里，等自主推进来做）。
