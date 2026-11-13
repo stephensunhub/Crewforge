@@ -496,6 +496,26 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         self.db().list_members(&self.project_id).unwrap_or_default().into_iter().filter_map(|m| self.db().employee_by_id(&m.employee_id).ok().flatten().map(|e| (e, m.role))).collect()
     }
 
+    /// `pick` 没选出人时，说明为什么（写进自主推进的记录，免得从外面看只是"没动静"）。
+    fn why_not_picked(&self, item: &PlanItem, busy: &HashSet<String>) -> String {
+        let ms = self.members();
+        let repo = self.repo.to_string_lossy().into_owned();
+        let human_busy = self.busy.lock().unwrap().clone();
+        let why_busy = |e: &Employee| -> String {
+            if let Some(t) = self.db().active_task(&e.id, &repo).ok().flatten().filter(|t| item.task_id.as_deref() != Some(t.id.as_str())) {
+                format!("{} 手上还有进行中的任务《{}》（可能是上次被打断留下的），做完或放弃后才能派", e.name, t.title)
+            } else if busy.contains(&e.id) { format!("{} 正在做本批次的别的条目", e.name) }
+            else if human_busy.contains(&e.name) { format!("{} 正在忙别的（对话、整理或会议）", e.name) }
+            else { format!("{} 暂时不能接", e.name) }
+        };
+        if let Some(a) = &item.assignee_id {
+            if let Some((e, _)) = ms.iter().find(|(e, _)| &e.id == a) { return format!("指派给 {}，{}", e.name, why_busy(e)); }
+        }
+        let capable: Vec<&Employee> = ms.iter().filter(|(_, r)| r != "architect").map(|(e, _)| e).collect();
+        if capable.is_empty() { return "项目里没有可做实现的成员".into(); }
+        format!("没有空闲且够格的员工（{}）", capable.iter().map(|e| why_busy(e)).collect::<Vec<_>>().join("；"))
+    }
+
     fn pick(&self, item: &PlanItem, busy: &HashSet<String>) -> Option<Employee> {
         let ms_all = self.members();
         let human_busy = self.busy.lock().unwrap().clone();
@@ -1209,6 +1229,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         let mut level_fails: std::collections::HashMap<String, u32> = Default::default();
         // 因为「员工手上还有别的任务」这类瞬时冲突没派成的条目：不算失败，等下一次有条目做完（条件可能变了）再派
         let mut deferred: HashSet<String> = HashSet::new();
+        let last_skip = std::sync::Mutex::new(String::new());
         let mut escalation: Option<String> = None;
         let (status, reason) = loop {
             if self.ctl.stop.load(Ordering::SeqCst) { break ("stopped", "你停止了推进".to_string()); }
@@ -1283,13 +1304,29 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 // 预计会改同一个文件的条目不并行（并行必然合并冲突，每次解决要多花调用）
                 let files = self.db().plan_files(&self.project_id).unwrap_or_default();
                 let mut claimed: HashSet<String> = running.iter().filter_map(|id| files.get(id)).flatten().cloned().collect();
+                let mut skipped: Vec<String> = vec![];
                 for it in &ready {
                     let mine = files.get(&it.id).cloned().unwrap_or_default();
-                    if mine.iter().any(|f| claimed.contains(f)) { continue; }
+                    if mine.iter().any(|f| claimed.contains(f)) {
+                        skipped.push(format!("《{}》：预计和正在做的条目改同一批文件，错开做", it.title));
+                        continue;
+                    }
                     if let Some(emp) = self.pick(it, &busy) {
                         busy.insert(emp.id.clone());
                         claimed.extend(mine);
                         starts.push((it.id.clone(), emp));
+                    } else {
+                        skipped.push(format!("《{}》：{}", it.title, self.why_not_picked(it, &busy)));
+                    }
+                }
+                // 有就绪的条目没派出去时记下原因（内容没变就不重复记）
+                if !skipped.is_empty() {
+                    let more = skipped.len().saturating_sub(6);
+                    let mut text = format!("{} 个就绪条目暂时没派出去：{}", skipped.len(), skipped.iter().take(6).cloned().collect::<Vec<_>>().join("；"));
+                    if more > 0 { text.push_str(&format!("；另有 {more} 个"));  }
+                    if *last_skip.lock().unwrap() != text {
+                        *last_skip.lock().unwrap() = text.clone();
+                        self.say("autopilot_step", text);
                     }
                 }
                 for (id, emp) in starts {
