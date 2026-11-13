@@ -21,7 +21,7 @@ npm run tauri dev                                    # 开发运行（beforeDevC
 - `cargo test` 遇到第一个失败的测试二进制就会停下，后面的不会跑；汇总用 `cargo test -p crewforge-core 2>&1 | grep "^test result"`。
 - `crates/cli/tests/real_*.rs` 是 `#[ignore]` 的真实 Claude/Copilot 测试，**会消耗额度**，只在需要时跑：`cargo test -p crewforge-cli --test real_ruling -- --ignored --nocapture`。
 - macOS 的 `sed -i` 必须带后缀参数（`sed -i.bak ...`），否则表达式会被当成后缀。
-- 装到本机的应用拒绝打开比它自己新的数据库。改了数据库结构或界面后，要用 `install-mac.sh` 重装才能在应用里看到。**装之前先确认没有员工在干活**（重启会打断他们），重装必须走脚本：Tauri 打出的包只有链接器的临时签名，Info.plist 没绑定，macOS 的"本地网络"授权（访问局域网里的 Ollama 需要）不会生效。
+- 装到本机的应用拒绝打开比它自己新的数据库。改了数据库结构或界面后，要用 `install-mac.sh` 重装才能在应用里看到。脚本在构建完、退出旧应用之前会等没有员工进程（`claude -p`）才继续（最多 1 小时，`CREWFORGE_FORCE=1` 跳过），因为重启会打断员工；重装必须走脚本：Tauri 打出的包只有链接器的临时签名，Info.plist 没绑定，macOS 的"本地网络"授权（访问局域网里的 Ollama 需要）不会生效。
 
 ## 架构
 
