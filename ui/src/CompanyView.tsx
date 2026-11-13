@@ -260,7 +260,14 @@ export function CompanyView({
                     <b>{c.employee.name}</b>{c.employee.number > 0 && <span className="hint" style={{ marginLeft: 6 }} title="员工编号：按创建顺序，不会变">#{c.employee.number}</span>}
                     <div className="hint">{c.employee.role}{c.employee.provider === "copilot" && <span className="badge" style={{ marginLeft: 6 }}>Copilot</span>}{c.employee.endpoint_id && <span className="badge" style={{ marginLeft: 6 }} title="连的是自定义 LLM 端点，不是本机 Claude 订阅">本地模型</span>}{c.employee.model && <span className="badge" style={{ marginLeft: 6 }}>{c.employee.model}</span>}</div>
                   </div>
-                  <span className={`status ${busy ? "run" : ""}`}>{busy ? "● 工作中" : "○ 空闲"}</span>
+                  {(() => {
+                    // 徽标看所在项目的完结情况，不看员工现在有没有在跑（实时的活动在下面一行）
+                    const open = unfinishedProjects(c).length;
+                    const [cls, text, tip] = c.projects.length === 0 ? ["", "○ 未参与项目", "还没加入任何项目"]
+                      : open > 0 ? ["run", "● 项目进行中", `${open} 个未完结的项目`]
+                      : ["", "✓ 项目已完结", "所在的项目都已完结"];
+                    return <span className={`status ${cls}`} title={tip}>{text}</span>;
+                  })()}
                 </div>
                 {busy && <ActivityLine a={activities.find((x) => x.employee === c.employee.name)} showProject onOpen={onOpenWork} />}
                 <div className="card-persona">{c.employee.persona}</div>
