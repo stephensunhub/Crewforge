@@ -176,6 +176,7 @@ mod tests {
             conn.execute("ALTER TABLE employees DROP COLUMN number", []).unwrap();
             conn.execute("ALTER TABLE employees DROP COLUMN level_cap", []).unwrap();
             conn.execute("ALTER TABLE plan_items DROP COLUMN level", []).unwrap();
+            conn.execute_batch("ALTER TABLE plan_items DROP COLUMN spec_id; DROP TABLE specs; DROP TABLE schedules;").unwrap();
             conn.pragma_update(None, "user_version", 23).unwrap();
         }
         let db = Db::open(d.path()).unwrap();

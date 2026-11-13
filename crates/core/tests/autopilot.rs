@@ -876,7 +876,7 @@ async fn other_items_wait_for_the_design_and_design_items_may_only_change_docs()
     assert_ne!(r2.status, "finished", "{r2:?}");
     let d1 = e2.db.plan_view(&e2.pid).unwrap().items.into_iter().find(|i| i.kind == "design" && i.title.contains("架构设计")).unwrap();
     assert_ne!(d1.status, "done", "改了代码文件的设计条目不能算完成：{d1:?}");
-    assert!(count_events(&e2, "autopilot_step", "设计类条目只能改文档，但改了这些非文档文件：main.go") >= 1, "验证失败要说明改了哪些非文档文件");
+    assert!(count_events(&e2, "autopilot_step", "设计 / 规格类条目只能改文档，但改了这些非文档文件：main.go") >= 1, "验证失败要说明改了哪些非文档文件");
     assert!(!e2.repo.join("main.go").exists(), "代码文件没有合并进主分支");
 }
 
@@ -1031,4 +1031,52 @@ async fn an_employee_with_another_active_task_is_skipped_not_failed_and_orphan_t
     assert_eq!(t.status, "done", "{r:?}");
     let doer = e.db.get_task(t.task_id.as_deref().unwrap()).unwrap().unwrap().employee_id;
     assert_ne!(doer, alice.id, "alice 手上还有别的任务，X 不该派给她");
+}
+
+#[tokio::test]
+async fn bug_reports_jump_the_queue_and_are_not_held_back_by_the_design_phase() {
+    use crewforge_core::maintenance::BugReport;
+    let text = |x: &crewforge_core::db::EventRow| x.payload["text"].as_str().unwrap_or("").to_string();
+    // 1) 排在计划里原有的条目前面：A、B、C 都在，bug 最后才报告，但最先开始
+    let e = setup().await;
+    let bug = e.db.report_bug(&e.pid, &BugReport { title: "登录闪退".into(), steps: "点登录".into(), actual: "闪退".into(), severity: "blocker".into(), ..Default::default() }).unwrap();
+    let r = run(&e, 200, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    assert_eq!(e.db.get_plan_item(&bug).unwrap().unwrap().status, "done");
+    let events = e.db.recent_events(2000).unwrap();
+    let starts: Vec<String> = events.iter().filter(|x| x.kind == "autopilot_step" && text(x).starts_with("派《")).map(|x| text(x)).collect();
+    assert!(starts[0].starts_with("派《修复：登录闪退》"), "bug 最先开始：{starts:?}");
+    // 2) 设计阶段还没做完时，bug 也不用等
+    let e2 = setup().await;
+    with_architect(&e2);
+    e2.db.create_design_items(&e2.pid, false).unwrap();
+    let bug2 = e2.db.report_bug(&e2.pid, &BugReport { title: "线上崩溃".into(), actual: "崩溃".into(), ..Default::default() }).unwrap();
+    let waiting = e2.db.plan_waiting(&e2.pid, &Default::default(), true).unwrap();
+    assert!(waiting.get(&bug2).map(|w| !w.iter().any(|x| x.contains("等架构师"))).unwrap_or(true), "bug 条目不该显示在等设计：{:?}", waiting.get(&bug2));
+    // 不要求整批跑完：两个任务并行时会开站会，假 CLI 会把站会提示里的设计任务说明当成要写文档的指令，是测试替身的干扰
+    let _ = run(&e2, 400, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(e2.db.get_plan_item(&bug2).unwrap().unwrap().status, "done");
+    let events = e2.db.recent_events(3000).unwrap();
+    let first_bug = events.iter().position(|x| x.kind == "autopilot_step" && text(x).starts_with("派《修复：线上崩溃》")).unwrap();
+    let first_design_merge = events.iter().position(|x| x.kind == "autopilot_merged" && text(x).contains("架构设计")).unwrap_or(usize::MAX);
+    assert!(first_bug < first_design_merge, "设计还没合并，bug 就已经开始了（{first_bug} < {first_design_merge}）");
+}
+
+#[tokio::test]
+async fn a_feature_spec_is_written_then_the_lead_splits_it_into_implementation_items_that_point_to_it() {
+    let e = setup().await;
+    for id in &e.ids { e.db.set_plan_status(id, "cancelled", "测试").unwrap(); }
+    e.db.set_project_goal(&e.pid, "做一个小工具").unwrap();
+    std::fs::write(e._d.path().join("bin").join("final_add_once"), "").unwrap();
+    let sid = e.db.create_spec(&e.pid, "导出 CSV", "把列表导出成 CSV 文件", None).unwrap();
+    let r = run(&e, 400, Arc::new(AutopilotCtl::default())).await;
+    assert_eq!(r.status, "finished", "{r:?}");
+    let v = e.db.list_specs(&e.pid).unwrap();
+    assert_eq!((v.len(), v[0].stage.as_str()), (1, "delivered"), "{:?}", v[0]);
+    let kinds: Vec<(String, String)> = v[0].items.iter().map(|i| (i.kind.clone(), i.status.clone())).collect();
+    assert_eq!(kinds.iter().filter(|(k, _)| k == "spec").count(), 2);
+    assert!(kinds.iter().filter(|(k, _)| k != "spec").count() >= 3, "负责人按规格拆出了实现条目：{kinds:?}");
+    assert!(kinds.iter().all(|(_, s)| s == "done"));
+    assert_eq!(count_events(&e, "autopilot_plan_changed", "按规格「导出 CSV」拆出"), 1, "只拆一次");
+    assert!(e.db.get_spec(&sid).unwrap().unwrap().drafted_rounds == 1);
 }

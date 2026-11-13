@@ -380,3 +380,16 @@ export interface InterventionReport { items: Intervention[]; counts: [string, st
 
 export interface HandoverPrep { snapshot: string; model_summary: string | null; warnings: string[]; summary_note: string }
 export interface HandoverReport { from: string; to: string; role: string; moved_plan_items: number; moved_actions: number; unassigned_plan_items: number; unassigned_actions: number; moved_issues: number; moved_meetings: number; abandoned: string[]; warnings: string[] }
+
+export interface BugInput { title: string; steps: string; expected: string; actual: string; severity: string; extra: string }
+export interface Spec { id: string; project_id: string; slug: string; title: string; brief: string; rounds: number; drafted_rounds: number; created_at: number; updated_at: number }
+export interface SpecView { spec: Spec; requirements_path: string; design_path: string; items: { id: string; title: string; kind: string; status: string }[]; stage: "writing" | "to_split" | "building" | "delivered" }
+export interface Schedule {
+  id: string; project_id: string; project_name: string; title: string; description: string; kind: string; cadence: "daily" | "weekly"; weekday: number; hour: number;
+  enabled: boolean; next_run_at: number; last_run_at: number | null; last_item_id: string | null; last_item_status: string | null;
+}
+export interface ProjectOverview {
+  project_id: string; name: string; lead_name: string | null; member_count: number; percent_done: number;
+  planned: number; in_progress: number; done: number; blocked: number; proposed: number; ready: number; bugs_open: number; open_issues: number; specs: number; schedules: number;
+  doing: string[]; last_event_at: number | null; last_run: AutopilotRun | null; calls_7d: number; cost_7d: number; attention: string[];
+}

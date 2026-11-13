@@ -1763,3 +1763,72 @@ pub fn get_autopilot_config(state: State<'_, AppState>, project_id: String) -> C
 pub fn set_autopilot_config(state: State<'_, AppState>, project_id: String, max_calls: i64, max_minutes: i64, auto_continue: bool, max_batches: i64, standup_blocks: bool) -> CmdResult<()> {
     state.db.set_autopilot_config(&project_id, &crewforge_core::autopilot::AutopilotConfig { max_calls, max_minutes, auto_continue, max_batches, standup_blocks }).map_err(err)
 }
+
+
+// ───────────── 长期维护：bug、功能规格、定时任务、公司总览 ─────────────
+
+#[derive(serde::Deserialize)]
+pub struct BugInput { pub title: String, pub steps: String, pub expected: String, pub actual: String, pub severity: String, pub extra: String }
+
+#[tauri::command]
+pub fn report_bug(state: State<'_, AppState>, project_id: String, bug: BugInput) -> CmdResult<String> {
+    state.db.report_bug(&project_id, &crewforge_core::maintenance::BugReport { title: bug.title, steps: bug.steps, expected: bug.expected, actual: bug.actual, severity: bug.severity, extra: bug.extra }).map_err(err)
+}
+
+#[tauri::command]
+pub fn list_specs(state: State<'_, AppState>, project_id: String) -> CmdResult<Vec<crewforge_core::maintenance::SpecView>> {
+    state.db.list_specs(&project_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn create_spec(state: State<'_, AppState>, project_id: String, title: String, brief: String) -> CmdResult<String> {
+    state.db.create_spec(&project_id, &title, &brief, None).map_err(err)
+}
+
+#[tauri::command]
+pub fn revise_spec(state: State<'_, AppState>, spec_id: String, change: String) -> CmdResult<()> {
+    state.db.revise_spec(&spec_id, &change).map_err(err)
+}
+
+#[tauri::command]
+pub fn list_schedules(state: State<'_, AppState>, project_id: Option<String>) -> CmdResult<Vec<crewforge_core::maintenance::Schedule>> {
+    state.db.list_schedules(project_id.as_deref()).map_err(err)
+}
+
+#[tauri::command]
+pub fn schedule_presets() -> Vec<(String, String, String, String)> {
+    crewforge_core::maintenance::SCHEDULE_PRESETS.iter().map(|(a, b, c, d)| (a.to_string(), b.to_string(), c.to_string(), d.to_string())).collect()
+}
+
+#[tauri::command]
+pub fn add_schedule(state: State<'_, AppState>, project_id: String, title: String, description: String, kind: String, cadence: String, weekday: i64, hour: i64) -> CmdResult<String> {
+    state.db.add_schedule(&project_id, &title, &description, &kind, &cadence, weekday, hour).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_schedule_enabled(state: State<'_, AppState>, id: String, enabled: bool) -> CmdResult<()> {
+    state.db.set_schedule_enabled(&id, enabled).map_err(err)
+}
+
+#[tauri::command]
+pub fn delete_schedule(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.db.delete_schedule(&id).map_err(err)
+}
+
+#[tauri::command]
+pub fn company_overview(state: State<'_, AppState>) -> CmdResult<Vec<crewforge_core::maintenance::ProjectOverview>> {
+    let live: Vec<String> = state.autopilots.lock().unwrap().keys().cloned().collect();
+    state.db.company_overview(&live).map_err(err)
+}
+
+/// 定时任务：到点的各建一个计划条目，并发系统通知（条目在计划里，等自主推进来做）。
+pub async fn schedule_tick(app: &AppHandle) {
+    use tauri::Manager;
+    let st = app.state::<AppState>();
+    let Ok(fired) = st.db.run_due_schedules(crewforge_core::db::now_ms()) else { return };
+    for (_, project, title) in fired {
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ");
+        let script = format!("display notification \"{}\" with title \"Crewforge：{}\"", esc(&format!("已在计划里建了「{title}」，开始自主推进后会处理")), esc(&project));
+        let _ = tokio::process::Command::new("osascript").args(["-e", &script]).output().await;
+    }
+}

@@ -128,9 +128,9 @@ impl Db {
         Ok(ids)
     }
 
-    /// 计划里有没有设计之外的（未取消的）条目。
+    /// 计划里有没有实现条目（不算设计、bug 修复和规格文档条目：它们不是“按设计拆出来的计划”）。
     pub fn has_implementation_items(&self, project_id: &str) -> Result<bool> {
-        Ok(self.plan_view(project_id)?.items.iter().any(|i| i.kind != DESIGN_KIND && i.status != "cancelled"))
+        Ok(self.plan_view(project_id)?.items.iter().any(|i| !matches!(i.kind.as_str(), DESIGN_KIND | "bugfix" | "spec") && i.status != "cancelled"))
     }
 }
 

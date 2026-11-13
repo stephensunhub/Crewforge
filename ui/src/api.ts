@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
+import type { BugInput, SpecView, Schedule, ProjectOverview } from "./types";
 import type {
   RenameReport, HandoverPrep, HandoverReport,
   ApprovalReq, Company, Employee, EmployeeCard, EventRow, Member, MergeOutcome, Project,
@@ -150,6 +151,18 @@ export const api = {
   unverifiedCounts: () => invoke<[string, string, number][]>("unverified_counts"),
   previewRetrieval: (projectId: string | null, employeeId: string, text: string) =>
     invoke<Memory[]>("preview_retrieval", { projectId, employeeId, text }),
+  // 长期维护：bug、功能规格、定时任务、公司总览
+  reportBug: (projectId: string, bug: BugInput) => invoke<string>("report_bug", { projectId, bug }),
+  listSpecs: (projectId: string) => invoke<SpecView[]>("list_specs", { projectId }),
+  createSpec: (projectId: string, title: string, brief: string) => invoke<string>("create_spec", { projectId, title, brief }),
+  reviseSpec: (specId: string, change: string) => invoke<void>("revise_spec", { specId, change }),
+  listSchedules: (projectId: string | null) => invoke<Schedule[]>("list_schedules", { projectId }),
+  schedulePresets: () => invoke<[string, string, string, string][]>("schedule_presets"),
+  addSchedule: (projectId: string, title: string, description: string, kind: string, cadence: string, weekday: number, hour: number) =>
+    invoke<string>("add_schedule", { projectId, title, description, kind, cadence, weekday, hour }),
+  setScheduleEnabled: (id: string, enabled: boolean) => invoke<void>("set_schedule_enabled", { id, enabled }),
+  deleteSchedule: (id: string) => invoke<void>("delete_schedule", { id }),
+  companyOverview: () => invoke<ProjectOverview[]>("company_overview"),
   // 计划
   planView: (projectId: string) => invoke<PlanViewData>("plan_view", { projectId }),
   createPlanItem: (projectId: string, item: PlanItemInput) => invoke<string>("create_plan_item", { projectId, item }),

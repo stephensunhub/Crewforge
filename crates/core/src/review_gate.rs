@@ -44,6 +44,11 @@ pub fn forced_review_reason(files: &[FileChange]) -> Option<String> {
     }
 }
 
+/// bug 修复的改动里有没有测试文件：路径里带 test / spec 的算（tests/、*_test.go、*.spec.ts、__tests__ 都包含）。
+pub fn bugfix_without_test(files: &[FileChange]) -> bool {
+    !files.iter().any(|f| { let p = f.path.to_lowercase(); p.contains("test") || p.contains("spec") })
+}
+
 /// 小到不值得调用负责人的改动：总改动 ≤ TRIVIAL_MAX_LINES 行，且（全是文档文件，或改动的每一行都是注释/空行）。
 /// 负责人带着几万字上下文判断一个 3 行的注释订正，实测要 3.9 分钟，比看一眼 diff 还慢。
 pub const TRIVIAL_MAX_LINES: u32 = 10;

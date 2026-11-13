@@ -6,13 +6,14 @@ import { ActivityLine, Avatar, Field, Modal, Placeholder, basename } from "./com
 import { MemoryView } from "./MemoryView";
 import { endpointOfSrc, endpointToInput, providerOfSrc, replaceName, srcOf } from "./llm";
 import { EmployeeLog } from "./EmployeeLog";
+import { OverviewView } from "./OverviewView";
 import { InterventionsView } from "./InterventionsView";
 import type { ProjectTab } from "./ProjectView";
 import type { Activity, Company, Endpoint, EmployeeCard, EventRow, ModelsOverview, ProjectSummary } from "./types";
 
-export type CompanyTab = "employees" | "projects" | "interventions" | "memory" | "docs" | "manage";
+export type CompanyTab = "overview" | "employees" | "projects" | "interventions" | "memory" | "docs" | "manage";
 export const COMPANY_TABS: [CompanyTab, string][] = [
-  ["employees", "员工"], ["projects", "项目"], ["interventions", "人工介入"], ["memory", "记忆"], ["docs", "文档"], ["manage", "管理"],
+  ["overview", "总览"], ["employees", "员工"], ["projects", "项目"], ["interventions", "人工介入"], ["memory", "记忆"], ["docs", "文档"], ["manage", "管理"],
 ];
 
 const ROLES = ["全栈工程师", "QA 测试工程师", "架构师 / CTO", "其他"];
@@ -274,6 +275,8 @@ export function CompanyView({
       </div>
     );
   }
+
+  if (tab === "overview") return <OverviewView running={running} events={events} onOpenProject={(id, t) => onOpenProject(id, t as ProjectTab)} onError={onError} />;
 
   if (tab === "projects") {
     return (

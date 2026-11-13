@@ -264,6 +264,11 @@ impl Orchestrator {
 
     /// 让负责人起草计划。条目进入“提议中”，等人在开始自主推进时确认。返回新增的条目数。
     pub async fn lead_draft_plan<A: Approver>(&self, project_id: &str, lead: &Employee, approver: &A) -> Result<usize> {
+        self.lead_draft_plan_for(project_id, lead, None, approver).await
+    }
+
+    /// 起草计划；`spec` 不为空时，只为这个功能规格拆实现条目（条目会挂上规格，实现要满足规格里的验收标准）。
+    pub async fn lead_draft_plan_for<A: Approver>(&self, project_id: &str, lead: &Employee, spec: Option<&crate::maintenance::Spec>, approver: &A) -> Result<usize> {
         let project = self.db.get_project(project_id)?.context("项目不存在")?;
         let members = self.db.list_members(project_id)?;
         let existing = self.db.plan_view(project_id)?;
@@ -276,6 +281,9 @@ impl Orchestrator {
         }
         p.push_str(&format!("\n项目目标与硬性约束：\n{}\n", project.goal.trim()));
         p.push_str(&self.design_docs_block(project_id).await);
+        if let Some(sp) = spec {
+            p.push_str(&format!("\n这次只为功能「{}」拆实现条目（不要动计划里其他功能的事）。它的规格文档如下，条目要覆盖其中的验收标准（AC-n），并在条目说明里写明各自对应哪几条 AC；设计文档里“实现步骤建议”可以作为拆分的依据：\n{}", sp.title, self.spec_docs_block(sp).await));
+        }
         if let Some(scan) = self.db.latest_scan(project_id)? {
             p.push_str(&format!("\n项目扫描结果：\n{}\n", summarize_scan(&scan)));
         }
@@ -309,6 +317,7 @@ impl Orchestrator {
             let id = self.db.create_plan_item(project_id, &NewPlanItem { title: d.title.clone(), description: d.description.clone(), acceptance: d.acceptance.clone(), kind: "migrate".into(), module: String::new(), assignee_id: aid, deps }, Some(&lead.id))?;
             self.db.set_plan_item_files(&id, &d.files)?;
             self.db.set_plan_item_level(&id, d.level)?;
+            if let Some(sp) = spec { self.db.set_plan_item_spec(&id, &sp.id)?; }
             ids.push(id);
         }
         self.db.append_event_for(Some(project_id), "plan_drafted_by_lead", Some(&lead.id), None, &json!({"count": ids.len(), "text": format!("{} 起草了 {} 个计划条目，等你确认", lead.name, ids.len())}))?;

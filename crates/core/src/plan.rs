@@ -70,7 +70,19 @@ CREATE TABLE plan_deps (
 );
 "#;
 
-pub const PLAN_KINDS: &[&str] = &["characterize", "migrate", "cleanup", "other", "design"];
+/// bugfix = 修 bug（先复现、找根因、最小修复、补回归测试）；spec = 功能规格文档（需求 / 设计，只改 docs/specs）。
+pub const PLAN_KINDS: &[&str] = &["characterize", "migrate", "cleanup", "other", "design", "bugfix", "spec"];
+
+/// bug 修复条目的派活要求（替换通用要求）。
+pub const BUGFIX_RULES: &str = "要求：这是一个 bug 修复，按顺序做：\
+1) 复现：先按说明复现问题；能写成自动化测试的，先写一个现在会失败的测试，确认失败原因就是报告的现象（复现不了就如实说明，不要硬猜着改）；\
+2) 找根因：读相关代码，找到问题真正的原因，不要只在症状处打补丁；\
+3) 最小修复：只改必须改的地方，不顺手重构、不改无关代码；\
+4) 回归测试：让第 1 步的测试通过，并运行全部测试确认没有别的东西坏掉；确实无法自动化测试的，在说明里写清原因和手工验证步骤；\
+5) 最终说明里依次写：根因（一两句）、怎么修的、加了什么测试、是否还有同类问题可能出现在别处。";
+
+/// 规格文档条目的派活要求。
+pub const SPEC_RULES: &str = "要求：这是功能规格文档条目，只改说明里指定的 docs/specs 下的 Markdown，不写任何代码；写完自检：每条验收标准是否都能用具体的操作或命令检查、有没有和已有文档或代码现状矛盾；最终说明里列出你不确定、需要人确认的地方。";
 const MAX_ITEMS_PER_PROJECT: i64 = 300;
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -263,7 +275,7 @@ impl Db {
                 "proposed" => why.push("待确认：你批准计划（或开始自主推进）之后才会开始".into()),
                 "blocked" => why.push(if it.note.is_empty() { "已阻塞".into() } else { format!("已阻塞：{}", it.note) }),
                 "planned" => {
-                    if design_open && it.kind != crate::design::DESIGN_KIND {
+                    if design_open && it.kind != crate::design::DESIGN_KIND && it.kind != "bugfix" {
                         why.push("等架构师完成设计：设计条目都做完，其他条目才会开始".into());
                     }
                     if !it.waiting_for.is_empty() {
@@ -561,7 +573,14 @@ impl Orchestrator {
         if !item.acceptance.is_empty() {
             p.push_str(&format!("验收标准：{}\n", item.acceptance));
         }
-        p.push_str("要求：先阅读相关代码和测试；只做这一个条目，不要顺手处理计划外的事；小步修改，改完运行测试和项目约定的检查确认通过，并简要说明做了什么、有什么没做。");
+        match item.kind.as_str() {
+            "bugfix" => p.push_str(BUGFIX_RULES),
+            crate::maintenance::SPEC_KIND => p.push_str(SPEC_RULES),
+            _ => p.push_str("要求：先阅读相关代码和测试；只做这一个条目，不要顺手处理计划外的事；小步修改，改完运行测试和项目约定的检查确认通过，并简要说明做了什么、有什么没做。"),
+        }
+        if item.kind != crate::maintenance::SPEC_KIND {
+            if let Some(spec) = self.db.spec_of_item(&item.id)? { p.push_str(&crate::maintenance::spec_prompt_note(&spec)); }
+        }
         if resuming {
             p.push_str("\n[系统提示] 这个条目上次做到一半被中断（例如应用重启）。你的分支和工作区还在：先用只读方式（git status、git log、读文件）核对已经完成的部分，再接着做，不要重做已完成的内容。");
         }

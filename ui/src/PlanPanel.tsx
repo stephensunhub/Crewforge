@@ -4,7 +4,7 @@ import { Field, Modal, ReasonButton } from "./common";
 import type { EventRow, GoalProposal, Member, PlanItem, PlanItemInput, PlanViewData, Project } from "./types";
 
 const STATUS: Record<string, string> = { proposed: "待确认", planned: "待开始", in_progress: "进行中", done: "已完成", blocked: "已阻塞", cancelled: "已取消" };
-const KIND: Record<string, string> = { characterize: "补特征测试", migrate: "迁移/实现", cleanup: "清理", other: "其他", design: "设计（架构师）" };
+const KIND: Record<string, string> = { characterize: "补特征测试", migrate: "迁移/实现", cleanup: "清理", other: "其他", design: "设计（架构师）", bugfix: "Bug 修复", spec: "功能规格" };
 const GOAL_TEMPLATES: [string, string][] = [
   ["技术栈升级（业务不变）", "把现有系统迁移到新的技术栈。业务行为必须保持不变：对外接口、数据格式和可观察的输出都不能改变。\n每一步都要有测试或输出对照来证明行为没变；先补特征测试，再迁移；小步提交，每次只动一个模块。"],
   ["新项目", "从零实现这个项目。技术栈：（写在这里）。要求：一条命令就能运行；核心逻辑有自动化测试；README 写明如何运行和测试。"],

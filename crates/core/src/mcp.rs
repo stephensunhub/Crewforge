@@ -112,7 +112,7 @@ fn tools() -> Value {
               "description": str_prop("要做什么、范围和注意事项，不超过 600 字"),
               "level": {"type": "integer", "minimum": 1, "maximum": 5, "description": "等级 1–5：按完成它需要的推理、联想和记忆来定。1 机械改动（单文件、规格明确）· 2 简单（同模块少量改动）· 3 中等（多文件、要读懂现有代码）· 4 较难（跨模块、接口与数据流）· 5 最难（架构取舍、并发、迁移、疑难 bug）。拿不准就往高定"},
               "acceptance": str_prop("验收标准：做到什么算完成，最好能用命令验证，不超过 400 字"),
-              "kind": {"type": "string", "enum": PLAN_KINDS, "description": "characterize=补特征测试；migrate=迁移/实现；cleanup=清理；other=其他，默认 migrate"},
+              "kind": {"type": "string", "enum": PLAN_KINDS, "description": "characterize=补特征测试；migrate=迁移/实现；cleanup=清理；other=其他；bugfix=修 bug（先复现、找根因、补回归测试）；spec=功能规格文档（只改 docs/specs）；默认 migrate"},
               "module": str_prop("所属模块或目录，可选"),
               "assignee": str_prop("建议的负责人（项目成员的名字），可选"),
               "depends_on": {"type": "array", "description": "依赖：本次提交里排在前面的条目的序号（从 0 开始），或已有条目的 ID", "items": {}}}}}}}},

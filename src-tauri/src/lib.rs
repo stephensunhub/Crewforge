@@ -72,6 +72,15 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 }
             });
+            // 定时任务：每分钟看一次有没有到点的，到点就在计划里建条目
+            let sched_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+                loop {
+                    commands::schedule_tick(&sched_handle).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -81,6 +90,16 @@ pub fn run() {
             commands::action_counts,
             commands::dispatch_action_item,
             commands::plan_view,
+            commands::report_bug,
+            commands::list_specs,
+            commands::create_spec,
+            commands::revise_spec,
+            commands::list_schedules,
+            commands::schedule_presets,
+            commands::add_schedule,
+            commands::set_schedule_enabled,
+            commands::delete_schedule,
+            commands::company_overview,
             commands::create_plan_item,
             commands::update_plan_item,
             commands::move_plan_item,

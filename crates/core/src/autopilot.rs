@@ -512,6 +512,10 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             }
             return archs.into_iter().find(|e| !busy_for(e)).cloned();
         }
+        // 规格文档条目：有空闲的架构师就给架构师（需求和设计是 TA 的强项），否则按普通条目找别人写
+        if item.kind == crate::maintenance::SPEC_KIND && has_architect {
+            if let Some(a) = ms_all.iter().filter(|(_, r)| r == "architect").map(|(e, _)| e).find(|e| !busy_for(e)) { return Some(a.clone()); }
+        }
         let ms: Vec<(Employee, String)> = ms_all.into_iter().filter(|(_, r)| r != "architect").collect();
         if let Some(a) = &item.assignee_id {
             // 指定的人还在项目里：只能是 TA（忙就等）；已经不在项目里（移出、归档）或是架构师（架构师不做实现）：当作未指定，按角色重新选人，不能永远卡住
@@ -594,11 +598,11 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
     /// 验证一个进行中的任务：有基线就与基线对比（引入新失败或无法确认都算不通过），否则直接构建测试。
     /// 条目的验证：设计条目不跑构建和测试，只检查有没有改到文档以外的文件；其他条目照常验证。
     async fn verify_item(&self, task: &Task, item: &PlanItem) -> (bool, String) {
-        if item.kind != crate::design::DESIGN_KIND { return self.verify(task).await; }
+        if item.kind != crate::design::DESIGN_KIND && item.kind != crate::maintenance::SPEC_KIND { return self.verify(task).await; }
         let files = self.orch.ws.changed_files(std::path::Path::new(&task.worktree_path), &task.base_commit).await.unwrap_or_default();
         let bad = crate::design::non_doc_changes(&files);
-        if bad.is_empty() { (true, "设计条目：只改了文档".into()) } else {
-            (false, format!("设计类条目只能改文档，但改了这些非文档文件：{}。请撤销这些改动（git checkout 还原或删除），只保留文档。", bad.join("、")))
+        if bad.is_empty() { (true, "文档条目：只改了文档".into()) } else {
+            (false, format!("设计 / 规格类条目只能改文档，但改了这些非文档文件：{}。请撤销这些改动（git checkout 还原或删除），只保留文档。", bad.join("、")))
         }
     }
 
@@ -706,6 +710,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 let (need, why) = match self.orch.ws.changed_files(std::path::Path::new(&task.worktree_path), &task.base_commit).await {
                     Err(e) => (true, format!("读不到改动统计（{e}），无法判断，按评审处理")),
                     Ok(files) if files.is_empty() => (true, "没有读到任何改动，无法判断，按评审处理".to_string()),
+                    Ok(files) if item.kind == "bugfix" && crate::review_gate::bugfix_without_test(&files) => (true, "bug 修复没有改动任何测试文件，评审时要核对是否需要回归测试、说明里的理由是否成立".to_string()),
                     Ok(files) => {
                         let diff = self.orch.ws.diff(std::path::Path::new(&task.worktree_path), &task.base_commit, 30_000).await.unwrap_or_default();
                         // 改动很大（必须评审）或很小（直接不评审）都不调用模型，也不占调度许可、不计预算
@@ -930,6 +935,23 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         }
     }
 
+    /// 负责人按功能规格拆实现条目并批准。成功返回 true。
+    async fn split_spec(&self, sp: &crate::maintenance::Spec) -> bool {
+        let Some(lead) = self.lead() else { return false };
+        self.say("autopilot_step", format!("功能规格「{}」的文档做完了，{} 按规格拆实现条目", sp.title, lead.name));
+        let _p = self.permit_for(Some(&lead)).await;
+        let _busy = self.busy_scope(&lead.name);
+        match self.orch.lead_draft_plan_for(&self.project_id, &lead, Some(sp), &*self.approver).await {
+            Ok(n) => {
+                let approved = self.db().approve_proposed_plan(&self.project_id).unwrap_or(0);
+                let _ = self.db().mark_spec_split(&sp.id);
+                self.say("autopilot_plan_changed", format!("{} 按规格「{}」拆出 {n} 个实现条目，已批准（{approved} 个开始生效）", lead.name, sp.title));
+                true
+            }
+            Err(e) => { self.say("autopilot_step", format!("按规格「{}」拆条目没有完成：{e}", sp.title)); false }
+        }
+    }
+
     fn lead(&self) -> Option<Employee> {
         self.members().into_iter().find(|(_, r)| r == "lead").map(|(e, _)| e)
     }
@@ -1132,6 +1154,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             }
         }
         let mut drafted_after_design = false;
+        let mut spec_tried: HashSet<String> = HashSet::new();
         let mut set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
         let (mut running, mut failed): (HashSet<String>, HashSet<String>) = Default::default();
         let mut ruled: HashSet<String> = HashSet::new();
@@ -1170,6 +1193,15 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 }
                 if let Ok(v) = self.db().plan_view(&self.project_id) { view = v; }
             }
+            // 功能规格的文档都做完了、还没拆实现条目：负责人按规格拆，并直接批准
+            if set.is_empty() && !paused && budget.is_none() && self.lead().is_some() {
+                let mut split_any = false;
+                for sp in self.db().specs_to_split(&self.project_id).unwrap_or_default() {
+                    if !spec_tried.insert(format!("{}#{}", sp.id, sp.rounds)) { continue; }
+                    split_any |= self.split_spec(&sp).await;
+                }
+                if split_any { if let Ok(v) = self.db().plan_view(&self.project_id) { view = v; } }
+            }
             if view.items.iter().filter(|i| i.status != "cancelled").all(|i| i.status == "done") {
                 // 做完后让负责人对照目标复盘一次：还有必要的工作就追加，继续推进
                 if !final_review_done && !paused && budget.is_none() && human.is_none() && set.is_empty() {
@@ -1196,7 +1228,10 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                 let mut busy = busy;
                 // 设计阶段：项目里有架构师时，设计条目没做完，其他条目不开始
                 let design_open = matches!(self.db().design_phase(&self.project_id), Ok(crate::design::DesignPhase::Pending(_)));
-                let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id) && !deferred.contains(&i.id) && (!design_open || i.kind == crate::design::DESIGN_KIND)).cloned().collect();
+                let ready: Vec<PlanItem> = view.items.iter().filter(|i| i.status == "planned" && i.ready && !running.contains(&i.id) && !failed.contains(&i.id) && !deferred.contains(&i.id) && (!design_open || i.kind == crate::design::DESIGN_KIND || i.kind == "bugfix")).cloned().collect();
+                // bug 修复排在最前面（线上问题优先于新功能），其余保持计划顺序
+                let mut ready = ready;
+                ready.sort_by_key(|i| i.kind != "bugfix");
                 let mut starts: Vec<(String, Employee)> = vec![];
                 // 预计会改同一个文件的条目不并行（并行必然合并冲突，每次解决要多花调用）
                 let files = self.db().plan_files(&self.project_id).unwrap_or_default();
