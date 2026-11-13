@@ -402,7 +402,7 @@ export interface SpecView {
 }
 export interface TimelineRow {
   item: PlanItem; scheduled_at: number | null; trigger: string | null; reason: string | null; finished_at: number | null;
-  requirement_title: string | null; bug_label: string | null; bug_priority: number | null;
+  requirement_title: string | null; bug_label: string | null; bug_priority: number | null; deps_below: string[];
 }
 export interface TimelineView { scheduled: TimelineRow[]; unscheduled: TimelineRow[]; pending_requirements: number }
 export interface Schedule {

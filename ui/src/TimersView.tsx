@@ -27,7 +27,7 @@ export function TimersView({ projectId, events, onOpenMeeting, onError, onChange
         <div><h2>定时器</h2><div className="hint">项目里所有定时运行的东西都在这里：<b>对齐会</b>（防止大家做着做着偏离目标），和下面预置好的<b>检查类定时任务</b>。预置的默认全部关闭，由你决定启用哪些。检查任务到点会在计划里建一个<b>未排期</b>的条目，由负责人排期；应用没开着错过的时间点不补建。</div></div>
         <button className="btn primary" onClick={() => setModal(true)}>＋ 新建定时任务</button>
       </div>
-      <section className="maint-sec"><h3>对齐会</h3><AlignBox projectId={projectId} events={events} onOpenMeeting={onOpenMeeting} onError={onError} /></section>
+      <section className="maint-sec"><AlignBox projectId={projectId} events={events} onOpenMeeting={onOpenMeeting} onError={onError} /></section>
       <h3 style={{ margin: "6px 0" }}>检查类定时任务</h3>
       {scheds.map((s) => (
         <div className="maint-row" key={s.id}>

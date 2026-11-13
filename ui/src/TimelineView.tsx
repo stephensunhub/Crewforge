@@ -28,6 +28,8 @@ export function TimelineView({ projectId, members, events, onGoTab, onError, onC
   const rows = tl.scheduled.map((r, i) => ({ r, seq: i + 1 }));
   const passes = ({ r }: { r: TimelineRow }) => (show === "all" || (show === "done" ? r.item.status === "done" : r.item.status !== "done")) && (!role || roleOf(r.item.assignee_id) === role);
   const shown = rows.filter(passes);
+  const hidden = rows.length - shown.length;
+  const flagged = rows.filter(({ r }) => r.deps_below.length > 0 && r.item.status !== "done").length;
   const movable = rows.filter(({ r }) => r.item.status === "planned");
   const swap = (id: string, dir: -1 | 1) => {
     const i = movable.findIndex(({ r }) => r.item.id === id); const j = i + dir;
@@ -59,10 +61,11 @@ export function TimelineView({ projectId, members, events, onGoTab, onError, onC
             <select value={role} onChange={(e) => setRole(e.target.value)}><option value="">所有角色</option>{Object.entries(ROLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
           </div></div>
         {shown.length === 0 && <div className="hint maint-empty">没有符合条件的条目。</div>}
+        {(hidden > 0 || flagged > 0) && <div className="hint" style={{ marginBottom: 4 }}>{show === "todo" && hidden > 0 ? `已隐藏 ${hidden} 个已完成的条目（序号按当前显示的行重新数）。` : hidden > 0 ? `按筛选隐藏了 ${hidden} 个条目。` : ""}{flagged > 0 ? ` ⚠ 有 ${flagged} 行的前置排在它下面，下次负责人排期时会自动纠正。` : ""}</div>}
         <table className="tbl">
           <thead><tr><th>#</th><th>排入时间</th><th>事项</th><th>类型</th><th>负责人</th><th>前置</th><th>状态</th><th>阻碍</th><th>触发 / 原因</th><th></th></tr></thead>
           <tbody>
-            {shown.map(({ r, seq }) => { const { w, st } = cell(r); return (
+            {shown.map(({ r }, idx) => { const seq = idx + 1; const { w, st } = cell(r); return (
               <tr key={r.item.id} className={r.item.status === "done" ? "tbl-done" : ""}>
                 <td>{seq}</td>
                 <td className="hint">{clock(r.scheduled_at)}</td>
@@ -71,7 +74,8 @@ export function TimelineView({ projectId, members, events, onGoTab, onError, onC
                   {r.requirement_title && <span className="hint">（需求：{r.requirement_title}）</span>}</td>
                 <td>{KIND[r.item.kind] ?? r.item.kind}</td>
                 <td>{r.item.assignee_name ?? "—"}<span className="hint">{roleOf(r.item.assignee_id) ? `（${ROLE[roleOf(r.item.assignee_id)] ?? ""}）` : ""}</span></td>
-                <td className="hint">{r.item.deps.length === 0 ? "—" : r.item.waiting_for.length ? `等：${r.item.waiting_for.join("、")}` : "已满足"}</td>
+                <td className="hint">{r.item.deps.length === 0 ? "—" : r.item.waiting_for.length ? `等：${r.item.waiting_for.join("、")}` : "已满足"}
+                  {r.deps_below.length > 0 && <div className="tl-block" title="前置条目排在这一行的下面：自主推进不受影响（前置没做完就不会开始），但表的顺序不对。下次负责人排期时会自动纠正，也可以把前置往上移。">⚠ 前置排在下面：{r.deps_below.join("、")}</div>}</td>
                 <td><span className={`badge ps-${r.item.status}`}>{st}</span></td>
                 <td className={w.length ? "tl-block" : "hint"}>{r.item.status === "done" ? "—" : w.length ? w.join("；") : "无"}</td>
                 <td className="hint" title={r.reason ?? ""}>{r.trigger ?? "原有条目"}{r.reason ? `：${r.reason.slice(0, 30)}` : ""}</td>

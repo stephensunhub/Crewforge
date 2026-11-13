@@ -96,6 +96,8 @@ pub struct TimelineRow {
     pub requirement_title: Option<String>,
     pub bug_label: Option<String>,
     pub bug_priority: Option<i64>,
+    /// 前置条目排在它下面（顺序有问题）的标题；空 = 顺序没问题。自主推进不受影响（前置没做完就不会开始），只是表看起来不对
+    pub deps_below: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -166,6 +168,7 @@ impl Db {
             self.record_schedule(project_id, &it.id, "排入", "规则兜底", &match prio_of(it) { Some(p) => format!("bug 优先级 P{p}，按规则排入"), None => "按计划顺序追加".into() }, None)?;
             n += 1;
         }
+        self.fix_order_for_deps(project_id)?;
         Ok(n)
     }
 
@@ -180,6 +183,30 @@ impl Db {
             conn.execute("UPDATE plan_items SET position = ?2 WHERE id = ?1", params![b, px])?;
         }
         self.record_schedule(&x.project_id, a, "人调整", "人调整", &format!("和《{}》互换了先后", y.title), None)
+    }
+
+    /// 保证先后顺序和依赖一致：已排期、还没开始的条目里，前置一定排在后置前面（稳定排序：没有依赖冲突的条目保持原来的先后）。
+    /// 返回位置变了的条目数。
+    pub fn fix_order_for_deps(&self, project_id: &str) -> Result<usize> {
+        let view = self.plan_view(project_id)?;
+        let items: Vec<&PlanItem> = view.items.iter().filter(|i| i.schedule_state == "scheduled" && i.status == "planned").collect();
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        let mut out: Vec<&PlanItem> = Vec::with_capacity(items.len());
+        let mut placed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut rest: Vec<&PlanItem> = items.clone();
+        while !rest.is_empty() {
+            // 取最靠前的、所有（在这批里的）前置都已放好的条目；有环（理论上不会）时按原顺序放，避免死循环
+            let k = rest.iter().position(|i| i.deps.iter().all(|d| !ids.contains(&d.as_str()) || placed.contains(d.as_str()))).unwrap_or(0);
+            let it = rest.remove(k);
+            placed.insert(it.id.as_str());
+            out.push(it);
+        }
+        let moved = out.iter().zip(items.iter()).filter(|(a, b)| a.id != b.id).count();
+        if moved > 0 {
+            let order: Vec<String> = out.iter().map(|i| i.id.clone()).collect();
+            self.reorder_items(&order)?;
+        }
+        Ok(moved)
     }
 
     /// 人把条目拖回未排期。
@@ -213,8 +240,10 @@ impl Db {
         };
         let reqs: HashMap<String, String> = self.list_specs(project_id)?.into_iter().map(|v| (v.spec.id, v.spec.title)).collect();
         let bugs: HashMap<String, (i64, i64)> = self.list_bugs(project_id)?.into_iter().map(|b| (b.id, (b.seq, b.priority))).collect();
+        let pos: HashMap<String, (i64, &str)> = view.items.iter().map(|i| (i.id.clone(), (i.position, i.status.as_str()))).collect();
+        let title: HashMap<String, String> = view.items.iter().map(|i| (i.id.clone(), i.title.clone())).collect();
         let (mut scheduled, mut unscheduled) = (vec![], vec![]);
-        for it in view.items {
+        for it in view.items.clone() {
             if it.status == "cancelled" { continue; }
             let e = entries.get(&it.id);
             let row = TimelineRow {
@@ -222,6 +251,7 @@ impl Db {
                 finished_at: if it.status == "done" { updated.get(&it.id).copied() } else { None },
                 requirement_title: reqs.get(&it.requirement_id).cloned(),
                 bug_label: bugs.get(&it.bug_id).map(|b| format!("BUG-{}", b.0)), bug_priority: bugs.get(&it.bug_id).map(|b| b.1),
+                deps_below: it.deps.iter().filter_map(|d| pos.get(d.as_str()).filter(|(p, st)| *p > it.position && !matches!(*st, "done" | "cancelled")).map(|_| title.get(d.as_str()).cloned().unwrap_or_default())).collect(),
                 item: it,
             };
             if row.item.schedule_state == "unscheduled" && row.item.status != "done" { unscheduled.push(row); } else { scheduled.push(row); }
@@ -377,6 +407,8 @@ impl Orchestrator {
         // 没被提到的未排期条目：按规则追加
         let leftover: Vec<String> = ids_in_call.iter().filter(|id| self.db.get_plan_item(id).ok().flatten().is_some_and(|i| i.schedule_state == "unscheduled" && i.status == "planned")).cloned().collect();
         if !leftover.is_empty() { out.by_rule = self.db.rule_schedule(project_id, Some(&leftover))?; }
+        // 前置必须排在后置前面（负责人设了前置、但顺序没跟上时由代码纠正）
+        out.reordered += self.db.fix_order_for_deps(project_id)?;
         self.finish_schedule_event(project_id, lead, &out)?;
         Ok(Some(out))
     }
@@ -462,6 +494,27 @@ mod tests {
         let tl = db.timeline_view(&p).unwrap();
         assert_eq!((tl.scheduled.len(), tl.scheduled[0].trigger.as_deref()), (1, Some("人调整")));
         db.set_plan_status(&a, "in_progress", "").unwrap_err();
+    }
+
+    #[test]
+    fn prerequisites_are_always_ordered_before_the_items_that_wait_for_them() {
+        let (db, p) = setup();
+        let ids: Vec<String> = ["A", "B", "C", "D"].iter().map(|t| item(&db, &p, t)).collect();
+        // A 等 C，D 等 A：现在的顺序 A B C D 里 C 在 A 下面
+        db.set_plan_deps(&ids[0], &[ids[2].clone()]).unwrap();
+        db.set_plan_deps(&ids[3], &[ids[0].clone()]).unwrap();
+        let tl = db.timeline_view(&p).unwrap();
+        assert_eq!(tl.scheduled[0].deps_below, vec!["C".to_string()], "A 的前置 C 排在它下面");
+        assert!(tl.scheduled[3].deps_below.is_empty());
+        assert_eq!(db.fix_order_for_deps(&p).unwrap(), 3, "三个位置变了：B、C、A");
+        let order: Vec<String> = db.plan_view(&p).unwrap().items.into_iter().map(|i| i.title).collect();
+        assert_eq!(order, vec!["B", "C", "A", "D"], "稳定排序：A 等 C，所以先放 B、再放 C、再放 A，D 在最后");
+        assert!(db.timeline_view(&p).unwrap().scheduled.iter().all(|r| r.deps_below.is_empty()));
+        assert_eq!(db.fix_order_for_deps(&p).unwrap(), 0, "已经一致就不动");
+        // 已完成的前置不算问题
+        db.set_plan_status(&ids[2], "done", "").unwrap();
+        db.move_plan_item(&ids[2], 3).unwrap();
+        assert!(db.timeline_view(&p).unwrap().scheduled.iter().all(|r| r.deps_below.is_empty()));
     }
 
     #[test]
