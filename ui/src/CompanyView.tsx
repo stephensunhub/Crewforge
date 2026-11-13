@@ -18,24 +18,27 @@ export const COMPANY_TABS: [CompanyTab, string][] = [
 
 const ROLES = ["全栈工程师", "QA 测试工程师", "架构师 / CTO", "其他"];
 
-function EmployeeForm({ initial, onSubmit, onClose, onError }: {
+function EmployeeForm({ initial, prefill, onSubmit, onClose, onError }: {
+  /** 复制员工：用已有员工的设置预填，但仍按「新员工」创建 */
+  prefill?: { from: string; name: string; role: string; persona: string; provider: string; model: string; endpointId: string | null; levelCap: number };
   initial?: { name: string; number?: number; levelCap?: number; effectiveCap?: number; role: string; persona: string; provider?: string; model?: string; endpointId?: string | null };
   onSubmit: (name: string, role: string, persona: string, provider: string, model: string, endpointId: string, levelCap: number) => Promise<void>;
   onClose: () => void;
   onError: (m: string) => void;
 }) {
-  const [name, setName] = useState(initial?.name ?? "");
-  const [role, setRole] = useState(initial?.role ?? ROLES[0]);
-  const [persona, setPersona] = useState(initial?.persona ?? "");
-  const [src, setSrc] = useState(srcOf(initial?.provider ?? "claude", initial?.endpointId));
+  const seed = initial ?? prefill;
+  const [name, setName] = useState(seed?.name ?? "");
+  const [role, setRole] = useState(seed?.role ?? ROLES[0]);
+  const [persona, setPersona] = useState(seed?.persona ?? "");
+  const [src, setSrc] = useState(srcOf(seed?.provider ?? "claude", seed?.endpointId));
   const provider = providerOfSrc(src);
   const epId = endpointOfSrc(src);
-  const [model, setModel] = useState(initial?.model ?? "");
+  const [model, setModel] = useState(seed?.model ?? "");
   const [fetched, setFetched] = useState<string[]>([]);
   const [fetching, setFetching] = useState(false);
   const [fetchNote, setFetchNote] = useState("");
   const [other, setOther] = useState(false);
-  const [levelCap, setLevelCap] = useState(initial?.levelCap ?? 0);
+  const [levelCap, setLevelCap] = useState(seed?.levelCap ?? 0);
   const [busy, setBusy] = useState(false);
   const [cat, setCat] = useState<ModelsOverview | null>(null);
   const [eps, setEps] = useState<Endpoint[]>([]);
@@ -55,8 +58,9 @@ function EmployeeForm({ initial, onSubmit, onClose, onError }: {
   ];
   const valid = name.trim() !== "" && !/[\s@]/.test(name);
   return (
-    <Modal title={initial ? `编辑 ${initial.name}${initial.number ? `（#${initial.number}）` : ""}` : "新员工"} onClose={onClose}>
+    <Modal title={initial ? `编辑 ${initial.name}${initial.number ? `（#${initial.number}）` : ""}` : prefill ? `复制 ${prefill.from}` : "新员工"} onClose={onClose}>
       <div className="form">
+        {prefill && <div className="hint" style={{ marginBottom: 6 }}>按 {prefill.from} 的设置新建一名员工：职称、身份说明、LLM 通道、模型和能力上限都带过来，改个名字即可。TA 的会话、个人记忆、项目成员关系不会复制，新员工从空白开始。</div>}
         <Field label="名称" hint={initial
           ? (name.trim() !== initial.name ? "改名要求 TA 空闲、所在项目的自主推进没在运行。会把 TA 的工作区目录一起搬到新名字下、身份说明里的旧名字换成新名字；历史记录（聊天、纪要、记忆）里的旧名字不改，旧消息里的 @旧名 以后不再指向 TA。" : `编号 #${initial.number}（按创建顺序，不会变）。名字可以修改，改名时会有提示。`)
           : "不含空格和 @。创建后可以改名，但要求 TA 空闲。"}>
@@ -165,6 +169,25 @@ function ProjectForm({ onSubmit, onClose }: { onSubmit: (name: string, desc: str
   );
 }
 
+/** 按员工的职称归类（职称是自由文本，按关键字判断；判断不了的放「其他」）。 */
+const ROLE_GROUPS: [string, RegExp][] = [
+  ["架构", /架构|architect|cto/i],
+  ["测试", /qa|测试|质检|test/i],
+  ["评审", /评审|review/i],
+  ["负责人 / 管理", /负责人|经理|主管|组长|lead|manager/i],
+  ["开发", /开发|工程师|程序|developer|engineer|dev/i],
+];
+function groupByRole(cards: EmployeeCard[]): [string, EmployeeCard[]][] {
+  const out = new Map<string, EmployeeCard[]>(ROLE_GROUPS.map(([g]) => [g, []]).concat([["其他", []]]) as [string, EmployeeCard[]][]);
+  for (const c of cards) {
+    const g = ROLE_GROUPS.find(([, re]) => re.test(c.employee.role))?.[0] ?? "其他";
+    out.get(g)!.push(c);
+  }
+  // 固定顺序：负责人、架构、开发、测试、评审、其他；空组不显示
+  const order = ["负责人 / 管理", "架构", "开发", "测试", "评审", "其他"];
+  return order.map((g) => [g, out.get(g) ?? []] as [string, EmployeeCard[]]).filter(([, v]) => v.length > 0);
+}
+
 export function CompanyView({
   tab, cards, projects, company, running, activities, onOpenWork, events, onOpenProject, onGoScope, onChanged, onError,
 }: {
@@ -182,12 +205,24 @@ export function CompanyView({
   onError: (m: string) => void;
 }) {
   const [caps, setCaps] = useState<Record<string, number>>({});
-  const [modal, setModal] = useState<"new-emp" | "new-proj" | { edit: EmployeeCard } | { memory: EmployeeCard } | { log: EmployeeCard } | null>(null);
+  const [modal, setModal] = useState<"new-emp" | "new-proj" | { copy: EmployeeCard } | { edit: EmployeeCard } | { memory: EmployeeCard } | { log: EmployeeCard } | null>(null);
   useEffect(() => { void api.employeeLevels().then((l) => setCaps(Object.fromEntries(l))).catch(() => setCaps({})); }, [modal, cards]);
   const [filter, setFilter] = useState("");
-  const visible = filter.trim()
+  // 只看没有被分配到「未完结项目」的员工（没归档、计划还没全部做完的项目）
+  const [hideAssigned, setHideAssigned] = useState(() => { try { return localStorage.getItem("emp.hideAssigned") === "1"; } catch { return false; } });
+  const [finished, setFinished] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (tab !== "employees") return;
+    void api.companyOverview().then((rows) => setFinished(Object.fromEntries(rows.map((r) => [r.project_id, r.done > 0 && r.planned + r.in_progress + r.blocked + r.proposed === 0])))).catch(() => setFinished({}));
+  }, [tab, cards]);
+  const unfinishedProjects = (c: EmployeeCard) => c.projects.filter(([id]) => !finished[id]);
+  const byText = filter.trim()
     ? cards.filter((c) => (c.employee.name + c.employee.role).toLowerCase().includes(filter.trim().toLowerCase()))
     : cards;
+  const visible = hideAssigned ? byText.filter((c) => unfinishedProjects(c).length === 0) : byText;
+  const hiddenByAssign = byText.length - visible.length;
+
+  const groups = groupByRole(visible);
 
   async function guard(fn: () => Promise<unknown>) {
     try { await fn(); onChanged(); return true; } catch (e) { onError(String(e)); return false; }
@@ -199,6 +234,10 @@ export function CompanyView({
         <div className="page-head">
           <div><h2>AI 员工</h2><div className="hint">员工是公司的长期身份，可以参与多个项目。数量不设上限。</div></div>
           <div style={{ display: "flex", gap: 8 }}>
+            <label className="hint" style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }} title="没归档、计划还没全部做完的项目算「未完结」">
+              <input type="checkbox" checked={hideAssigned} onChange={(e) => { setHideAssigned(e.target.checked); try { localStorage.setItem("emp.hideAssigned", e.target.checked ? "1" : "0"); } catch { /* 忽略 */ } }} />
+              忽略已分配到未完结项目的员工{hideAssigned && hiddenByAssign > 0 ? `（已隐藏 ${hiddenByAssign} 人）` : ""}
+            </label>
             {cards.length > 8 && <input style={{ width: 200 }} placeholder={`搜索 ${cards.length} 名员工`} value={filter} onChange={(e) => setFilter(e.target.value)} />}
             <button className="btn primary" onClick={() => setModal("new-emp")}>＋ 新员工</button>
           </div>
@@ -207,8 +246,11 @@ export function CompanyView({
           <div className="empty"><img src="/logo.png" alt="" /><h2>先组建你的团队</h2><p>团队规模由你决定，一个人或二十个人都可以。</p>
             <button className="btn primary" onClick={() => setModal("new-emp")}>创建第一名员工</button></div>
         )}
-        <div className="cards">
-          {visible.map((c) => {
+        {groups.map(([label, items]) => (
+          <section key={label} className="emp-group">
+            <h3 className="emp-group-h">{label}<span className="hint">{items.length} 人</span></h3>
+            <div className="cards">
+          {items.map((c) => {
             const busy = running.includes(c.employee.name);
             return (
               <div className="card" key={c.employee.id}>
@@ -230,8 +272,9 @@ export function CompanyView({
                 <div className="card-foot">
                   {c.active_tasks > 0 && <span className="hint">{c.active_tasks} 个进行中的任务</span>}
                   <span style={{ flex: 1 }} />
-                  <button className="btn" onClick={() => setModal({ log: c })}>工作日志</button>
-                  <button className="btn" onClick={() => setModal({ memory: c })}>个人记忆</button>
+                  <button className="btn" onClick={() => setModal({ log: c })} title="工作日志">日志</button>
+                  <button className="btn" onClick={() => setModal({ memory: c })} title="个人记忆">记忆</button>
+                  <button className="btn" onClick={() => setModal({ copy: c })} title="按这位员工的设置新建一名员工">复制</button>
                   <button className="btn" onClick={() => setModal({ edit: c })}>编辑</button>
                   <button className="btn danger" onClick={async () => {
                     if (await api.confirm(`归档 ${c.employee.name}？\n历史记录和记忆会保留，但不再出现在列表里，也不能分配任务。`, "确认归档"))
@@ -241,7 +284,9 @@ export function CompanyView({
               </div>
             );
           })}
-        </div>
+            </div>
+          </section>
+        ))}
         {modal === "new-emp" && <EmployeeForm onError={onError} onClose={() => setModal(null)} onSubmit={async (n, r, p, pv, md, ep, lc) => { if (await guard(async () => { const e = await api.addEmployee(n, r, p, pv, ep ? "" : md); if (ep) await api.setEmployeeEndpoint(e.id, ep, md); if (lc) await api.setEmployeeLevelCap(e.id, lc); })) setModal(null); }} />}
         {modal && typeof modal === "object" && "log" in modal && (
           <EmployeeLog id={modal.log.employee.id} name={modal.log.employee.name} running={running.includes(modal.log.employee.name)} onClose={() => setModal(null)} />
@@ -251,6 +296,15 @@ export function CompanyView({
             <MemoryView embedded scope={{ layer: "employee", employeeId: modal.memory.employee.id, name: modal.memory.employee.name }} events={events} onError={onError} />
           </Modal>
         )}
+        {modal && typeof modal === "object" && "copy" in modal && (() => {
+          const src = modal.copy.employee;
+          const newName = `${src.name}-副本`;
+          return (
+            <EmployeeForm onError={onError} onClose={() => setModal(null)}
+              prefill={{ from: src.name, name: newName, role: src.role, persona: src.persona.split(src.name).join(newName), provider: src.provider, model: src.model, endpointId: src.endpoint_id, levelCap: src.level_cap }}
+              onSubmit={async (n, r, p, pv, md, ep, lc) => { if (await guard(async () => { const e = await api.addEmployee(n, r, p, pv, ep ? "" : md); if (ep) await api.setEmployeeEndpoint(e.id, ep, md); if (lc) await api.setEmployeeLevelCap(e.id, lc); })) setModal(null); }} />
+          );
+        })()}
         {modal && typeof modal === "object" && "edit" in modal && (
           <EmployeeForm onError={onError}
             initial={{ name: modal.edit.employee.name, number: modal.edit.employee.number, levelCap: modal.edit.employee.level_cap, effectiveCap: caps[modal.edit.employee.id], role: modal.edit.employee.role, persona: modal.edit.employee.persona, provider: modal.edit.employee.provider, model: modal.edit.employee.model, endpointId: modal.edit.employee.endpoint_id }}
