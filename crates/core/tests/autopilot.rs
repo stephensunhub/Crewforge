@@ -439,6 +439,9 @@ async fn near_the_budget_limit_no_new_item_is_started_and_the_budget_is_not_over
     let v = e.db.plan_view(&e.pid).unwrap();
     assert_eq!(v.items.iter().find(|i| i.title == "A").unwrap().status, "done");
     assert_eq!(v.items.iter().find(|i| i.title == "B").unwrap().status, "planned", "B 没有被开始");
+    // 没派出 B 要留下原因，不能只在末尾说"预算用尽"
+    let evs = e.db.recent_events_for_project(&e.pid, 400).unwrap();
+    assert!(evs.iter().any(|ev| ev.kind == "autopilot_step" && { let t = ev.payload.to_string(); t.contains("1 个就绪条目没派出去") && t.contains("不够再做一个条目") }), "应记录因预算没派出的就绪条目");
 }
 
 #[tokio::test]

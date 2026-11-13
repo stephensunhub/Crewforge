@@ -496,6 +496,17 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
         self.db().list_members(&self.project_id).unwrap_or_default().into_iter().filter_map(|m| self.db().employee_by_id(&m.employee_id).ok().flatten().map(|e| (e, m.role))).collect()
     }
 
+    /// 停下或不派新活时，记下被挡住的就绪条目数和原因（内容没变就不重复记）。
+    fn note_blocked_ready(&self, view: &crate::plan::PlanView, running: &HashSet<String>, failed: &HashSet<String>, why: &str, last: &std::sync::Mutex<String>) {
+        let waiting = view.items.iter().filter(|i| i.status == "planned" && i.ready && i.schedule_state == "scheduled" && !running.contains(&i.id) && !failed.contains(&i.id)).count();
+        if waiting == 0 { return; }
+        let text = format!("{waiting} 个就绪条目没派出去：{why}");
+        if *last.lock().unwrap() != text {
+            *last.lock().unwrap() = text.clone();
+            self.say("autopilot_step", text);
+        }
+    }
+
     /// `pick` 没选出人时，说明为什么（写进自主推进的记录，免得从外面看只是"没动静"）。
     fn why_not_picked(&self, item: &PlanItem, busy: &HashSet<String>) -> String {
         let ms = self.members();
@@ -1237,6 +1248,7 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
             let budget = self.over_budget().or_else(|| if running.is_empty() { self.no_room_for_another_item() } else { None });
             let human: Option<String> = None; // 议题都由负责人裁决，不再因需求类/高风险议题停下等人
             if (paused || budget.is_some() || human.is_some()) && set.is_empty() {
+                if let (Some(b), Ok(v)) = (&budget, self.db().plan_view(&self.project_id)) { self.note_blocked_ready(&v, &running, &failed, b, &last_skip); }
                 let end = if paused { ("paused", "你暂停了推进".to_string()) } else if let Some(b) = budget { ("budget", b) } else { ("escalated", human.unwrap_or_default()) };
                 // 预算是因为“留给收尾的调用数”而停的（还没真正用光）：收尾照做，不让文档和记忆总被挤掉
                 if end.0 == "budget" && !paused && self.over_budget().is_none() && !self.ctl.stop.load(Ordering::SeqCst) {
@@ -1334,6 +1346,13 @@ impl<A: Approver + Send + Sync + 'static> Autopilot<A> {
                     let (me, i2) = (self.clone(), id.clone());
                     set.spawn(async move { let r = me.process_item(i2.clone(), emp).await; (i2, r) });
                 }
+            } else {
+                // 没进派活：暂停、预算、等人处理、预算不够再做一个
+                let why = if paused { "已暂停".to_string() }
+                    else if let Some(b) = &budget { b.clone() }
+                    else if human.is_some() { "有事等你处理，先不派新活".to_string() }
+                    else { self.no_room_for_another_item().unwrap_or_default() };
+                self.note_blocked_ready(&view, &running, &failed, &why, &last_skip);
             }
             if set.is_empty() {
                 if let Some(e) = escalation.take() { break ("escalated", format!("负责人认为需要你来定：{e}")); }
