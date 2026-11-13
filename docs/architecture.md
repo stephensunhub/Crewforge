@@ -37,6 +37,10 @@ crates/cli: crewforge 命令行 + `mcp-serve`（员工用的团队协作工具 M
 |---|---|
 | `autopilot.rs` | 自主推进批次：选条目、派活、验证、评审门、合并、整理、失败后调整计划 |
 | `planning.rs` / `plan.rs` | 计划条目、依赖、负责人起草计划和调整计划 |
+| `scheduling.rs` | 排期：未排期/已排期、负责人排期（`lead_schedule`）、规则兜底、前置顺序校正、排期表视图 |
+| `bugs.rs` | Bug 生命周期；自动生成修复/复测条目（不调用模型） |
+| `maintenance.rs` | 需求（`requirements`）、规格拆分、定时任务、公司总览 |
+| `docs.rs` | 项目文档、规格文档、基于 git 历史的版本列表 |
 | `design.rs` | 架构师与设计阶段 |
 | `levels.rs` | 等级、能力上限、失败升级 |
 | `review_gate.rs` | 是否评审：强制规则、可跳过规则、负责人判断 |
@@ -59,7 +63,7 @@ crates/cli: crewforge 命令行 + `mcp-serve`（员工用的团队协作工具 M
 
 ## 后台定时器
 
-都在 `src-tauri/src/lib.rs`：事件推送、对齐会（10 分钟一次，会调用模型）、卡住检测（每分钟，只读事件）、启动时恢复自主推进。
+都在 `src-tauri/src/lib.rs`：事件推送、对齐会（10 分钟一次，会调用模型）、定时任务（`schedule_tick`，每分钟，到点只建未排期条目）、卡住检测（每分钟，只读事件）、启动时恢复自主推进。
 
 ## 测试
 

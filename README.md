@@ -72,7 +72,8 @@ npm run tauri dev          # 开发运行
 |---|---|
 | [快速开始](docs/getting-started.md) | 安装、首次配置、跑通第一个项目 |
 | [和其他工具的对比](docs/comparison.md) | 对比 Claude Code / Codex、Kiro、Copilot Projects |
-| [核心概念](docs/concepts.md) | 员工、角色、项目、任务、计划、自主推进、等级、记忆、端点 |
+| [核心概念](docs/concepts.md) | 员工、角色、需求、计划、排期、任务、Bug、定时器、文档、记忆，以及它们的关系 |
+| [功能总览与典型流程](docs/features.md) | 每个功能解决什么、怎么用、怎么触发；新项目 / 老项目 / Bug / 需求迭代的流程 |
 | [使用指南](docs/user-guide.md) | 每个页面怎么用，常见操作 |
 | [连接本地模型（Ollama）](docs/endpoints.md) | 自建端点的配置、并发和排错 |
 | [常见问题与排错](docs/troubleshooting.md) | 员工卡住、没权限、数据库版本等 |
