@@ -24,7 +24,10 @@ export function HandoverModal({ projectId, from, members, employees, onClose, on
     void api.employeeLevels().then((l) => setCaps(Object.fromEntries(l))).catch(() => setCaps({}));
   }, []);
 
-  const candidates = employees.filter((e) => !e.archived && e.id !== from.employee_id);
+  // 只能交给同一类岗位的人（后端判断，同样的规则在执行交接时再检查一次）
+  const [candidates, setCandidates] = useState<Employee[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => { void api.handoverCandidates(from.employee_id).then((l) => { setCandidates(l); setLoaded(true); }).catch((e) => { onError(String(e)); setLoaded(true); }); }, [from.employee_id, onError]);
   const label = (e: Employee) => {
     const ep = e.endpoint_id ? eps.find((x) => x.id === e.endpoint_id) : undefined;
     const via = ep ? `${ep.name}（本地）` : e.provider === "copilot" ? "Copilot" : "Claude 订阅";
@@ -54,9 +57,9 @@ export function HandoverModal({ projectId, from, members, employees, onClose, on
       <div className="form">
         {!prep && (
           <>
-            <Field label="交给谁" hint="可以是项目里的其他成员，也可以是还不在项目里的员工（会加入并接任）。">
+            <Field label="交给谁" hint={`只能交给和 ${from.name} 同一类岗位的人（TA 的岗位是「${employees.find((x) => x.id === from.employee_id)?.role ?? from.title}」）。可以是项目里的其他成员，也可以是还不在项目里的员工（会加入并接任）。`}>
               <select value={to} onChange={(e) => setTo(e.target.value)}>
-                <option value="">请选择</option>
+                <option value="">{loaded && candidates.length === 0 ? "没有同岗位的人可以接手" : "请选择"}</option>
                 {candidates.map((e) => <option key={e.id} value={e.id}>{label(e)}</option>)}
               </select>
             </Field>

@@ -89,7 +89,7 @@ export function Chat({
     style: { cursor: "pointer" } as const,
     title: "点击跳转",
   });
-  const TAB_NAME: Record<string, string> = { duties: "职责", plan: "计划", tasks: "任务", issues: "议题", meetings: "会议", actions: "行动项", members: "成员", memory: "记忆", onboarding: "导入" };
+  const TAB_NAME: Record<string, string> = { duties: "职责", plan: "计划", tasks: "任务", issues: "议题", meetings: "会议", actions: "行动项", members: "成员", memory: "记忆", onboarding: "导入", timeline: "排期", requirements: "需求", bugs: "Bug" };
 
   /** 项目级事件：[图标, 文字, 色调, 跳转页]。没有列在这里的事件（工具调用细节、限额读数、会议逐条消息、调度状态、记忆注入）太碎，不进群聊。 */
   function projectLine(e: EventRow, name: string): [string, string, string, ProjectTab] | null {
@@ -107,6 +107,8 @@ export function Chat({
       case "plan_drafted_by_lead": return ["📋", text, "warn", "plan"];
       case "stuck_detected": return ["🚨", String(p.title ?? "有员工卡住") + (p.detail ? `：${short(String(p.detail), 120)}` : ""), "warn", "duties"];
       case "handoff_started": case "handoff_finished": return ["🔄", text, "", "members"];
+      case "role_handover": return ["🤝", text, "ok", "members"];
+      case "plan_scheduled": return ["📅", text, "", "timeline"];
       case "session_rotated": return ["🔄", `${name} 换新会话（上下文 ${Math.round(Number(p.context_tokens ?? 0) / 1000)}K，上限 ${Math.round(Number(p.limit ?? 0) / 1000)}K）`, "", "members"];
       case "meeting_started": return ["📣", `会议开始：${p.title ?? ""}`, "", "meetings"];
       case "meeting_closed": return ["📣", `会议结束：${p.title ?? ""}`, "", "meetings"];

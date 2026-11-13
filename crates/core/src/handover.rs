@@ -58,6 +58,20 @@ pub struct HandoverReport {
     pub warnings: Vec<String>,
 }
 
+/// 把员工的岗位（职称，自由文本）归成一类，交接只能在同一类里进行。
+/// 关键字和顺序要与界面 `CompanyView.tsx` 里的 `ROLE_GROUPS` 保持一致。
+pub fn role_group(title: &str) -> &'static str {
+    const GROUPS: [(&str, &[&str]); 5] = [
+        ("架构", &["架构", "architect", "cto"]),
+        ("测试", &["qa", "测试", "质检", "test"]),
+        ("评审", &["评审", "review"]),
+        ("负责人 / 管理", &["负责人", "经理", "主管", "组长", "lead", "manager"]),
+        ("开发", &["开发", "工程师", "程序", "developer", "engineer", "dev"]),
+    ];
+    let t = title.to_lowercase();
+    GROUPS.iter().find(|(_, keys)| keys.iter().any(|k| t.contains(k))).map(|(g, _)| *g).unwrap_or("其他")
+}
+
 fn note_key(project_id: &str, employee_id: &str) -> String { format!("handover_note:{project_id}:{employee_id}") }
 fn takeover_key(project_id: &str) -> String { format!("takeover_review:{project_id}") }
 
@@ -70,6 +84,13 @@ impl Db {
         Some(v)
     }
 
+    /// 能接手 `from_id` 的人：和 TA 同一类岗位（见 `role_group`）、没归档、不是顾问。
+    pub fn handover_candidates(&self, from_id: &str) -> Result<Vec<Employee>> {
+        let from = self.employee_by_id(from_id)?.context("原员工不存在")?;
+        let g = role_group(&from.role);
+        Ok(self.list_employees()?.into_iter().filter(|e| e.id != from_id && !e.archived && e.role != "guest" && role_group(&e.role) == g).collect())
+    }
+
     /// 交接前的检查：返回（原员工，新员工）。
     pub fn check_handover(&self, project_id: &str, from_id: &str, to_id: &str, role: &str) -> Result<(Employee, Employee)> {
         if !PROJECT_ROLES.contains(&role) { bail!("未知的项目角色：{role}"); }
@@ -79,6 +100,9 @@ impl Db {
         let from = self.employee_by_id(from_id)?.context("原员工不存在")?;
         let to = self.employee_by_id(to_id)?.context("新员工不存在")?;
         if to.archived || to.role == "guest" { bail!("{} 已归档或是顾问，不能接任角色", to.name); }
+        if role_group(&to.role) != role_group(&from.role) {
+            bail!("{} 的岗位是「{}」，和 {}（{}）不是同一类，角色只能交接给同岗位的人", to.name, to.role, from.name, from.role);
+        }
         let held = self.list_members(project_id)?.into_iter().find(|m| m.employee_id == from_id).map(|m| m.role);
         if held.as_deref() != Some(role) { bail!("{} 在这个项目里不是「{}」", from.name, role_label(role)); }
         Ok((from, to))
@@ -140,20 +164,41 @@ impl Db {
     fn unassign_unstarted_work(&self, project_id: &str, from_id: &str) -> Result<(usize, usize)> {
         let name = self.employee_by_id(from_id)?.map(|e| e.name).unwrap_or_default();
         let msg = format!("原负责人 {name} 交接了角色，改回未指定，由负责人按等级和能力分配");
-        let conn = self.conn.lock().unwrap();
-        let plans = conn.execute("UPDATE plan_items SET assignee_id = NULL, updated_at = ?3, note = CASE WHEN note = '' THEN ?4 ELSE note || '；' || ?4 END WHERE project_id = ?1 AND assignee_id = ?2 AND status IN ('proposed','planned','blocked')", params![project_id, from_id, now_ms(), msg])?;
-        let actions = conn.execute("UPDATE action_items SET assignee_id = NULL WHERE project_id = ?1 AND assignee_id = ?2 AND status = 'open'", params![project_id, from_id])?;
+        let ids = self.unstarted_item_ids(project_id, from_id)?;
+        let (plans, actions) = {
+            let conn = self.conn.lock().unwrap();
+            let plans = conn.execute("UPDATE plan_items SET assignee_id = NULL, updated_at = ?3, note = CASE WHEN note = '' THEN ?4 ELSE note || '；' || ?4 END WHERE project_id = ?1 AND assignee_id = ?2 AND status IN ('proposed','planned','blocked')", params![project_id, from_id, now_ms(), msg])?;
+            let actions = conn.execute("UPDATE action_items SET assignee_id = NULL WHERE project_id = ?1 AND assignee_id = ?2 AND status = 'open'", params![project_id, from_id])?;
+            (plans, actions)
+        };
+        // 记进排期历史：排期表上能看到这些条目是因为交接才换了人
+        for id in &ids { let _ = self.record_schedule(project_id, id, "交接改派", "交接改派", &format!("{name} → 未指定"), None); }
         Ok((plans, actions))
     }
 
     /// 把一个员工在项目里还没开始的活（计划条目、待处理行动项）交给另一个人。返回（条目数，行动项数）。
     fn move_unstarted_work(&self, project_id: &str, from_id: &str, to_id: &str) -> Result<(usize, usize)> {
-        let conn = self.conn.lock().unwrap();
-        let plans = conn.execute("UPDATE plan_items SET assignee_id = ?3, updated_at = ?4 WHERE project_id = ?1 AND assignee_id = ?2 AND status IN ('proposed','planned','blocked')", params![project_id, from_id, to_id, now_ms()])?;
-        let actions = conn.execute("UPDATE action_items SET assignee_id = ?3 WHERE project_id = ?1 AND assignee_id = ?2 AND status = 'open'", params![project_id, from_id, to_id])?;
+        let name_of = |id: &str| self.employee_by_id(id).ok().flatten().map(|e| e.name).unwrap_or_default();
+        let (from_name, to_name) = (name_of(from_id), name_of(to_id));
+        let ids = self.unstarted_item_ids(project_id, from_id)?;
+        let (plans, actions) = {
+            let conn = self.conn.lock().unwrap();
+            let plans = conn.execute("UPDATE plan_items SET assignee_id = ?3, updated_at = ?4 WHERE project_id = ?1 AND assignee_id = ?2 AND status IN ('proposed','planned','blocked')", params![project_id, from_id, to_id, now_ms()])?;
+            let actions = conn.execute("UPDATE action_items SET assignee_id = ?3 WHERE project_id = ?1 AND assignee_id = ?2 AND status = 'open'", params![project_id, from_id, to_id])?;
+            (plans, actions)
+        };
+        for id in &ids { let _ = self.record_schedule(project_id, id, "交接改派", "交接改派", &format!("{from_name} → {to_name}"), None); }
         Ok((plans, actions))
     }
+
+    fn unstarted_item_ids(&self, project_id: &str, from_id: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id FROM plan_items WHERE project_id = ?1 AND assignee_id = ?2 AND status IN ('proposed','planned','blocked')")?;
+        let rows = stmt.query_map(params![project_id, from_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
 }
+
 
 impl Orchestrator {
     /// 原员工在这个项目里进行中的任务的说明（任务、分支、改了哪些文件）；没有返回 None。
@@ -295,6 +340,41 @@ mod tests {
         assert!(db.check_handover(&p, &old.id, &new.id, "boss").is_err());
         db.set_employee_archived(&new.id, true).unwrap();
         assert!(db.check_handover(&p, &old.id, &new.id, "lead").unwrap_err().to_string().contains("归档"));
+    }
+
+    #[test]
+    fn roles_can_only_be_handed_to_people_with_the_same_kind_of_job() {
+        assert_eq!(role_group("架构师 / CTO"), "架构");
+        assert_eq!(role_group("QA 测试工程师"), "测试");
+        assert_eq!(role_group("项目负责人"), "负责人 / 管理");
+        assert_eq!(role_group("全栈工程师"), "开发");
+        assert_eq!(role_group("设计师"), "其他");
+        let db = Db::open_memory().unwrap();
+        let p = db.create_project("P", "", "/tmp/p-handover-same").unwrap().id;
+        let dev1 = db.add_employee("dev1", "全栈工程师", "x").unwrap();
+        let dev2 = db.add_employee("dev2", "后端开发工程师", "x").unwrap();
+        let qa = db.add_employee("qa", "QA 测试工程师", "x").unwrap();
+        let arch = db.add_employee("arch", "架构师 / CTO", "x").unwrap();
+        db.add_member(&p, &dev1.id, "lead").unwrap();
+        let ids: Vec<String> = db.handover_candidates(&dev1.id).unwrap().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![dev2.id.clone()], "候选人只有同类岗位的");
+        let err = db.check_handover(&p, &dev1.id, &qa.id, "lead").unwrap_err().to_string();
+        assert!(err.contains("不是同一类") && err.contains("QA 测试工程师"), "{err}");
+        assert!(db.check_handover(&p, &dev1.id, &arch.id, "lead").is_err());
+        assert!(db.check_handover(&p, &dev1.id, &dev2.id, "lead").is_ok());
+    }
+
+    #[test]
+    fn moved_and_unassigned_items_are_recorded_in_the_schedule_history() {
+        let (db, p, old, new, _dev) = setup();
+        let a = db.create_plan_item(&p, &NewPlanItem { title: "A".into(), assignee_id: Some(old.id.clone()), ..Default::default() }, None).unwrap();
+        let b = db.create_plan_item(&p, &NewPlanItem { title: "B".into(), assignee_id: Some(old.id.clone()), ..Default::default() }, None).unwrap();
+        db.move_unstarted_work(&p, &old.id, &new.id).unwrap();
+        let row = |id: &str| { let tl = db.timeline_view(&p).unwrap(); tl.scheduled.into_iter().chain(tl.unscheduled).find(|r| r.item.id == id).unwrap() };
+        assert_eq!((row(&a).trigger.as_deref(), row(&a).reason.as_deref()), (Some("交接改派"), Some("old → new")));
+        db.conn.lock().unwrap().execute("UPDATE plan_items SET assignee_id = ?2 WHERE id = ?1", [&b, &new.id]).unwrap();
+        db.unassign_unstarted_work(&p, &new.id).unwrap();
+        assert_eq!(row(&b).reason.as_deref(), Some("new → 未指定"));
     }
 
     #[test]
